@@ -8,18 +8,19 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import ai as ai_module
+from . import __version__, ai as ai_module
 from . import dxn, fields, matching, settings, workbook
 from .models import Subject, money
 
 APP_NAME = "ZSZH TB 自动填写系统"
-VERSION = "0.2.0"
+VERSION = __version__
 PAD = 8
 
 STATUS_LABEL = {
@@ -424,10 +425,14 @@ class App(tk.Tk):
     def _choose_template(self):
         path = filedialog.askopenfilename(title="选择用户模板", filetypes=[
             ("Excel 模板", "*.xlsx *.xlsm"), ("所有文件", "*.*")])
-        if path:
-            self.template_var.set(path)
-            self.scan = None
-            self.scan_state.set("模板已更换，请重新识别")
+        if not path:
+            return
+        self.template_var.set(path)
+        self.scan = None
+        self.scan_state.set("模板已更换，请重新识别")
+        # 科目余额已就绪时换模板直接重算，省去再点一次“识别并匹配”。
+        if self.rows and not self.busy:
+            self._recognize()
 
     def _periods(self):
         value = self.period_var.get()
@@ -448,14 +453,17 @@ class App(tk.Tk):
             scan = fields.scan_template(path, periods, unit)
             return scan, matching.match_fields(scan.fields, self.rows)
 
+        self._recognize_started = time.perf_counter()
         self._async("正在识别模板字段并匹配…", work, self._on_scanned)
 
     def _on_scanned(self, value):
         scan, results = value
         self.scan = scan
         self.results = results
-        self.scan_state.set(f"{len(self.results)} 个字段，单位：{scan.unit}")
-        self._log(f"模板识别完成：{len(self.results)} 个字段，金额单位 {scan.unit}。")
+        elapsed = time.perf_counter() - getattr(self, "_recognize_started", time.perf_counter())
+        self.scan_state.set(f"{len(self.results)} 个字段，单位：{scan.unit}，{elapsed:.2f} 秒")
+        self._log(f"模板识别完成：{len(self.results)} 个字段，金额单位 {scan.unit}，"
+                  f"匹配 {len(self.rows)} 个科目，耗时 {elapsed:.2f} 秒。")
         for warning in scan.warnings:
             self._log("提示：" + warning)
         self._refresh_tree()

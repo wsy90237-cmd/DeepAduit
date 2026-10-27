@@ -1,6 +1,7 @@
 import unittest
 from dataclasses import replace
 from decimal import Decimal
+from time import perf_counter
 
 from tb_autofill.matching import match_fields, normalize, resolve_match, validate_claims
 from tb_autofill.models import LedgerRow, TargetField
@@ -168,6 +169,26 @@ class MatchingTests(unittest.TestCase):
         b.amount = None
         b.status = "unmatched"
         self.assertEqual(validate_claims([a, b])[0].status, "matched")
+
+
+class ScalingTests(unittest.TestCase):
+    """防止匹配退化为逐目标全量排序（曾出现 800 目标 × 2000 科目耗时 60 秒）。"""
+
+    def test_large_batch_completes_quickly(self):
+        rows = [LedgerRow(code=f"{6000 + i}", name=f"明细项目{i}", path=f"管理费用/明细项目{i}",
+                          opening=Decimal(i), ending=Decimal(i * 2), debit=Decimal(i), credit=Decimal(0),
+                          level=2, subject_id="S1", year=2026, month=6) for i in range(1000)]
+        targets = [TargetField("期末", f"D{4 + i}", f"未知项目{i}", "ending") for i in range(400)]
+        started = perf_counter()
+        results = match_fields(targets, rows)
+        elapsed = perf_counter() - started
+        self.assertEqual(len(results), 400)
+        self.assertLess(elapsed, 5.0, f"匹配耗时 {elapsed:.2f}s，疑似退回逐目标全量排序")
+
+    def test_parent_prefix_still_splits_after_indexing(self):
+        rows = [row("2221", "应交税费"), row("222101", "应交增值税", level=2, path="应交税费/应交增值税")]
+        result = match_fields([target("应交税费—应交增值税")], rows)[0]
+        self.assertEqual(result.source_ids, ["222101"])
 
 
 if __name__ == "__main__":

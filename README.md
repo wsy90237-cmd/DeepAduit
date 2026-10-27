@@ -25,7 +25,7 @@ tb_autofill/
   settings.py   DPAPI 密钥与本机设置
   models.py     Decimal 金额与数据模型
   gui.py        tkinter 客户端界面
-tests/          59 项单元测试 + 合成模板夹具
+tests/          61 项单元测试 + 合成模板夹具
 docs/           需求与验收、字段匹配证据、联调记录
 packaging/      PyInstaller 配置
 ```
@@ -63,7 +63,9 @@ python -m venv .venv
 .venv\Scripts\python -m unittest discover -s tests -v
 ```
 
-59 项测试覆盖：别名与全角归一化、父科目限定、同名歧义、父子重复认领、损益方向发生额、自然方向负余额、借贷分列、期初/期末、单位换算、公式保护、真实零与缺失、账面/审定、混合主体期间、DeepSeek 返回体白名单、模板表头与公式识别。
+61 项测试覆盖：别名与全角归一化、父科目限定、同名歧义、父子重复认领、损益方向发生额、自然方向负余额、借贷分列、期初/期末、单位换算、公式保护、真实零与缺失、账面/审定、混合主体期间、DeepSeek 返回体白名单、模板表头与公式识别。
+
+性能参考（本机实测）：模板 404 行 / 800 个字段 / 2000 个科目，识别 0.06 秒、匹配 0.13 秒。匹配采用一次性建索引，复杂度不再随「目标数 × 科目数」放大。
 
 合成模板生成：`python tests/fixtures/make_template.py`（全部为虚构数据）。
 

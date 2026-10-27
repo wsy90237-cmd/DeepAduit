@@ -3,14 +3,20 @@
 import re
 import unicodedata
 from decimal import Decimal
+from functools import lru_cache
 
 from .models import LedgerRow, MatchResult, TargetField, money
 
 
-def normalize(text) -> str:
-    text = unicodedata.normalize("NFKC", str(text or "")).strip().lower()
+@lru_cache(maxsize=20000)
+def _normalize_cached(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text).strip().lower()
     text = re.sub(r"^(?:[一二三四五六七八九十百]+[、.．]|\([一二三四五六七八九十]+\)|\d+[、.．]|(?:加|减)[:：])\s*", "", text)
     return re.sub(r"[\s\u3000]+", "", text)
+
+
+def normalize(text) -> str:
+    return _normalize_cached(str(text or ""))
 
 
 _ALIAS_GROUPS = (
@@ -43,8 +49,8 @@ _NOTE_PAREN = re.compile(r"^(?:注\d*|附注|备注|说明|详见|见附注)[:�
 _PATH_SEP = re.compile(r"[/\\>＞—–－-]+")
 
 
-def _canonical(text):
-    name = normalize(text)
+@lru_cache(maxsize=20000)
+def _canonical_cached(name: str) -> str:
     if name in _ALIASES:
         return _ALIASES[name]
     match = re.search(r"\(([^()]*)\)$", name)
@@ -53,8 +59,54 @@ def _canonical(text):
     return _ALIASES.get(name, name)
 
 
+def _canonical(text):
+    return _canonical_cached(normalize(text))
+
+
 def _leaf(text):
     return _PATH_SEP.split(str(text or ""))[-1].strip()
+
+
+class _Index:
+    """一次构建、多次复用的科目索引。
+
+    匹配曾对每个目标重复规范化并排序全部科目（800 目标 × 2000 科目约 60 秒），
+    把派生键收敛到本索引后，逐目标只做字典查找。
+    """
+
+    __slots__ = ("rows", "all_set", "by_name", "by_name_path", "by_any", "by_norm_exact", "prefix_candidates")
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.all_set = set(rows)
+        self.by_name = {}
+        self.by_name_path = {}
+        self.by_any = {}
+        self.by_norm_exact = {}
+        for row in rows:
+            name_key, path_key = _canonical(row.name), _canonical(row.path)
+            leaf_key = _canonical(_leaf(row.path))
+            exact_keys = {normalize(row.name), normalize(row.path)}
+            for key in (name_key,):
+                if key:
+                    self.by_name.setdefault(key, []).append(row)
+            for key in {name_key, path_key}:
+                if key:
+                    self.by_name_path.setdefault(key, []).append(row)
+            for key in {name_key, path_key, leaf_key}:
+                if key:
+                    self.by_any.setdefault(key, []).append(row)
+            for key in exact_keys:
+                if key:
+                    self.by_norm_exact.setdefault(key, []).append(row)
+        self.prefix_candidates = sorted(((normalize(row.name), row) for row in rows),
+                                        key=lambda item: len(item[0]), reverse=True)
+
+    def scoped(self, roots):
+        if not roots:
+            return self.rows, self.all_set
+        kept = [row for row in self.rows if any(_in_root(row, root) for root in roots)]
+        return kept, set(kept)
 
 
 def _validate_rows(rows):
@@ -68,15 +120,17 @@ def _validate_rows(rows):
         raise ValueError("同一主体期间存在重复科目编码，需要先核对原始数据")
 
 
-def _root_codes(parent, rows):
+def _root_codes(parent, index):
     key = _canonical(parent)
     if not key:
         return []
-    roots = [row.code for row in rows if key in {_canonical(row.name), _canonical(row.path)}]
+    roots = [row.code for row in index.by_name_path.get(key, [])]
     if roots:
         return roots
     if key == "货币资金":
-        return [row.code for row in rows if _canonical(row.name) in {"库存现金", "银行存款", "其他货币资金"}]
+        return [row.code for rows in (index.by_name.get(_canonical(name), [])
+                                      for name in ("库存现金", "银行存款", "其他货币资金"))
+                for row in rows]
     return []
 
 
@@ -84,40 +138,39 @@ def _in_root(row, root):
     return str(row.code) == str(root) or str(row.code).startswith(str(root))
 
 
-def _detail_label(target, rows):
+def _detail_label(target, index):
     label = normalize(target.label)
     parts = _PATH_SEP.split(label)
-    if len(parts) > 1 and _root_codes(parts[0], rows):
+    if len(parts) > 1 and _root_codes(parts[0], index):
         return parts[0], parts[-1]
-    if target.parent and _root_codes(target.parent, rows):
+    if target.parent and _root_codes(target.parent, index):
         return target.parent, target.label
-    if any(_canonical(target.label) == _canonical(row.name) for row in rows):
+    if _canonical(target.label) in index.by_name:
         return "", target.label
     # 只有真正存在的父科目名称才可把“应交税费增值税”拆为父项和叶子。
-    for row in sorted(rows, key=lambda item: len(normalize(item.name)), reverse=True):
-        root = normalize(row.name)
-        if len(root) >= 3 and label.startswith(root) and label != root:
+    for root, row in index.prefix_candidates:
+        if len(root) < len(label) and len(root) >= 3 and label.startswith(root):
             return row.name, label[len(root):].lstrip("-—/\\:：")
     return "", target.label
 
 
-def _candidate_rows(target, rows):
-    parent, leaf = _detail_label(target, rows)
-    roots = _root_codes(parent, rows)
-    scoped = [row for row in rows if any(_in_root(row, root) for root in roots)] if roots else list(rows)
+def _candidate_rows(target, index):
+    parent, leaf = _detail_label(target, index)
+    roots = _root_codes(parent, index)
+    scoped, scoped_set = index.scoped(roots)
     if len(roots) > 1 and _canonical(parent) != "货币资金":
         key = _canonical(leaf)
-        candidates = [row for row in scoped if key in {_canonical(row.name), _canonical(row.path), _canonical(_leaf(row.path))}]
+        candidates = [row for row in index.by_any.get(key, []) if row in scoped_set]
         return candidates, "ambiguous_parent"
     if re.fullmatch(r"\d{4,}", str(target.index_code)):
         coded = [row for row in scoped if str(row.code) == str(target.index_code)]
         if coded:
             return coded, "code"
-    exact = [row for row in scoped if normalize(target.label) in {normalize(row.name), normalize(row.path)}]
+    exact = [row for row in index.by_norm_exact.get(normalize(target.label), []) if row in scoped_set]
     if exact:
         return exact, "exact"
     key = _canonical(leaf)
-    candidates = [row for row in scoped if key and key in {_canonical(row.name), _canonical(row.path), _canonical(_leaf(row.path))}]
+    candidates = [row for row in index.by_any.get(key, []) if row in scoped_set] if key else []
     return candidates, "parent_alias" if roots else "alias"
 
 
@@ -284,12 +337,13 @@ def apply_ai_suggestions(results: list[MatchResult], suggestions, rows: list[Led
 
 def match_fields(targets: list[TargetField], rows: list[LedgerRow]) -> list[MatchResult]:
     _validate_rows(rows)
+    index = _Index(rows)
     results = []
     for target in targets:
         if target.is_formula or (isinstance(target.value, str) and target.value.lstrip().startswith("=")):
             results.append(resolve_match(target, []))
             continue
-        candidates, method = _candidate_rows(target, rows)
+        candidates, method = _candidate_rows(target, index)
         if method == "ambiguous_parent" or len(candidates) != 1:
             result = MatchResult(target=target, sources=candidates, method=method)
             result.status = "ambiguous" if candidates or method == "ambiguous_parent" else "unmatched"
