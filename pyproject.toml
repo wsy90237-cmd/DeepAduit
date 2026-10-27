@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zszh-tb-autofill"
+version = "0.1.0"
+description = "鼎信诺科目余额取数、文字识别填列与 TB 复核工具"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["tb_autofill*"]
+
+[project.gui-scripts]
+zszh-tb-autofill = "tb_autofill.gui:main"
