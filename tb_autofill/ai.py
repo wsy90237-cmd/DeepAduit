@@ -4,6 +4,7 @@ import socket
 import urllib.error
 import urllib.request
 
+from . import analysis
 from .settings import MODELS, valid_model
 
 DEFAULT_MODEL = MODELS[0]
@@ -58,11 +59,24 @@ CONVERSATION_SYSTEM = (
     "只返回 JSON 对象，不要输出其他内容。"
     "如果问题与审计工作无关（闲聊、编程、写作、通用知识、推荐等），不要回答该问题本身，"
     "只返回 {\"intent\":\"offtopic\",\"answer\":\"本通道仅用于审计工作，请提出与报表、科目、底稿相关的问题。\",\"proposals\":[]}。"
+    "涉及账套数据时，只能使用工作区数据里 facts 给出的金额与科目，禁止自行推算或编造任何金额、比例与科目；"
+    "每个结论都要写明依据的科目编码；facts 不足以支撑结论时，直接说明缺少哪些数据，不要用常识代替数据。"
     "如果问题与审计相关，返回 {\"intent\":\"audit\",\"answer\":\"中文回答，必要时说明依据与不确定性\",\"proposals\":["
     "{\"target_id\":\"给定目标ID\",\"source_codes\":[\"给定科目编码\"],\"reason\":\"改动依据\"}]}。"
     "proposals 只能从给定目标与候选科目中选择，不能创造新科目、新金额或新单元格；"
     "金额一律由本地程序计算，你只提供来源科目。无把握时返回空 proposals 并在 answer 中说明原因。"
 )
+
+
+def _fact_warnings(answer, facts):
+    """回答里出现事实之外的金额时给出提示：不阻断，但必须让审计员看见。"""
+    if not facts:
+        return []
+    try:
+        return analysis.suspicious_numbers(answer, analysis.fact_amounts(facts), analysis.fact_codes(facts),
+                                          extra=analysis.fact_tokens(facts))
+    except (KeyError, TypeError, ValueError):
+        return []
 
 
 def _validate_suggestions(items, targets, codes):
@@ -219,12 +233,16 @@ class DeepSeekClient:
             if not isinstance(answer, str) or len(answer) > 6000:
                 raise ValueError("回答格式不正确")
             if intent == "offtopic":
-                return {"intent": "offtopic", "answer": answer, "proposals": []}
+                return {"intent": "offtopic", "answer": answer, "proposals": [], "warnings": [],
+                        "unknown_codes": []}
             proposals = value.get("proposals") or []
             targets = {item["target_id"] for item in (context or {}).get("targets", [])}
             codes = {item["code"] for item in (context or {}).get("candidates", [])}
             _validate_suggestions(proposals, targets, codes)
-            return {"intent": "audit", "answer": answer, "proposals": proposals}
+            facts = (context or {}).get("facts")
+            return {"intent": "audit", "answer": answer, "proposals": proposals,
+                    "warnings": _fact_warnings(answer, facts),
+                    "unknown_codes": analysis.unknown_codes(answer, analysis.fact_codes(facts)) if facts else []}
         except AIError:
             raise
         except (KeyError, IndexError, TypeError, ValueError):

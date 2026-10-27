@@ -16,7 +16,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__, ai as ai_module
-from . import auditlog, dxn, fields, matching, settings, workbook
+from . import analysis, auditlog, dxn, fields, matching, settings, workbook
 from .models import Subject, money
 
 APP_NAME = "ZSZH TB 自动填写系统"
@@ -267,7 +267,8 @@ class App(tk.Tk):
         chooser.pack(side="left")
         chooser.bind("<<ComboboxSelected>>", lambda _event: self._refresh_tree())
         for text, command in (("全选可写入", self._select_all_fillable), ("清空", self._clear_selection),
-                              ("允许覆盖", self._allow_overwrite), ("指定来源", self._manual_source)):
+                              ("允许覆盖", self._allow_overwrite), ("指定来源", self._manual_source),
+                              ("变动分析", self._analyze_movements)):
             ttk.Button(bar, text=text, command=command).pack(side="left", padx=(6, 0))
         self.ai_btn = ttk.Button(bar, text="AI 复核", command=self._ai_review)
         self.ai_btn.pack(side="left", padx=(6, 0))
@@ -415,9 +416,33 @@ class App(tk.Tk):
         self._chat_proposals = []
         self.prop_frame.grid_remove()
 
-    def _chat_send(self):
-        question = self.chat_input.get("1.0", "end").strip()
-        if not question:
+    def _analyze_movements(self):
+        """变动分析：本地先出确定性摘要，启用 AI 时再让其解释同一批事实。"""
+        if not self.rows:
+            self._chat_append("sys", "先读取科目余额")
+            if not self.chat_visible:
+                self._toggle_chat()
+            return
+        try:
+            facts = analysis.build_facts(self.rows)
+        except ValueError as exc:
+            if not self.chat_visible:
+                self._toggle_chat()
+            self._chat_append("sys", str(exc))
+            return
+        if not self.chat_visible:
+            self._toggle_chat()
+        period = facts["subject"]
+        self._chat_append("sys", f"{period['year']}-{period['month']:02d} · 变动前 {len(facts['movements'])} 项")
+        self._chat_append("sys", analysis.summarize(facts))
+        if self.store is None or not self.store.has_key or not self.store.data.get("ai_enabled"):
+            return
+        self._chat_send("请依据给定账套事实，说明主要变动的原因方向与需要追加核查的事项。"
+                        "只能引用事实中的科目与金额，不确定就说明缺少哪些资料。", extra={"facts": facts})
+
+    def _chat_send(self, question=None, extra=None):
+        text = (self.chat_input.get("1.0", "end") if question is None else question).strip()
+        if not text:
             return
         if self.store is None or not self.store.has_key:
             self._chat_append("sys", "未配置 Key")
@@ -431,20 +456,26 @@ class App(tk.Tk):
         try:
             context = ai_module.assistance_payload(
                 [result for result in self.results if result.status != "protected"][:30], self.rows)
+            if extra:
+                context = {**context, **extra}
             key = self.store.get_key()
         except (ai_module.AIError, settings.SettingsError) as exc:
             self._chat_append("sys", str(exc))
             return
-        self.chat_input.delete("1.0", "end")
-        self._chat_append("me", question)
-        self._chat_append("sys", f"附 {len(context['targets'])} 个字段 / {len(context['candidates'])} 个科目")
+        if question is None:
+            self.chat_input.delete("1.0", "end")
+        self._chat_append("me", text)
+        detail = f"附 {len(context['targets'])} 个字段 / {len(context['candidates'])} 个科目"
+        if extra and extra.get("facts"):
+            detail += f" / {len(extra['facts']['movements'])} 项变动"
+        self._chat_append("sys", detail)
         history = list(self.chat_history[-8:])
-        self.chat_history.append({"role": "user", "content": question})
+        self.chat_history.append({"role": "user", "content": text})
         model = self.store.data.get("model")
 
         def work():
             try:
-                return ai_module.DeepSeekClient(key, model).converse(question, history, context)
+                return ai_module.DeepSeekClient(key, model).converse(text, history, context)
             except ai_module.AIError as exc:
                 return {"intent": "error", "answer": str(exc), "proposals": []}
 
@@ -457,6 +488,10 @@ class App(tk.Tk):
             return
         self._chat_append("ai", answer["answer"])
         self.chat_history.append({"role": "assistant", "content": answer["answer"]})
+        for value in (answer.get("warnings") or [])[:5]:
+            self._chat_append("sys", f"⚠ 事实中无此金额：{value}")
+        for code in (answer.get("unknown_codes") or [])[:5]:
+            self._chat_append("sys", f"⚠ 账套中无此编码：{code}")
         if answer.get("intent") == "offtopic":
             return
         self._set_chat_proposals(answer.get("proposals", []))

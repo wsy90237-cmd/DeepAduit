@@ -195,5 +195,48 @@ class AuditScopeTests(unittest.TestCase):
             client.converse("审计" * 2001)
 
 
+class FactGroundingTests(unittest.TestCase):
+    facts = {
+        "subject": {"id": "S1", "year": 2026, "month": 6},
+        "counts": {"accounts": 5, "leaves": 4},
+        "movements": [{"code": "6602", "name": "管理费用", "path": "管理费用", "direction": "借",
+                       "opening": "100000", "ending": "140000", "change": "40000",
+                       "rate": "40.00%", "debit": None, "credit": None, "profit_loss": False}],
+        "no_rate": [],
+        "totals": {"debit": "0", "credit": "0"},
+    }
+
+    def test_numbers_outside_facts_are_flagged(self):
+        answer = "管理费用（6602）由 100000 增至 140000，增加 40000；另有一笔 99999999 无法核对。"
+        client, _ = make_client(completion({"intent": "audit", "answer": answer, "proposals": []}))
+        value = client.converse("管理费用为什么增加？",
+                                context={"targets": [], "candidates": [], "facts": self.facts})
+        self.assertEqual(value["warnings"], ["99999999"])
+        self.assertEqual(value["unknown_codes"], [])
+
+    def test_invented_code_flagged(self):
+        answer = "参见 6602.99 与 9999.01 的明细。"
+        client, _ = make_client(completion({"intent": "audit", "answer": answer, "proposals": []}))
+        facts = dict(self.facts, all_codes=["6602", "6602.99"])
+        value = client.converse("管理费用明细？",
+                                context={"targets": [], "candidates": [], "facts": facts})
+        self.assertEqual(value["unknown_codes"], ["9999.01"])
+
+    def test_without_facts_no_warning_check(self):
+        client, _ = make_client(completion({"intent": "audit", "answer": "增加 88888888。", "proposals": []}))
+        value = client.converse("管理费用为什么增加？", context={"targets": [], "candidates": []})
+        self.assertEqual(value["warnings"], [])
+        self.assertEqual(value["unknown_codes"], [])
+
+    def test_facts_are_sent_to_model(self):
+        client, calls = make_client(completion({"intent": "audit", "answer": "略", "proposals": []}))
+        client.converse("管理费用为什么增加？",
+                        context={"targets": [], "candidates": [], "facts": self.facts})
+        body = calls[0][1]
+        joined = " ".join(message["content"] for message in body["messages"])
+        self.assertIn("facts", joined)
+        self.assertIn("6602", joined)
+
+
 if __name__ == "__main__":
     unittest.main()
