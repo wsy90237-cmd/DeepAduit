@@ -5,9 +5,14 @@
 产物：dist/ZSZH-TB自动填写.exe
 """
 
+import os
+
+# spec 内的相对路径以本文件所在目录为基准，入口需回退到项目根目录。
+ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir))  # noqa: F821 - SPECPATH 由 PyInstaller 注入
+
 a = Analysis(
-    ["launch.py"],
-    pathex=[],
+    [os.path.join(ROOT, "launch.py")],
+    pathex=[ROOT],
     binaries=[],
     datas=[],
     hiddenimports=[
