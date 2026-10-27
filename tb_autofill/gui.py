@@ -16,7 +16,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__, ai as ai_module
-from . import dxn, fields, matching, settings, workbook
+from . import auditlog, dxn, fields, matching, settings, workbook
 from .models import Subject, money
 
 APP_NAME = "ZSZH TB 自动填写系统"
@@ -76,6 +76,10 @@ class App(tk.Tk):
         self.scan = None
         self.current_subject = None
         self._ai_subset = []
+        try:
+            self.audit = auditlog.AuditLog()
+        except Exception:
+            self.audit = None
         self._load_settings()
         self._init_style()
         self._build()
@@ -248,6 +252,7 @@ class App(tk.Tk):
         self.report_btn.pack(side="left")
         self.write_btn = ttk.Button(bar, text="另存为 Excel…", command=self._write_excel, state="disabled")
         self.write_btn.pack(side="left", padx=8)
+        ttk.Button(bar, text="校验审计日志", command=self._verify_audit).pack(side="left")
         ttk.Button(bar, text="退出", command=self.destroy).pack(side="right")
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=180)
         self.progress.pack(side="right", padx=10)
@@ -746,6 +751,8 @@ class App(tk.Tk):
             messagebox.showerror("导出失败", str(exc))
             return
         self._log(f"复核报告已导出：{target}")
+        self._audit("export_report", path=str(target), subject=subject, unit=unit,
+                    fields=len(self.results), selected=sum(1 for r in self.results if r.selected))
         messagebox.showinfo("已导出", str(target))
 
     def _subject_label(self):
@@ -774,7 +781,40 @@ class App(tk.Tk):
 
     def _on_written(self, output):
         self._log(f"已另存：{output}")
-        messagebox.showinfo("写入完成", f"已生成并校验：\n{output}\n\n原始模板未改动。")
+        self._audit("write_excel", output=str(output), template=str(self.scan.path),
+                    template_digest=self.scan.digest, subject=self._subject_label(), unit=self.scan.unit,
+                    cells=[{"cell": result.target.id,
+                            "before": "公式" if result.target.is_formula else fmt_amount(result.target.value),
+                            "after": str(result.amount), "overwrite": result.overwrite,
+                            "sources": result.source_ids}
+                           for result in self.results if result.selected])
+        messagebox.showinfo("写入完成", f"已生成并校验：\n{output}\n\n原始模板未改动，改动已写入本机审计日志。")
+
+    def _audit(self, event, **fields):
+        if self.audit is None:
+            self._log("审计日志不可用，本次操作未留痕。", error=True)
+            return
+        try:
+            record = self.audit.append(event, **fields)
+        except Exception as exc:
+            self._log(f"审计日志写入失败：{exc}", error=True)
+            return
+        ok, seq, reason = self.audit.verify()
+        self._log(f"审计日志已记录（序号 {record['seq']}）：{self.audit.path}")
+        if not ok:
+            self._log(f"警告：日志链在序号 {seq} 处校验失败（{reason}），请立即核对", error=True)
+
+    def _verify_audit(self):
+        if self.audit is None:
+            messagebox.showerror("不可用", "审计日志未初始化。")
+            return
+        ok, seq, reason = self.audit.verify()
+        total = len(self.audit.records())
+        if ok:
+            messagebox.showinfo("审计日志校验", f"完整：共 {total} 条记录，哈希链连续。\n\n{self.audit.path}")
+        else:
+            messagebox.showerror("审计日志校验", f"第 {seq} 条记录异常：{reason}\n\n{self.audit.path}\n"
+                                             "请保留现场并人工核对，不要覆盖原文件。")
 
 
 class PayloadDialog(tk.Toplevel):

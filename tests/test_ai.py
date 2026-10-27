@@ -152,5 +152,48 @@ class ApplySuggestionTests(unittest.TestCase):
         self.assertFalse(results[0].overwrite)
 
 
+class AuditScopeTests(unittest.TestCase):
+    def test_offtopic_blocked_locally_without_request(self):
+        client, calls = make_client(completion({"summary": "", "suggestions": []}))
+        with self.assertRaises(AIError):
+            client.converse("帮我写一首关于秋天的诗")
+        self.assertEqual(calls, [])
+
+    def test_audit_question_passes_local_filter(self):
+        client, calls = make_client({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(
+            {"intent": "audit", "answer": "按科目余额合计。", "proposals": []}, ensure_ascii=False)}}]})
+        value = client.converse("本期管理费用为什么比上期多？")
+        self.assertEqual(value["intent"], "audit")
+        self.assertEqual(calls[0][0], "/chat/completions")
+        self.assertEqual(calls[0][1]["messages"][0]["role"], "system")
+
+    def test_model_declared_offtopic_drops_proposals(self):
+        client, _ = make_client({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(
+            {"intent": "offtopic", "answer": "本通道仅用于审计工作。",
+             "proposals": [{"target_id": "期末!D10", "source_codes": ["1001"], "reason": "x"}]},
+            ensure_ascii=False)}}]})
+        # 这句不含审计词也不含离题词，本地判为 unknown 放行，由模型判定为离题
+        value = client.converse("帮我总结一下这篇文章", context={"targets": [{"target_id": "期末!D10"}],
+                                                        "candidates": [{"code": "1001"}]})
+        self.assertEqual(value["intent"], "offtopic")
+        self.assertEqual(value["proposals"], [])
+
+    def test_proposal_outside_context_rejected(self):
+        client, _ = make_client({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(
+            {"intent": "audit", "answer": "x",
+             "proposals": [{"target_id": "期末!D10", "source_codes": ["9999"], "reason": "x"}]},
+            ensure_ascii=False)}}]})
+        with self.assertRaises(AIError):
+            client.converse("把这个科目对应到其他应收款", context={"targets": [{"target_id": "期末!D10"}],
+                                                          "candidates": [{"code": "1001"}]})
+
+    def test_empty_or_too_long_question_rejected(self):
+        client, _ = make_client(completion({"summary": "", "suggestions": []}))
+        with self.assertRaises(AIError):
+            client.converse("   ")
+        with self.assertRaises(AIError):
+            client.converse("审计" * 2001)
+
+
 if __name__ == "__main__":
     unittest.main()
