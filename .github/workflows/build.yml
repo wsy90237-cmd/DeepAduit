@@ -53,8 +53,10 @@ jobs:
       - name: 打包产物自检
         shell: pwsh
         run: |
-          & "dist/ZSZH-TB-Autofill.exe" --selftest
-          if ($LASTEXITCODE -ne 0) { throw "自检失败，退出码 $LASTEXITCODE" }
+          $exe = (Resolve-Path "dist/ZSZH-TB-Autofill.exe").Path
+          $proc = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "自检失败，退出码 $($proc.ExitCode)" }
+          "自检通过，退出码 0"
       - name: 上传运行产物
         uses: actions/upload-artifact@v4
         with:
