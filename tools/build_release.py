@@ -26,7 +26,7 @@ def build_arguments(compiler, jobs):
                "--include-module=pythoncom", "--windows-console-mode=disable", "--python-flag=isolated",
                "--python-flag=no_docstrings", "--file-reference-choice=runtime",
                "--nofollow-import-to=tests,unittest,pytest,tkinter.test",
-               "--assume-yes-for-downloads", f"--jobs={jobs}", "--lto=auto",
+               "--assume-yes-for-downloads", f"--jobs={jobs}", "--lto=no",
                f"--output-dir={output}", "--output-filename=DeepAudit.exe",
                f"--report={ROOT / 'build' / 'native-compilation-report.xml'}",
                f"--product-name={APP_NAME}", f"--file-description={APP_NAME} Audit Workspace",

@@ -65,7 +65,7 @@ jobs:
           $tag = "${{ github.ref_name }}"
           gh release view $tag 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "DeepAudit $tag" --notes-file docs/release-v0.4.0.md
+            gh release create $tag --title "DeepAudit $tag" --notes-file "docs/release-$tag.md"
           }
           gh release upload $tag "dist/DeepAudit.exe" "dist/SHA256SUMS.txt" "dist/INSTALL.txt" "dist/BUILDINFO.json" --clobber
           gh release view $tag --json assets --jq '.assets[] | "\(.name) \(.size) bytes"'

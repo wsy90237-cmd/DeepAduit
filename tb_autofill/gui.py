@@ -17,8 +17,9 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import APP_NAME, __version__, ai as ai_module
-from . import analysis, auditlog, dxn, fields, matching, settings, workbook, workspace
+from . import analysis, auditlog, dxn, fields, knowledge, matching, settings, workbook, workspace
 from .models import Subject, ledger_digest, money
+from .connections import ModelDialog as AISettingsDialog
 
 VERSION = __version__
 PAD = 8
@@ -89,6 +90,9 @@ class App(tk.Tk):
         self.loaded_subject = None
         self._context_revision = 0
         self._ai_subset = []
+        self.library = knowledge.LocalLibrary()
+        self.knowledge_refs = []
+        self.review_document = None
         try:
             self.audit = auditlog.AuditLog()
         except Exception:
@@ -121,6 +125,7 @@ class App(tk.Tk):
         self.scan_state.set("参数已变化，请重新识别")
         if clear_ledger:
             self.rows, self.loaded_subject = [], None
+            self.knowledge_refs, self.review_document = [], None
             self.ledger_state.set("请重新读取科目余额")
         if clear_subject:
             self.current_subject, self.subjects = None, []
@@ -487,17 +492,29 @@ class App(tk.Tk):
         if not self.store.data.get("ai_enabled"):
             self._chat_append("sys", "AI 未启用")
             return
-        if not self.results:
-            self._chat_append("sys", "先识别模板")
+        if ai_module.audit_scope(text) == "offtopic":
+            self._chat_append("sys", "本通道用于审计任务，未发送离题问题。")
             return
         try:
+            candidates = list(self.rows[:300])
             context = ai_module.assistance_payload(
-                [result for result in self.results if result.status != "protected"][:30], self.rows)
+                [result for result in self.results if result.status != "protected"][:30], candidates)
+            context["scope"] = {"total_targets": len(self.results), "total_accounts": len(self.rows),
+                                "target_limit": 30, "candidate_limit": 300,
+                                "note": "限本次发送范围，不代表完整账套、全表或全部审计程序已完成。"}
+            if self.rows:
+                context["facts"] = analysis.build_facts(self.rows)
+            context["knowledge_refs"] = deepcopy(self.knowledge_refs)
             if extra:
                 context = {**context, **extra}
-            key = self.store.get_key()
-        except (ai_module.AIError, settings.SettingsError) as exc:
+            client = ai_module.DeepSeekClient.from_store(self.store)
+        except (ai_module.AIError, settings.SettingsError, ValueError) as exc:
             self._chat_append("sys", str(exc))
+            return
+        history = list(self.chat_history[-8:])
+        dialog = PayloadDialog(self, {**context, "question": text, "history": history}, client.model, client.base_url)
+        self.wait_window(dialog)
+        if not dialog.confirmed:
             return
         if question is None:
             self.chat_input.delete("1.0", "end")
@@ -506,13 +523,11 @@ class App(tk.Tk):
         if extra and extra.get("facts"):
             detail += f" / {len(extra['facts']['movements'])} 项变动"
         self._chat_append("sys", detail)
-        history = list(self.chat_history[-8:])
         self.chat_history.append({"role": "user", "content": text})
-        model = self.store.data.get("model")
 
         def work():
             try:
-                return ai_module.DeepSeekClient(key, model).converse(text, history, context)
+                return client.converse(text, history, context)
             except ai_module.AIError as exc:
                 return {"intent": "error", "answer": str(exc), "proposals": []}
 
@@ -529,9 +544,64 @@ class App(tk.Tk):
             self._chat_append("sys", f"⚠ 事实中无此金额：{value}")
         for code in (answer.get("unknown_codes") or [])[:5]:
             self._chat_append("sys", f"⚠ 账套中无此编码：{code}")
+        for warning in answer.get("citation_warnings", []):
+            self._chat_append("sys", "⚠ " + warning)
         if answer.get("intent") == "offtopic":
             return
         self._set_chat_proposals(answer.get("proposals", []))
+
+    def _set_knowledge_refs(self, refs):
+        if not 1 <= len(refs) <= 5 or any(not item.get("excerpt") for item in refs):
+            raise ValueError("请选择 1–5 份含正文的知识片段。")
+        self.knowledge_refs = [{"citation_id": f"K{index + 1}", "title": str(item["title"])[:200],
+                                "source": str(item["source"])[:30], "locator": str(item["locator"])[:700],
+                                "excerpt": str(item["excerpt"])[:1500]} for index, item in enumerate(refs)]
+        self._context_revision += 1
+        self._chat_clear()
+        workspace.refresh_context(self)
+
+    def _attach_review_document(self, role, after=None):
+        if self.busy:
+            return
+        path = filedialog.askopenfilename(title=f"选择待复核{role}，不会加入参考知识库", filetypes=[
+            ("待复核资料", "*.txt *.md *.docx *.pdf")])
+        if not path:
+            return
+
+        def done(value):
+            text, digest = value
+            self.review_document = {"role": role, "name": Path(path).name, "sha256": digest,
+                                    "text": text[:12000], "truncated": len(text) > 12000,
+                                    "scope": "仅提取文字；不包含图片、扫描内容、版式或未发送部分。"}
+            self._context_revision += 1
+            self._chat_clear()
+            workspace.refresh_context(self)
+            if after:
+                after()
+        self._async(f"正在读取待复核{role}（仅本机）…", lambda: knowledge.read_document(path), done)
+
+    def _agent_review(self, role="TB"):
+        if self.busy:
+            return
+        if not self.knowledge_refs:
+            workspace.navigate(self, "knowledge")
+            self.knowledge_panel.status.set("请先检索并选用正文，或点击“Agent 检索并复核”。")
+            return
+        if role == "TB" and not self.results:
+            workspace.navigate(self, "tb")
+            messagebox.showinfo("缺少 TB", "请先读取账套并识别模板，再进行 TB 知识库复核。")
+            return
+        if role in {"附注", "底稿", "报告"} and (not self.review_document or self.review_document["role"] != role):
+            self._attach_review_document(role, after=lambda: self._agent_review(role))
+            return
+        if not self.chat_visible:
+            self._toggle_chat()
+        extra = {"review_role": role}
+        if role in {"附注", "底稿", "报告"}:
+            extra["review_document"] = deepcopy(self.review_document)
+        self._chat_send(f"请辅助复核本次提供的{role}。逐项说明问题、涉及字段或文字、引用的知识编号[K1]及来源适用性、"
+                        "需要补充的证据和建议。金额只引用本地事实，不自行改写；没有资料不能判定通过。"
+                        "若仅发送片段或缺少TB，明确限制，不声称完成全表勾稽、全部审计程序或正式报告签发。", extra=extra)
 
     def _set_chat_proposals(self, proposals):
         self._chat_proposals = list(proposals)
@@ -1022,10 +1092,13 @@ class App(tk.Tk):
             self.ai_btn.configure(state="disabled")
 
     def _open_ai_settings(self):
+        if self.busy:
+            return
         if self.store is None:
             messagebox.showerror("设置不可用", self._pending_error or "本机设置文件不可读。")
             return
-        AISettingsDialog(self, self.store)
+        dialog = AISettingsDialog(self, self.store)
+        self.wait_window(dialog)
         self._sync_ai_state()
 
     def _ai_review(self):
@@ -1047,22 +1120,17 @@ class App(tk.Tk):
             return
         try:
             payload = ai_module.assistance_payload(subset, self.rows)
-        except ai_module.AIError as exc:
+            client = ai_module.DeepSeekClient.from_store(self.store)
+        except (ai_module.AIError, settings.SettingsError) as exc:
             messagebox.showwarning("范围过大", str(exc))
             return
-        dialog = PayloadDialog(self, payload, self.store.data.get("model", ""))
+        dialog = PayloadDialog(self, payload, client.model, client.base_url)
         self.wait_window(dialog)
         if not dialog.confirmed:
             return
         self._ai_subset = subset
-        try:
-            key = self.store.get_key()
-        except settings.SettingsError as exc:
-            messagebox.showerror("无法读取 Key", str(exc))
-            return
-        model = self.store.data.get("model")
-        self._async(f"正在请求 DeepSeek 复核 {len(subset)} 个字段…",
-                    lambda: ai_module.DeepSeekClient(key, model).assist(payload),
+        self._async(f"正在请求模型复核 {len(subset)} 个字段…",
+                    lambda: client.assist(payload),
                     self._on_ai_answer)
 
     def _on_ai_answer(self, answer):
@@ -1174,7 +1242,7 @@ class App(tk.Tk):
 class PayloadDialog(tk.Toplevel):
     """上传 AI 的内容必须可预览、可取消。"""
 
-    def __init__(self, master, payload, model):
+    def __init__(self, master, payload, model, destination=""):
         super().__init__(master)
         self.title("AI 复核 · 上传内容预览")
         self.transient(master)
@@ -1186,7 +1254,7 @@ class PayloadDialog(tk.Toplevel):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        tk.Label(self, text=f"{len(payload['targets'])} 个目标 · {len(payload['candidates'])} 个候选 · {model}",
+        tk.Label(self, text=f"{len(payload['targets'])} 个目标 · {len(payload['candidates'])} 个候选 · {model}\n发送至：{destination or '当前配置的模型服务'} · 仅预览中所示范围",
                  bg=BG, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w", padx=PAD, pady=(PAD, 6))
 
         frame = ttk.Frame(self, padding=(PAD, 0, PAD, 0))
@@ -1277,125 +1345,6 @@ class SourceDialog(tk.Toplevel):
         self.result = picked
         self.destroy()
 
-
-class AISettingsDialog(tk.Toplevel):
-    def __init__(self, master, store):
-        super().__init__(master)
-        self.title("AI 设置 · DeepSeek")
-        self.transient(master)
-        self.grab_set()
-        self.resizable(False, False)
-        self.store = store
-        self.queue = queue.Queue()
-        self.models = list(settings.MODELS)
-
-        body = tk.Frame(self, bg=BG)
-        body.grid(row=0, column=0, sticky="nsew", padx=16, pady=14)
-        body.columnconfigure(1, weight=1)
-
-        state = "已保存" if store.has_key else "未保存"
-        tk.Label(body, text="Key", bg=BG, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w")
-        tk.Label(body, text=state, bg=BG, fg=TX, font=(FONT, 9)).grid(row=0, column=1, sticky="w")
-
-        tk.Label(body, text="API Key", bg=BG, fg=SEC, font=(FONT, 9)).grid(row=1, column=0, sticky="w", pady=(10, 0))
-        self.key_var = tk.StringVar()
-        ttk.Entry(body, textvariable=self.key_var, show="•", width=46).grid(
-            row=1, column=1, sticky="ew", pady=(10, 0))
-
-        tk.Label(body, text="模型", bg=BG, fg=SEC, font=(FONT, 9)).grid(row=2, column=0, sticky="w", pady=(10, 0))
-        self.model_var = tk.StringVar(value=store.data.get("model", self.models[0]))
-        self.model_box = ttk.Combobox(body, textvariable=self.model_var, state="readonly", width=28,
-                                      values=self.models)
-        self.model_box.grid(row=2, column=1, sticky="w", pady=(10, 0))
-
-        self.enable_var = tk.BooleanVar(value=bool(store.data.get("ai_enabled")))
-        ttk.Checkbutton(body, text="启用 AI", variable=self.enable_var).grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
-
-        self.test_state = tk.StringVar(value="")
-        tk.Label(body, textvariable=self.test_state, bg=BG, fg=SEC, font=(FONT, 9)).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
-
-        actions = tk.Frame(self, bg=BG)
-        actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 14))
-        ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
-        ttk.Button(actions, text="保存", style="Accent.TButton", command=self._save).pack(side="right", padx=8)
-        ttk.Button(actions, text="删除 Key", command=self._delete).pack(side="right", padx=(0, 8))
-        self.test_btn = ttk.Button(actions, text="测试连接", command=self._test)
-        self.test_btn.pack(side="left")
-
-    def _test(self):
-        key = self.key_var.get().strip()
-        if not key:
-            try:
-                key = self.store.get_key()
-            except settings.SettingsError as exc:
-                self.test_state.set(str(exc))
-                return
-        if not key:
-            self.test_state.set("请先输入 API Key。")
-            return
-        model = self.model_var.get()
-        self.test_btn.configure(state="disabled")
-        self.test_state.set("正在连接 api.deepseek.com …")
-
-        def work():
-            try:
-                ids = ai_module.DeepSeekClient(key, model).list_models()
-            except Exception as exc:
-                self.queue.put(("err", str(exc)))
-            else:
-                self.queue.put(("ok", ids))
-
-        threading.Thread(target=work, daemon=True).start()
-        self.after(120, self._poll)
-
-    def _poll(self):
-        try:
-            kind, value = self.queue.get_nowait()
-        except queue.Empty:
-            self.after(120, self._poll)
-            return
-        self.test_btn.configure(state="normal")
-        if kind == "err":
-            self.test_state.set("连接失败：" + value)
-            return
-        self.models = value
-        self.model_box.configure(values=value)
-        if self.model_var.get() not in value:
-            self.model_var.set(value[0])
-        self.test_state.set("连接成功，可用模型：" + "、".join(value))
-
-    def _save(self):
-        key = self.key_var.get().strip()
-        model = self.model_var.get()
-        enable = self.enable_var.get()
-        try:
-            if key:
-                self.store.save_ai(key, enabled=enable, model=model)
-            elif enable and not self.store.has_key:
-                raise settings.SettingsError("启用 AI 前请先输入 API Key。")
-            else:
-                self.store.save_model(model)
-                self.store.save_ai(None, enabled=enable, model=model)
-        except settings.SettingsError as exc:
-            messagebox.showerror("保存失败", str(exc), parent=self)
-            return
-        self.key_var.set("")
-        messagebox.showinfo("已保存", "设置已保存到本机。", parent=self)
-        self.destroy()
-
-    def _delete(self):
-        if not messagebox.askyesno("删除 Key", "将删除本机保存的 API Key 并停用 AI，是否继续？", parent=self):
-            return
-        try:
-            self.store.delete_key()
-        except settings.SettingsError as exc:
-            messagebox.showerror("删除失败", str(exc), parent=self)
-            return
-        self.enable_var.set(False)
-        self.test_state.set("Key 已删除，AI 已停用。")
-        self.destroy()
 
 
 def main():

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tb_autofill import auditlog, gui, settings, workspace
+from tb_autofill import auditlog, gui, knowledge, settings, workspace
 from tb_autofill.models import LedgerRow, Subject
 
 
@@ -22,12 +22,13 @@ def main():
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
-    store_class, log_class = settings.SettingsStore, auditlog.AuditLog
+    store_class, log_class, library_class = settings.SettingsStore, auditlog.AuditLog, knowledge.LocalLibrary
     with tempfile.TemporaryDirectory(prefix="deepaudit_preview_") as folder:
         root = Path(folder)
         with patch.object(gui.App, "_autodetect", lambda self: None), \
                 patch.object(settings, "SettingsStore", lambda: store_class(root / "settings.json")), \
-                patch.object(auditlog, "AuditLog", lambda: log_class(root / "synthetic.jsonl")):
+                patch.object(auditlog, "AuditLog", lambda: log_class(root / "synthetic.jsonl")), \
+                patch.object(knowledge, "LocalLibrary", lambda: library_class(root / "synthetic-knowledge.sqlite3")):
             app = gui.App()
         app.install_var.set("合成演示 · 不连接真实账套")
         app.project_var.set("DeepAudit / 合成审计项目")
@@ -51,6 +52,9 @@ def main():
         app._on_ledger(rows, subject)
         app.template_var.set(str(ROOT / "tests" / "fixtures" / "试算平衡表-合成.xlsx"))
         app._recognize()
+        reference = root / "合成审计方法示例.md"
+        reference.write_text("合成示例，不是有效准则：复核库存现金时核对期初期末、科目方向、金额单位及支持证据。", encoding="utf-8")
+        app.library.import_file(reference)
         app.after(600, lambda: workspace.navigate(app, args.page))
         app.mainloop()
 
