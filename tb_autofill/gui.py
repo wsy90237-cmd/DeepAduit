@@ -23,6 +23,17 @@ APP_NAME = "ZSZH TB 自动填写系统"
 VERSION = __version__
 PAD = 8
 
+FONT = "Microsoft YaHei UI"
+BG = "#f3f4f6"
+CARD = "#ffffff"
+BORDER = "#e2e5ea"
+TX = "#1f2328"
+SEC = "#6b7280"
+MUTED = "#9aa1ac"
+ACC = "#2f6feb"
+ACC_D = "#1f5bd0"
+ACC_SOFT = "#eaf1fe"
+
 STATUS_LABEL = {
     "matched": "已匹配",
     "ambiguous": "待确认",
@@ -64,7 +75,7 @@ class App(tk.Tk):
         self.title(f"{APP_NAME}  v{VERSION}")
         # 适配小屏：窗口不超出可用桌面，避免底部操作区被裁掉。
         width = min(1280, max(1000, self.winfo_screenwidth() - 60))
-        height = min(830, max(640, self.winfo_screenheight() - 110))
+        height = min(860, max(640, self.winfo_screenheight() - 88))
         self.geometry(f"{width}x{height}")
         self.minsize(1000, 620)
         self.queue = queue.Queue()
@@ -100,121 +111,168 @@ class App(tk.Tk):
 
     def _init_style(self):
         style = ttk.Style(self)
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-        base = ("Microsoft YaHei UI", 9)
-        style.configure(".", font=base)
-        style.configure("TLabelframe.Label", font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("Treeview", font=("Microsoft YaHei UI", 9), rowheight=24)
-        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("Hint.TLabel", foreground="#6b7280")
+        style.theme_use("clam")
+        self.configure(bg=BG)
+        style.configure(".", font=(FONT, 9), background=BG, foreground=TX)
+        style.configure("TFrame", background=BG)
+        style.configure("Card.TFrame", background=CARD)
+        style.configure("TLabel", background=BG, foreground=TX)
+        style.configure("Card.TLabel", background=CARD, foreground=SEC)
+        style.configure("Card.TRadiobutton", background=CARD, foreground=TX, focuscolor=CARD)
+        style.map("Card.TRadiobutton", background=[("active", CARD)])
+        style.configure("Card.TCheckbutton", background=CARD, foreground=TX, focuscolor=CARD)
+        style.map("Card.TCheckbutton", background=[("active", CARD)])
+        style.configure("TEntry", fieldbackground="#ffffff", bordercolor=BORDER, lightcolor=BORDER,
+                        darkcolor=BORDER, insertcolor=TX, padding=5, relief="flat")
+        style.map("TEntry", bordercolor=[("focus", ACC)], lightcolor=[("focus", ACC)], darkcolor=[("focus", ACC)])
+        style.configure("TCombobox", fieldbackground="#ffffff", background="#ffffff", bordercolor=BORDER,
+                        lightcolor=BORDER, darkcolor=BORDER, arrowcolor=SEC, padding=4, relief="flat")
+        style.map("TCombobox", fieldbackground=[("readonly", "#ffffff")],
+                  bordercolor=[("focus", ACC)], lightcolor=[("focus", ACC)], darkcolor=[("focus", ACC)])
+        style.configure("TButton", background="#eef0f3", foreground=TX, borderwidth=0,
+                        focusthickness=0, padding=(12, 6), relief="flat")
+        style.map("TButton", background=[("pressed", "#dfe3e8"), ("active", "#e4e8ee")],
+                  foreground=[("disabled", MUTED)])
+        style.configure("Accent.TButton", background=ACC, foreground="#ffffff", borderwidth=0, padding=(14, 6))
+        style.map("Accent.TButton", background=[("pressed", ACC_D), ("active", ACC_D)],
+                  foreground=[("disabled", "#e8eefb")])
+        style.configure("Ghost.TButton", background=CARD, foreground=ACC, borderwidth=0, padding=(8, 4))
+        style.map("Ghost.TButton", background=[("active", ACC_SOFT)])
+        style.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TX,
+                        borderwidth=0, rowheight=27, font=(FONT, 9))
+        style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+        style.configure("Treeview.Heading", background="#f7f8fa", foreground=SEC, relief="flat",
+                        font=(FONT, 9, "bold"), padding=(6, 6))
+        style.map("Treeview.Heading", background=[("active", "#eef0f3")])
+        style.map("Treeview", background=[("selected", ACC_SOFT)], foreground=[("selected", TX)])
+        for bar in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            style.configure(bar, background="#e6e9ee", troughcolor=BG, borderwidth=0, arrowsize=12)
+        style.configure("TProgressbar", background=ACC, troughcolor="#e6e9ee", borderwidth=0, thickness=5)
 
     def _build(self):
         self.columnconfigure(0, weight=1)
+        self.columnconfigure(1, weight=0)
         self.rowconfigure(3, weight=1)
+        self.chat_visible = False
         self._build_header()
         self._build_source()
         self._build_template()
         self._build_result()
         self._build_actions()
         self._build_log()
+        self._build_chat()
         if self._pending_error:
             self._log("设置读取失败：" + self._pending_error, error=True)
 
+    def _card(self, row, title, pady=(12, 0)):
+        """白底卡片：1px 边框 + 标题，替代有年代感的 LabelFrame。"""
+        outer = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
+        outer.grid(row=row, column=0, sticky="ew", padx=16, pady=pady)
+        head = tk.Frame(outer, bg=CARD)
+        head.pack(fill="x", padx=14, pady=(8, 0))
+        tk.Label(head, text=title, bg=CARD, fg=SEC, font=(FONT, 9, "bold")).pack(side="left")
+        body = tk.Frame(outer, bg=CARD)
+        body.pack(fill="both", expand=True, padx=14, pady=(6, 10))
+        return outer, body, head
+
     def _build_header(self):
-        header = ttk.Frame(self, padding=(PAD, PAD, PAD, 0))
-        header.grid(row=0, column=0, sticky="ew")
-        ttk.Label(header, text=APP_NAME, font=("Microsoft YaHei UI", 15, "bold")).pack(side="left")
-        ttk.Label(header, text="鼎信诺科目余额 → 模板填列 / 复核", style="Hint.TLabel").pack(
-            side="left", padx=(12, 0), pady=(6, 0))
-        ttk.Button(header, text="AI 设置…", command=self._open_ai_settings).pack(side="right")
-        self.ai_state = tk.StringVar(value="AI：未配置")
-        ttk.Label(header, textvariable=self.ai_state).pack(side="right", padx=(0, 10))
+        bar = tk.Frame(self, bg=CARD)
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        tk.Frame(bar, bg=BORDER, height=1).pack(side="bottom", fill="x")
+        inner = tk.Frame(bar, bg=CARD)
+        inner.pack(fill="x", padx=16, pady=(10, 9))
+        tk.Label(inner, text="ZSZH TB", bg=CARD, fg=TX, font=(FONT, 13, "bold")).pack(side="left")
+        tk.Label(inner, text=f"v{VERSION}", bg=CARD, fg=MUTED, font=(FONT, 8)).pack(
+            side="left", padx=(6, 0), pady=(4, 0))
+        ttk.Button(inner, text="对话", style="Ghost.TButton", command=self._toggle_chat).pack(side="right")
+        ttk.Button(inner, text="AI 设置", command=self._open_ai_settings).pack(side="right", padx=(0, 6))
+        self.ai_state = tk.StringVar(value="AI 未配置")
+        tk.Label(inner, textvariable=self.ai_state, bg=CARD, fg=SEC, font=(FONT, 9)).pack(side="right", padx=6)
 
     def _build_source(self):
-        box = ttk.LabelFrame(self, text=" ① 数据源：鼎信诺科目余额（原库只读，仅读临时副本） ", padding=PAD)
-        box.grid(row=1, column=0, sticky="ew", padx=PAD, pady=(PAD, 0))
-        box.columnconfigure(1, weight=1)
+        _outer, body, _head = self._card(1, "① 数据源")
+        body.columnconfigure(1, weight=1)
 
-        ttk.Label(box, text="安装目录").grid(row=0, column=0, sticky="w")
+        ttk.Label(body, text="安装目录", style="Card.TLabel").grid(row=0, column=0, sticky="w")
         self.install_var = tk.StringVar()
-        ttk.Entry(box, textvariable=self.install_var).grid(row=0, column=1, sticky="ew", padx=6)
-        ttk.Button(box, text="自动探测", width=10, command=self._autodetect).grid(row=0, column=2)
-        ttk.Button(box, text="选择…", width=8, command=self._choose_install).grid(row=0, column=3, padx=(6, 0))
+        ttk.Entry(body, textvariable=self.install_var).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Button(body, text="自动探测", command=self._autodetect).grid(row=0, column=2)
+        ttk.Button(body, text="选择", command=self._choose_install).grid(row=0, column=3, padx=(6, 0))
 
-        ttk.Label(box, text="项目").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(body, text="项目", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.project_var = tk.StringVar()
-        self.project_box = ttk.Combobox(box, textvariable=self.project_var, state="readonly")
-        self.project_box.grid(row=1, column=1, sticky="ew", padx=6, pady=(6, 0))
+        self.project_box = ttk.Combobox(body, textvariable=self.project_var, state="readonly")
+        self.project_box.grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
         self.project_box.bind("<<ComboboxSelected>>", lambda _event: self._load_subjects())
-        ttk.Button(box, text="扫描项目", width=10, command=self._scan_projects).grid(row=1, column=2, pady=(6, 0))
-        self.ledger_state = tk.StringVar(value="尚未读取科目余额")
-        ttk.Label(box, textvariable=self.ledger_state, style="Hint.TLabel").grid(
-            row=1, column=3, sticky="w", padx=(6, 0), pady=(6, 0))
+        ttk.Button(body, text="扫描项目", command=self._scan_projects).grid(row=1, column=2, pady=(8, 0))
 
-        line = ttk.Frame(box)
-        line.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(6, 0))
-        ttk.Label(line, text="主体单位").pack(side="left")
+        line = tk.Frame(body, bg=CARD)
+        line.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        ttk.Label(line, text="主体单位", style="Card.TLabel").pack(side="left")
         self.subject_var = tk.StringVar()
-        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=44)
-        self.subject_box.pack(side="left", padx=6)
+        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=42)
+        self.subject_box.pack(side="left", padx=8)
         self.subject_box.bind("<<ComboboxSelected>>", self._on_subject)
-        ttk.Label(line, text="年度").pack(side="left", padx=(10, 0))
+        ttk.Label(line, text="年度", style="Card.TLabel").pack(side="left")
         self.year_var = tk.StringVar()
         ttk.Combobox(line, textvariable=self.year_var, width=7,
-                     values=[str(year) for year in range(2000, 2101)]).pack(side="left", padx=6)
-        ttk.Label(line, text="截止月").pack(side="left")
+                     values=[str(year) for year in range(2000, 2101)]).pack(side="left", padx=(8, 12))
+        ttk.Label(line, text="截止月", style="Card.TLabel").pack(side="left")
         self.month_var = tk.StringVar()
         ttk.Combobox(line, textvariable=self.month_var, width=4,
-                     values=[str(month) for month in range(1, 13)]).pack(side="left", padx=6)
-        ttk.Button(line, text="读取科目余额", command=self._read_ledger).pack(side="left", padx=(10, 0))
+                     values=[str(month) for month in range(1, 13)]).pack(side="left", padx=8)
+        ttk.Button(line, text="读取科目余额", style="Accent.TButton",
+                   command=self._read_ledger).pack(side="left", padx=(12, 0))
+        self.ledger_state = tk.StringVar(value="")
+        tk.Label(line, textvariable=self.ledger_state, bg=CARD, fg=MUTED,
+                 font=(FONT, 8)).pack(side="left", padx=10)
 
     def _build_template(self):
-        box = ttk.LabelFrame(self, text=" ② 模板与期间（.xlsx / .xlsm，原文件不改动，只另存） ", padding=PAD)
-        box.grid(row=2, column=0, sticky="ew", padx=PAD, pady=(PAD, 0))
-        box.columnconfigure(1, weight=1)
+        _outer, body, _head = self._card(2, "② 模板与期间")
+        body.columnconfigure(1, weight=1)
 
-        ttk.Label(box, text="模板文件").grid(row=0, column=0, sticky="w")
+        ttk.Label(body, text="模板文件", style="Card.TLabel").grid(row=0, column=0, sticky="w")
         self.template_var = tk.StringVar()
-        ttk.Entry(box, textvariable=self.template_var).grid(row=0, column=1, sticky="ew", padx=6)
-        ttk.Button(box, text="浏览…", width=8, command=self._choose_template).grid(row=0, column=2)
+        ttk.Entry(body, textvariable=self.template_var).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Button(body, text="浏览", command=self._choose_template).grid(row=0, column=2)
 
-        line = ttk.Frame(box)
-        line.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-        ttk.Label(line, text="填列期间").pack(side="left")
+        line = tk.Frame(body, bg=CARD)
+        line.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        ttk.Label(line, text="填列期间", style="Card.TLabel").pack(side="left")
         self.period_var = tk.StringVar(value="both")
-        for text, value in (("仅期初", "opening"), ("仅期末", "ending"), ("期初 + 期末", "both")):
-            ttk.Radiobutton(line, text=text, value=value, variable=self.period_var).pack(side="left", padx=(8, 0))
-        ttk.Label(line, text="金额单位").pack(side="left", padx=(18, 0))
+        for text, value in (("仅期初", "opening"), ("仅期末", "ending"), ("期初+期末", "both")):
+            ttk.Radiobutton(line, text=text, value=value, variable=self.period_var,
+                            style="Card.TRadiobutton").pack(side="left", padx=(10, 0))
+        ttk.Label(line, text="金额单位", style="Card.TLabel").pack(side="left", padx=(18, 0))
         self.unit_var = tk.StringVar(value="自动")
-        ttk.Combobox(line, textvariable=self.unit_var, state="readonly", width=7,
-                     values=("自动", "元", "千元", "万元", "亿元")).pack(side="left", padx=6)
-        ttk.Button(line, text="识别并匹配", command=self._recognize).pack(side="left", padx=(16, 0))
-        self.scan_state = tk.StringVar(value="尚未识别模板")
-        ttk.Label(line, textvariable=self.scan_state, style="Hint.TLabel").pack(side="left", padx=12)
+        ttk.Combobox(line, textvariable=self.unit_var, state="readonly", width=6,
+                     values=("自动", "元", "千元", "万元", "亿元")).pack(side="left", padx=8)
+        ttk.Button(line, text="识别并匹配", style="Accent.TButton",
+                   command=self._recognize).pack(side="left", padx=(14, 0))
+        self.scan_state = tk.StringVar(value="")
+        tk.Label(line, textvariable=self.scan_state, bg=CARD, fg=MUTED,
+                 font=(FONT, 8)).pack(side="left", padx=10)
 
     def _build_result(self):
-        frame = ttk.LabelFrame(self, text=" ③ 识别结果与预览（勾选后才写入；已有值默认保留） ", padding=(PAD, PAD, PAD, 4))
-        frame.grid(row=3, column=0, sticky="nsew", padx=PAD, pady=(PAD, 0))
-        frame.rowconfigure(1, weight=1)
-        frame.columnconfigure(0, weight=1)
+        outer, body, _head = self._card(3, "③ 识别结果")
+        outer.grid_configure(sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
 
-        bar = ttk.Frame(frame)
-        bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
-        ttk.Label(bar, text="显示").pack(side="left")
+        bar = tk.Frame(body, bg=CARD)
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self.filter_var = tk.StringVar(value="全部")
-        chooser = ttk.Combobox(bar, textvariable=self.filter_var, state="readonly", width=10,
+        chooser = ttk.Combobox(bar, textvariable=self.filter_var, state="readonly", width=9,
                                values=("全部", "可写入", "已匹配", "待确认", "未匹配", "公式保护", "已选中"))
-        chooser.pack(side="left", padx=6)
+        chooser.pack(side="left")
         chooser.bind("<<ComboboxSelected>>", lambda _event: self._refresh_tree())
-        ttk.Button(bar, text="全选可写入", command=self._select_all_fillable).pack(side="left", padx=(12, 0))
-        ttk.Button(bar, text="清空勾选", command=self._clear_selection).pack(side="left", padx=6)
-        ttk.Button(bar, text="允许覆盖", command=self._allow_overwrite).pack(side="left", padx=6)
-        ttk.Button(bar, text="指定来源…", command=self._manual_source).pack(side="left", padx=6)
+        for text, command in (("全选可写入", self._select_all_fillable), ("清空", self._clear_selection),
+                              ("允许覆盖", self._allow_overwrite), ("指定来源", self._manual_source)):
+            ttk.Button(bar, text=text, command=command).pack(side="left", padx=(6, 0))
         self.ai_btn = ttk.Button(bar, text="AI 复核", command=self._ai_review)
-        self.ai_btn.pack(side="left", padx=6)
-        self.stats = tk.StringVar(value="尚未识别")
-        ttk.Label(bar, textvariable=self.stats, style="Hint.TLabel").pack(side="right")
+        self.ai_btn.pack(side="left", padx=(6, 0))
+        self.stats = tk.StringVar(value="")
+        tk.Label(bar, textvariable=self.stats, bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="right")
 
         columns = ("sel", "status", "cell", "label", "period", "amount", "actual", "diff", "sources", "reason")
         headings = {"sel": "✓", "status": "状态", "cell": "单元格", "label": "报表项目", "period": "期间",
@@ -224,51 +282,228 @@ class App(tk.Tk):
                   "actual": 104, "diff": 96, "sources": 166, "reason": 280}
         anchors = {"sel": "center", "status": "center", "cell": "center", "period": "center",
                    "amount": "e", "actual": "e", "diff": "e"}
-        self.tree = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
         for key in columns:
             self.tree.heading(key, text=headings[key])
             self.tree.column(key, width=widths[key], minwidth=widths[key] - 20,
                              anchor=anchors.get(key, "w"),
                              stretch=key in ("label", "reason", "sources"))
         self.tree.grid(row=1, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        scroll = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
         scroll.grid(row=1, column=1, sticky="ns")
-        hscroll = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)
+        hscroll = ttk.Scrollbar(body, orient="horizontal", command=self.tree.xview)
         hscroll.grid(row=2, column=0, sticky="ew")
         self.tree.configure(yscrollcommand=scroll.set, xscrollcommand=hscroll.set)
-        self.tree.tag_configure("ok", background="#eaf7ee", foreground="#14532d")
-        self.tree.tag_configure("warn", background="#fdf6e3", foreground="#78350f")
-        self.tree.tag_configure("bad", background="#fdeaea", foreground="#7f1d1d")
-        self.tree.tag_configure("info", background="#eaf1fb", foreground="#1e3a5f")
-        self.tree.tag_configure("muted", background="#f4f4f5", foreground="#3f3f46")
+        self.tree.tag_configure("ok", background="#f0f9f2", foreground="#14622c")
+        self.tree.tag_configure("warn", background="#fffaeb", foreground="#7a4d00")
+        self.tree.tag_configure("bad", background="#fdf1f0", foreground="#7a1c16")
+        self.tree.tag_configure("info", background="#f2f6fd", foreground="#1b3a6b")
+        self.tree.tag_configure("muted", background="#f7f8fa", foreground="#4b5563")
         self.tree.bind("<Button-1>", self._on_click)
         self.tree.bind("<space>", self._on_space)
         self.tree.bind("<Double-1>", lambda _event: self._show_detail())
 
     def _build_actions(self):
-        bar = ttk.Frame(self, padding=(PAD, 6, PAD, 0))
-        bar.grid(row=4, column=0, sticky="ew")
-        self.report_btn = ttk.Button(bar, text="导出复核报告（CSV）", command=self._export_report, state="disabled")
+        bar = tk.Frame(self, bg=BG)
+        bar.grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 0))
+        self.report_btn = ttk.Button(bar, text="导出报告", command=self._export_report, state="disabled")
         self.report_btn.pack(side="left")
-        self.write_btn = ttk.Button(bar, text="另存为 Excel…", command=self._write_excel, state="disabled")
+        self.write_btn = ttk.Button(bar, text="另存 Excel", style="Accent.TButton",
+                                    command=self._write_excel, state="disabled")
         self.write_btn.pack(side="left", padx=8)
-        ttk.Button(bar, text="校验审计日志", command=self._verify_audit).pack(side="left")
+        ttk.Button(bar, text="校验日志", command=self._verify_audit).pack(side="left")
         ttk.Button(bar, text="退出", command=self.destroy).pack(side="right")
-        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=180)
-        self.progress.pack(side="right", padx=10)
+        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=120)
         self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(bar, textvariable=self.status_var, style="Hint.TLabel").pack(side="right", padx=10)
 
     def _build_log(self):
-        frame = ttk.LabelFrame(self, text=" 运行日志 ", padding=(PAD, 4, PAD, 4))
-        frame.grid(row=5, column=0, sticky="ew", padx=PAD, pady=PAD)
-        frame.columnconfigure(0, weight=1)
-        self.log = tk.Text(frame, height=5, wrap="none", state="disabled",
-                           font=("Consolas", 9), background="#fbfbfc", relief="flat")
+        outer = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
+        outer.grid(row=5, column=0, sticky="ew", padx=16, pady=(8, 12))
+        outer.columnconfigure(0, weight=1)
+        self.log = tk.Text(outer, height=3, wrap="none", state="disabled", font=("Consolas", 8),
+                           background=CARD, foreground=SEC, relief="flat", borderwidth=0, padx=10, pady=8)
         self.log.grid(row=0, column=0, sticky="ew")
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.log.yview)
+        scroll = ttk.Scrollbar(outer, orient="vertical", command=self.log.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.log.configure(yscrollcommand=scroll.set)
+
+    # ---------- 对话面板 ----------
+
+    def _build_chat(self):
+        outer = tk.Frame(self, bg=CARD, highlightbackground="#cfd5dd", highlightthickness=1, bd=0)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+        self.chat_frame = outer
+        self.chat_history = []
+        self._chat_proposals = []
+
+        head = tk.Frame(outer, bg=CARD)
+        head.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(12, 6))
+        tk.Label(head, text="审计对话", bg=CARD, fg=SEC, font=(FONT, 9, "bold")).pack(side="left")
+        ttk.Button(head, text="×", style="Ghost.TButton", width=2,
+                   command=self._toggle_chat).pack(side="right")
+
+        self.chat_view = tk.Text(outer, state="disabled", wrap="word", relief="flat", borderwidth=0,
+                                 bg=CARD, fg=TX, font=(FONT, 9), padx=14, pady=2, cursor="arrow")
+        self.chat_view.grid(row=1, column=0, sticky="nsew")
+        self.chat_view.tag_configure("me", foreground=ACC, font=(FONT, 9, "bold"), spacing3=3)
+        self.chat_view.tag_configure("ai", foreground=TX, spacing3=3, lmargin2=14)
+        self.chat_view.tag_configure("sys", foreground=MUTED, font=(FONT, 8), spacing3=3)
+        scroll = ttk.Scrollbar(outer, orient="vertical", command=self.chat_view.yview)
+        scroll.grid(row=1, column=1, sticky="ns")
+        self.chat_view.configure(yscrollcommand=scroll.set)
+
+        self.prop_frame = tk.Frame(outer, bg=CARD)
+        self.prop_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(8, 0))
+        self.prop_frame.columnconfigure(0, weight=1)
+        self.prop_tree = ttk.Treeview(self.prop_frame, columns=("sel", "target", "sources"),
+                                      show="headings", height=4, selectmode="browse")
+        for key, title, width in (("sel", "✓", 30), ("target", "目标", 100), ("sources", "来源", 130)):
+            self.prop_tree.heading(key, text=title)
+            self.prop_tree.column(key, width=width, anchor="center" if key == "sel" else "w")
+        self.prop_tree.grid(row=0, column=0, sticky="ew")
+        self.prop_tree.bind("<Button-1>", self._on_prop_click)
+        prop_bar = tk.Frame(self.prop_frame, bg=CARD)
+        prop_bar.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ttk.Button(prop_bar, text="应用所选", style="Accent.TButton",
+                   command=self._apply_proposals).pack(side="left")
+        self.prop_frame.grid_remove()
+
+        box = tk.Frame(outer, bg=CARD)
+        box.grid(row=3, column=0, columnspan=2, sticky="ew", padx=14, pady=(10, 12))
+        box.columnconfigure(0, weight=1)
+        self.chat_input = tk.Text(box, height=3, wrap="word", relief="flat", borderwidth=0,
+                                  bg="#f7f8fa", fg=TX, font=(FONT, 9), padx=10, pady=8,
+                                  highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACC)
+        self.chat_input.grid(row=0, column=0, sticky="ew")
+        self.chat_input.bind("<Return>", self._on_chat_return)
+        btns = tk.Frame(box, bg=CARD)
+        btns.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(btns, text="发送", style="Accent.TButton", command=self._chat_send).pack(side="right")
+        ttk.Button(btns, text="清空", command=self._chat_clear).pack(side="right", padx=8)
+
+    def _toggle_chat(self):
+        if self.chat_visible:
+            self.chat_frame.place_forget()
+            self.chat_visible = False
+            return
+        height = min(620, max(420, self.winfo_height() - 120))
+        self.chat_frame.place(relx=1.0, rely=1.0, anchor="se", x=-16, y=-14, width=340, height=height)
+        self.chat_frame.lift()
+        self.chat_visible = True
+        self.chat_input.focus_set()
+
+    def _on_chat_return(self, event):
+        if event.state & 0x0001:
+            return None
+        self._chat_send()
+        return "break"
+
+    def _chat_append(self, role, text):
+        prefix = {"me": "我\n", "ai": "AI\n", "sys": "· "}[role]
+        self.chat_view.configure(state="normal")
+        self.chat_view.insert("end", prefix, role)
+        self.chat_view.insert("end", text.strip() + "\n\n", role)
+        self.chat_view.configure(state="disabled")
+        self.chat_view.see("end")
+
+    def _chat_clear(self):
+        self.chat_view.configure(state="normal")
+        self.chat_view.delete("1.0", "end")
+        self.chat_view.configure(state="disabled")
+        self.chat_history = []
+        self._chat_proposals = []
+        self.prop_frame.grid_remove()
+
+    def _chat_send(self):
+        question = self.chat_input.get("1.0", "end").strip()
+        if not question:
+            return
+        if self.store is None or not self.store.has_key:
+            self._chat_append("sys", "未配置 Key")
+            return
+        if not self.store.data.get("ai_enabled"):
+            self._chat_append("sys", "AI 未启用")
+            return
+        if not self.results:
+            self._chat_append("sys", "先识别模板")
+            return
+        try:
+            context = ai_module.assistance_payload(
+                [result for result in self.results if result.status != "protected"][:30], self.rows)
+            key = self.store.get_key()
+        except (ai_module.AIError, settings.SettingsError) as exc:
+            self._chat_append("sys", str(exc))
+            return
+        self.chat_input.delete("1.0", "end")
+        self._chat_append("me", question)
+        self._chat_append("sys", f"附 {len(context['targets'])} 个字段 / {len(context['candidates'])} 个科目")
+        history = list(self.chat_history[-8:])
+        self.chat_history.append({"role": "user", "content": question})
+        model = self.store.data.get("model")
+
+        def work():
+            try:
+                return ai_module.DeepSeekClient(key, model).converse(question, history, context)
+            except ai_module.AIError as exc:
+                return {"intent": "error", "answer": str(exc), "proposals": []}
+
+        self._async("对话请求中…", work, self._on_chat_answer)
+
+    def _on_chat_answer(self, answer):
+        if answer.get("intent") == "error":
+            self._chat_append("sys", answer["answer"])
+            self.chat_history.pop()
+            return
+        self._chat_append("ai", answer["answer"])
+        self.chat_history.append({"role": "assistant", "content": answer["answer"]})
+        if answer.get("intent") == "offtopic":
+            return
+        self._set_chat_proposals(answer.get("proposals", []))
+
+    def _set_chat_proposals(self, proposals):
+        self._chat_proposals = list(proposals)
+        for item in self.prop_tree.get_children():
+            self.prop_tree.delete(item)
+        if not proposals:
+            self.prop_frame.grid_remove()
+            return
+        for index, proposal in enumerate(proposals):
+            self.prop_tree.insert("", "end", iid=str(index),
+                                  values=("☑", proposal["target_id"], "; ".join(proposal["source_codes"])))
+        self.prop_frame.grid()
+
+    def _on_prop_click(self, event):
+        if self.prop_tree.identify_region(event.x, event.y) != "cell":
+            return None
+        if self.prop_tree.identify_column(event.x) != "#1":
+            return None
+        iid = self.prop_tree.identify_row(event.y)
+        if iid:
+            current = self.prop_tree.set(iid, "sel")
+            self.prop_tree.set(iid, "sel", "☐" if current == "☑" else "☑")
+        return "break"
+
+    def _apply_proposals(self):
+        picked = [self._chat_proposals[int(iid)] for iid in self.prop_tree.get_children()
+                  if self.prop_tree.set(iid, "sel") == "☑"]
+        if not picked:
+            self._chat_append("sys", "未勾选提案")
+            return
+        targets = {result.target.id: result for result in self.results}
+        subset = [targets[item["target_id"]] for item in picked if item["target_id"] in targets]
+        if not subset:
+            self._chat_append("sys", "提案目标已失效")
+            return
+        applied, notes = matching.apply_ai_suggestions(subset, picked, self.rows)
+        self._refresh_tree()
+        self._chat_append("sys", f"已应用 {applied} 条，待确认 {len(notes)} 条")
+        for note in notes[:3]:
+            self._chat_append("sys", note)
+        self._audit("ai_proposal_applied", count=applied,
+                    items=[{"cell": item["target_id"], "sources": item["source_codes"]} for item in picked])
+        self.prop_frame.grid_remove()
+        self._chat_proposals = []
 
     # ---------- 线程与日志 ----------
 
@@ -297,10 +532,12 @@ class App(tk.Tk):
     def _set_busy(self, busy, text=""):
         self.busy = busy
         if busy:
+            self.progress.pack(side="right", padx=(0, 10))
             self.progress.start(12)
             self.status_var.set(text)
         else:
             self.progress.stop()
+            self.progress.pack_forget()
 
     def _async(self, text, work, done=None):
         if self.busy:
@@ -423,7 +660,6 @@ class App(tk.Tk):
         self.ledger_state.set(f"已读取 {len(self.rows)} 个科目")
         self._log(f"科目余额读取完成：{len(self.rows)} 个科目，"
                   f"编码 {self.rows[0].code}–{self.rows[-1].code}。")
-        self._recompute_if_ready()
 
     # ---------- 模板识别 ----------
 
@@ -475,10 +711,6 @@ class App(tk.Tk):
         self.report_btn.configure(state="normal")
         self.write_btn.configure(state="normal")
 
-    def _recompute_if_ready(self):
-        if self.scan is not None and self.rows:
-            self._log("科目余额已更新，请点击“识别并匹配”重新计算。")
-
     # ---------- 结果表 ----------
 
     def _visible_results(self):
@@ -526,7 +758,7 @@ class App(tk.Tk):
 
     def _refresh_stats(self):
         if not self.results:
-            self.stats.set("尚未识别")
+            self.stats.set("")
             return
         total = len(self.results)
         counts = {key: 0 for key in STATUS_LABEL}
@@ -596,15 +828,14 @@ class App(tk.Tk):
             result.selected = True
             added += 1
         self._refresh_tree()
-        self._log(f"已勾选 {added} 个空白字段；已有值的 {sum(1 for r in self.results if has_value(r.target.value))} "
-                  "个字段需逐个确认覆盖。")
+        self._log(f"已勾选 {added}")
 
     def _clear_selection(self):
         for result in self.results:
             result.selected = False
             result.overwrite = False
         self._refresh_tree()
-        self._log("已清空全部勾选。")
+        self._log("已清空")
 
     def _allow_overwrite(self):
         selection = self.tree.selection()
@@ -788,7 +1019,7 @@ class App(tk.Tk):
                             "after": str(result.amount), "overwrite": result.overwrite,
                             "sources": result.source_ids}
                            for result in self.results if result.selected])
-        messagebox.showinfo("写入完成", f"已生成并校验：\n{output}\n\n原始模板未改动，改动已写入本机审计日志。")
+        messagebox.showinfo("写入完成", str(output))
 
     def _audit(self, event, **fields):
         if self.audit is None:
@@ -828,20 +1059,19 @@ class PayloadDialog(tk.Toplevel):
         self.resizable(True, True)
         self.confirmed = False
         self.geometry("760x560")
+        self.configure(bg=BG)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(1, weight=1)
 
-        ttk.Label(self, text=f"以下 {len(payload['targets'])} 个目标与 {len(payload['candidates'])} 个候选科目"
-                             f"将发送至 DeepSeek（{model}）。", padding=(PAD, PAD, PAD, 0)).grid(
-            row=0, column=0, sticky="w")
-        ttk.Label(self, text="内容包含报表项目名称与科目名称，不含金额合计或其他客户资料；AI 只能返回来源科目建议。",
-                  style="Hint.TLabel", padding=(PAD, 2, PAD, 6)).grid(row=1, column=0, sticky="w")
+        tk.Label(self, text=f"{len(payload['targets'])} 个目标 · {len(payload['candidates'])} 个候选 · {model}",
+                 bg=BG, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w", padx=PAD, pady=(PAD, 6))
 
         frame = ttk.Frame(self, padding=(PAD, 0, PAD, 0))
-        frame.grid(row=2, column=0, sticky="nsew")
+        frame.grid(row=1, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
-        text = tk.Text(frame, wrap="none", font=("Consolas", 9), background="#fbfbfc", relief="flat")
+        text = tk.Text(frame, wrap="none", font=("Consolas", 9), background=CARD, relief="flat",
+                       highlightthickness=1, highlightbackground=BORDER, borderwidth=0, padx=8, pady=6)
         text.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
         scroll.grid(row=0, column=1, sticky="ns")
@@ -850,9 +1080,10 @@ class PayloadDialog(tk.Toplevel):
         text.configure(state="disabled")
 
         bar = ttk.Frame(self, padding=PAD)
-        bar.grid(row=3, column=0, sticky="ew")
+        bar.grid(row=2, column=0, sticky="ew")
         ttk.Button(bar, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(bar, text="确认发送", command=self._confirm).pack(side="right", padx=8)
+        ttk.Button(bar, text="确认发送", style="Accent.TButton",
+                   command=self._confirm).pack(side="right", padx=8)
 
     def _confirm(self):
         self.confirmed = True
@@ -874,9 +1105,9 @@ class SourceDialog(tk.Toplevel):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
 
-        ttk.Label(self, text=f"目标：{result.target.label}（{result.target.id}，"
-                             f"{'期初' if result.target.period == 'opening' else '期末'}）",
-                  padding=(PAD, PAD, PAD, 0)).grid(row=0, column=0, sticky="w")
+        tk.Label(self, text=f"{result.target.label} · {result.target.id} · "
+                            f"{'期初' if result.target.period == 'opening' else '期末'}",
+                 bg=BG, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w", padx=PAD, pady=(PAD, 0))
         bar = ttk.Frame(self, padding=(PAD, 6, PAD, 0))
         bar.grid(row=1, column=0, sticky="ew")
         ttk.Label(bar, text="筛选").pack(side="left")
@@ -884,13 +1115,14 @@ class SourceDialog(tk.Toplevel):
         entry = ttk.Entry(bar, textvariable=self.keyword, width=32)
         entry.pack(side="left", padx=6)
         entry.bind("<KeyRelease>", lambda _event: self._filter())
-        ttk.Label(bar, text="按 Ctrl/Shift 可多选，多选将求和", style="Hint.TLabel").pack(side="left", padx=8)
 
         frame = ttk.Frame(self, padding=(PAD, 6, PAD, 0))
         frame.grid(row=2, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
-        self.listbox = tk.Listbox(frame, selectmode="extended", font=("Microsoft YaHei UI", 9), activestyle="none")
+        self.listbox = tk.Listbox(frame, selectmode="extended", font=(FONT, 9), activestyle="none",
+                                  relief="flat", highlightthickness=1, highlightbackground=BORDER,
+                                  selectbackground=ACC_SOFT, selectforeground=TX, borderwidth=0)
         self.listbox.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.listbox.yview)
         scroll.grid(row=0, column=1, sticky="ns")
@@ -934,39 +1166,37 @@ class AISettingsDialog(tk.Toplevel):
         self.queue = queue.Queue()
         self.models = list(settings.MODELS)
 
-        body = ttk.Frame(self, padding=PAD)
-        body.grid(row=0, column=0, sticky="nsew")
+        body = tk.Frame(self, bg=BG)
+        body.grid(row=0, column=0, sticky="nsew", padx=16, pady=14)
         body.columnconfigure(1, weight=1)
 
-        state = "已保存 Key（本机 Windows DPAPI 加密）" if store.has_key else "尚未保存 Key"
-        ttk.Label(body, text="当前状态").grid(row=0, column=0, sticky="w")
-        ttk.Label(body, text=state, style="Hint.TLabel").grid(row=0, column=1, sticky="w")
+        state = "已保存" if store.has_key else "未保存"
+        tk.Label(body, text="Key", bg=BG, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w")
+        tk.Label(body, text=state, bg=BG, fg=TX, font=(FONT, 9)).grid(row=0, column=1, sticky="w")
 
-        ttk.Label(body, text="API Key").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        tk.Label(body, text="API Key", bg=BG, fg=SEC, font=(FONT, 9)).grid(row=1, column=0, sticky="w", pady=(10, 0))
         self.key_var = tk.StringVar()
-        ttk.Entry(body, textvariable=self.key_var, show="•", width=48).grid(
-            row=1, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(body, text="留空表示沿用已保存的 Key；Key 不写入项目文件，也不随代码提交。",
-                  style="Hint.TLabel").grid(row=2, column=1, sticky="w", pady=(2, 0))
+        ttk.Entry(body, textvariable=self.key_var, show="•", width=46).grid(
+            row=1, column=1, sticky="ew", pady=(10, 0))
 
-        ttk.Label(body, text="模型").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        tk.Label(body, text="模型", bg=BG, fg=SEC, font=(FONT, 9)).grid(row=2, column=0, sticky="w", pady=(10, 0))
         self.model_var = tk.StringVar(value=store.data.get("model", self.models[0]))
-        self.model_box = ttk.Combobox(body, textvariable=self.model_var, state="readonly", width=30,
+        self.model_box = ttk.Combobox(body, textvariable=self.model_var, state="readonly", width=28,
                                       values=self.models)
-        self.model_box.grid(row=3, column=1, sticky="w", pady=(8, 0))
+        self.model_box.grid(row=2, column=1, sticky="w", pady=(10, 0))
 
         self.enable_var = tk.BooleanVar(value=bool(store.data.get("ai_enabled")))
-        ttk.Checkbutton(body, text="启用 AI 复核（未启用时全部功能仍可离线使用）",
-                        variable=self.enable_var).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Checkbutton(body, text="启用 AI", variable=self.enable_var).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         self.test_state = tk.StringVar(value="")
-        ttk.Label(body, textvariable=self.test_state, style="Hint.TLabel").grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        tk.Label(body, textvariable=self.test_state, bg=BG, fg=SEC, font=(FONT, 9)).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
-        actions = ttk.Frame(self, padding=(PAD, 0, PAD, PAD))
-        actions.grid(row=1, column=0, sticky="ew")
+        actions = tk.Frame(self, bg=BG)
+        actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 14))
         ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
-        ttk.Button(actions, text="保存", command=self._save).pack(side="right", padx=8)
+        ttk.Button(actions, text="保存", style="Accent.TButton", command=self._save).pack(side="right", padx=8)
         ttk.Button(actions, text="删除 Key", command=self._delete).pack(side="right", padx=(0, 8))
         self.test_btn = ttk.Button(actions, text="测试连接", command=self._test)
         self.test_btn.pack(side="left")
