@@ -1,3 +1,4 @@
 """鼎信诺 → 用户模板填列与复核。"""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
+APP_NAME = "DeepAudit"

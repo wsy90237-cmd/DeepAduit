@@ -3,17 +3,18 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "zszh-tb-autofill"
-version = "0.3.0"
-description = "鼎信诺科目余额取数、文字识别填列与 TB 复核工具"
+name = "deepaudit"
+description = "DeepAudit 审计工作台：科目余额、TB 复核及附注与底稿工作流"
 requires-python = ">=3.12"
-dynamic = ["dependencies"]
+dynamic = ["dependencies", "version"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+version = {attr = "tb_autofill.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["tb_autofill*"]
 
 [project.gui-scripts]
+deepaudit = "tb_autofill.gui:main"
 zszh-tb-autofill = "tb_autofill.gui:main"

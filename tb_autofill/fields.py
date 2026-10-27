@@ -29,6 +29,7 @@ class TemplateScan:
     fields: list[TargetField]
     warnings: list[str]
     unit: str = "元"
+    source_digest: str = ""
 
 
 UNITS = {"元": Decimal("1"), "千元": Decimal("1000"), "万元": Decimal("10000"), "亿元": Decimal("100000000")}
@@ -50,15 +51,18 @@ def _find_units(workbook):
 
 def _period(text):
     begin = bool(re.search(r"期初|年初|上期|上年|年初数", text))
-    end = bool(re.search(r"期末|年末|本期|本年|本月", text))
+    end = bool(re.search(r"期末|年末|本期|本年|本月|当月|单月", text))
     return "opening" if begin and not end else "ending" if end and not begin else ""
 
 
 def _column_role(header, context, detail=""):
     header, detail = text_key(header), text_key(detail)
+    header = header + detail
     if not header or any(x in header for x in ("调整", "重分类", "差额", "比例", "比率", "索引", "行次", "客户报出", "未调整")):
         return None
     if not any(x in header for x in ("余额", "未审数", "审定数", "账面数", "期初数", "期末数", "年初数", "年末数", "上年数", "本年数", "本期数", "金额", "发生额")):
+        return None
+    if re.search(r"期初|年初|上期|上年", header) and re.search(r"期末|年末|本期|本年|本月|当月", header):
         return None
     period = _period(header) or _period(context)
     if not period:
@@ -69,10 +73,15 @@ def _column_role(header, context, detail=""):
     measure = "balance"
     side = ""
     if "发生额" in header:
-        measure = "debit" if "借" in header + detail else "credit" if "贷" in header + detail else "movement"
-    elif "余额" in header and detail in ("借方", "借", "贷方", "贷"):
-        side = "借" if "借" in detail else "贷"
-    return period, basis, measure, side
+        if "借" in header and "贷" in header:
+            return None
+        measure = "debit" if "借" in header else "credit" if "贷" in header else "movement"
+    elif "余额" in header and ("借" in header or "贷" in header):
+        if "借" in header and "贷" in header:
+            return None
+        side = "借" if "借" in header else "贷"
+    scope = "month" if re.search(r"本月|当月|单月", header) else "year_to_date"
+    return period, basis, measure, side, scope
 
 
 LABEL_HEADERS = {"报表项目", "报表项目名称", "项目", "项目名称", "科目", "科目名称", "会计科目", "账户名称"}
@@ -123,13 +132,26 @@ def scan_template(path, periods=("ending",), unit="自动"):
                     section_profit = False
                 labels = [col for col, val in values if text_key(val) in LABEL_HEADERS]
                 if labels:
+                    band_end = rownum
+                    for region in merged_ranges:
+                        if region.min_row == rownum and region.min_col <= labels[0] <= region.max_col:
+                            band_end = max(band_end, region.max_row)
+                    # Only follow actual header rows; never consume the first account row.
+                    for candidate in range(band_end + 1, min(rownum + 4, sheet.max_row) + 1):
+                        label_value = sheet.cell(candidate, labels[0]).value
+                        fragments = [str(sheet.cell(candidate, c).value or "")
+                                     for c in range(1, sheet.max_column + 1)]
+                        if label_value not in (None, "") or not any(
+                                re.fullmatch(r"(?:期初|期末|本月|本年)?(?:余额|发生额|借方|贷方|账面数|未审数|审定数|调整分录)", text_key(v))
+                                for v in fragments):
+                            break
+                        band_end = candidate
                     proposed = {}
                     for col in range(1, sheet.max_column + 1):
-                        header = header_value(rownum, col)
+                        header = " ".join(str(header_value(r, col) or "") for r in range(rownum, band_end + 1))
                         if not header:
                             continue
-                        detail = sheet.cell(rownum + 1, col).value if rownum < sheet.max_row else ""
-                        role = _column_role(header, context, detail)
+                        role = _column_role(header, context)
                         if role and role[0] in periods:
                             proposed[col] = role
                     if proposed:
@@ -137,7 +159,9 @@ def scan_template(path, periods=("ending",), unit="自动"):
                         for period in periods:
                             if any(r[0] == period and r[1] == "book" for r in proposed.values()):
                                 proposed = {c: r for c, r in proposed.items() if r[0] != period or r[1] == "book"}
-                        header_row, label_col, columns, parent = rownum, labels[0], proposed, ""
+                        header_row, label_col, columns, parent = band_end, labels[0], proposed, ""
+                    else:
+                        header_row, label_col, columns, parent = band_end, labels[0], {}, ""
                     continue
                 if not columns or rownum <= header_row:
                     continue
@@ -160,13 +184,13 @@ def scan_template(path, periods=("ending",), unit="自动"):
                         parent = primary.strip().rstrip(":：")
                     elif any(sheet.cell(rownum, col).data_type == "f" for col in columns):
                         parent = label.rstrip(":：")
-                for col, (period, basis, measure, side) in columns.items():
+                for col, (period, basis, measure, side, scope) in columns.items():
                     cell = sheet.cell(rownum, col)
                     if cell.__class__.__name__ == "MergedCell":
                         continue
                     actual_measure = "profit_loss" if section_profit and measure == "balance" else measure
                     fields.append(TargetField(sheet.title, cell.coordinate, label, period, basis,
-                        parent if parent != label else "", index, cell.value, cell.data_type == "f", actual_measure, side, UNITS[unit]))
+                        parent if parent != label else "", index, cell.value, cell.data_type == "f", actual_measure, side, UNITS[unit], scope))
         if not fields:
             warnings.append("未找到所选期间的输入字段：请检查项目名称、科目名称以及期初/期末余额等表头文字。")
     finally:

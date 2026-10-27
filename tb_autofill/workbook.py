@@ -9,11 +9,21 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import coordinate_to_tuple
 
 from .fields import file_digest
-from .models import money
+from .models import ledger_digest, money
 
 
-def planned_writes(scan, results):
+def validate_source_context(scan, results, rows):
+    if scan.source_digest and (rows is None or ledger_digest(rows) != scan.source_digest):
+        raise ValueError("账套或主体期间已变化，请重新读取并识别模板。")
+    if rows is not None:
+        available = set(rows)
+        if any(source not in available for result in results for source in result.sources):
+            raise ValueError("结果包含当前账套之外的来源，请重新识别。")
+
+
+def planned_writes(scan, results, *, rows=None):
     from .matching import resolve_match, validate_claims
+    validate_source_context(scan, results, rows)
     known = {field.id: field for field in scan.fields}
     selected = [result for result in results if result.selected]
     if not selected:
@@ -61,23 +71,24 @@ def verify_output(source, output, writes):
             other = after[sheet.title]
             if set(map(str, sheet.merged_cells.ranges)) != set(map(str, other.merged_cells.ranges)):
                 raise ValueError(f"{sheet.title} 合并单元格发生变化。")
-            for row in sheet.iter_rows():
-                for cell in row:
-                    key = f"{sheet.title}!{cell.coordinate}"
-                    actual = other[cell.coordinate]
-                    if key in expected:
-                        value = money(actual.value)
-                        if value is None or abs(value - expected[key]) > Decimal("0.005"):
-                            raise ValueError(f"{key} 保存后的金额与计划不一致。")
-                    elif _fingerprint(cell) != _fingerprint(actual):
-                        raise ValueError(f"{key} 是保护区域但内容发生变化，输出未通过验证。")
+            # Compare both extents without materializing a potentially enormous rectangle.
+            for row, col in sorted(set(sheet._cells) | set(other._cells)):
+                cell = sheet.cell(row, col)
+                key = f"{sheet.title}!{cell.coordinate}"
+                actual = other[cell.coordinate]
+                if key in expected:
+                    value = money(actual.value)
+                    if value is None or abs(value - expected[key]) > Decimal("0.005"):
+                        raise ValueError(f"{key} 保存后的金额与计划不一致。")
+                elif _fingerprint(cell) != _fingerprint(actual):
+                    raise ValueError(f"{key} 是保护区域但内容发生变化，输出未通过验证。")
     finally:
         before.close()
         after.close()
 
 
-def write_results(scan, results, output):
-    writes = planned_writes(scan, results)
+def write_results(scan, results, output, *, rows=None):
+    writes = planned_writes(scan, results, rows=rows)
     output = Path(output).resolve()
     if output == scan.path or (output.exists() and os.path.samefile(output, scan.path)):
         raise ValueError("请另存为新文件，不能覆盖原始模板。")

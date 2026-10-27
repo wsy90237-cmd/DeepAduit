@@ -1,4 +1,4 @@
-name: build
+name: DeepAudit Windows
 
 on:
   push:
@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: deepaudit-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -17,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
@@ -26,46 +30,32 @@ jobs:
         run: python -m unittest discover -s tests -v
 
   build:
-    name: 构建 EXE 并发布
+    name: 原生编译与发布校验
     needs: test
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: 安装打包依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-build.txt
-      - name: 打包
-        run: pyinstaller packaging/zszh-tb-autofill.spec --noconfirm --distpath dist --workpath build
-      - name: 生成校验值与安装说明
-        shell: pwsh
-        run: |
-          $exe = "dist/ZSZH-TB-Autofill.exe"
-          if (-not (Test-Path -LiteralPath $exe)) { throw "未生成 $exe" }
-          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  ZSZH-TB-Autofill.exe" | Set-Content -LiteralPath "dist/SHA256SUMS.txt" -Encoding utf8
-          Copy-Item -LiteralPath "packaging/安装说明.txt" -Destination "dist/INSTALL.txt" -Force
-          Get-Content -LiteralPath "dist/SHA256SUMS.txt"
-          Get-Item -LiteralPath $exe | Select-Object Name, Length
-      - name: 打包产物自检
-        shell: pwsh
-        run: |
-          $exe = (Resolve-Path "dist/ZSZH-TB-Autofill.exe").Path
-          $proc = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
-          if ($proc.ExitCode -ne 0) { throw "自检失败，退出码 $($proc.ExitCode)" }
-          "自检通过，退出码 0"
+      - name: 原生编译、离线自检与校验值
+        run: python tools/build_release.py --compiler msvc --jobs 2
       - name: 上传运行产物
         uses: actions/upload-artifact@v4
         with:
-          name: zszh-tb-autofill
+          name: DeepAudit-windows-x64
           if-no-files-found: error
           path: |
-            dist/ZSZH-TB-Autofill.exe
+            dist/DeepAudit.exe
             dist/SHA256SUMS.txt
             dist/INSTALL.txt
+            dist/BUILDINFO.json
       - name: 发布到 Release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -75,7 +65,7 @@ jobs:
           $tag = "${{ github.ref_name }}"
           gh release view $tag 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title $tag --generate-notes
+            gh release create $tag --title "DeepAudit $tag" --notes-file docs/release-v0.4.0.md
           }
-          gh release upload $tag "dist/ZSZH-TB-Autofill.exe" "dist/SHA256SUMS.txt" "dist/INSTALL.txt" --clobber
+          gh release upload $tag "dist/DeepAudit.exe" "dist/SHA256SUMS.txt" "dist/INSTALL.txt" "dist/BUILDINFO.json" --clobber
           gh release view $tag --json assets --jq '.assets[] | "\(.name) \(.size) bytes"'

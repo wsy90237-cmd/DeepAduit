@@ -1,5 +1,7 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from decimal import Decimal, InvalidOperation
+import hashlib
+import json
 
 
 def money(value) -> Decimal | None:
@@ -62,6 +64,7 @@ class TargetField:
     measure: str = "balance"
     balance_side: str = ""
     unit_factor: Decimal = Decimal("1")
+    occurrence_scope: str = "year_to_date"
 
     @property
     def id(self):
@@ -92,3 +95,10 @@ class MatchResult:
     @property
     def source_ids(self):
         return [row.code for row in self.sources]
+
+
+def ledger_digest(rows) -> str:
+    """Bind a review to exact loaded values, including subject and period."""
+    records = sorted((asdict(row) for row in rows), key=lambda row: str(row["code"]))
+    content = json.dumps(records, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()

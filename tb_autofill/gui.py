@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import queue
 import threading
 import time
@@ -15,24 +16,23 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import __version__, ai as ai_module
-from . import analysis, auditlog, dxn, fields, matching, settings, workbook
-from .models import Subject, money
+from . import APP_NAME, __version__, ai as ai_module
+from . import analysis, auditlog, dxn, fields, matching, settings, workbook, workspace
+from .models import Subject, ledger_digest, money
 
-APP_NAME = "ZSZH TB 自动填写系统"
 VERSION = __version__
 PAD = 8
 
 FONT = "Microsoft YaHei UI"
-BG = "#f3f4f6"
+BG = "#f3f6fa"
 CARD = "#ffffff"
-BORDER = "#e2e5ea"
-TX = "#1f2328"
-SEC = "#6b7280"
+BORDER = "#e0e7ef"
+TX = "#18263b"
+SEC = "#68778d"
 MUTED = "#9aa1ac"
-ACC = "#2f6feb"
-ACC_D = "#1f5bd0"
-ACC_SOFT = "#eaf1fe"
+ACC = "#087f8c"
+ACC_D = "#056773"
+ACC_SOFT = "#e7f5f4"
 
 STATUS_LABEL = {
     "matched": "已匹配",
@@ -74,10 +74,10 @@ class App(tk.Tk):
         super().__init__()
         self.title(f"{APP_NAME}  v{VERSION}")
         # 适配小屏：窗口不超出可用桌面，避免底部操作区被裁掉。
-        width = min(1280, max(1000, self.winfo_screenwidth() - 60))
-        height = min(860, max(640, self.winfo_screenheight() - 88))
+        width = min(1440, max(1040, self.winfo_screenwidth() - 70))
+        height = min(900, max(700, self.winfo_screenheight() - 90))
         self.geometry(f"{width}x{height}")
-        self.minsize(1000, 620)
+        self.minsize(1040, 680)
         self.queue = queue.Queue()
         self.busy = False
         self.projects = []
@@ -86,6 +86,8 @@ class App(tk.Tk):
         self.results = []
         self.scan = None
         self.current_subject = None
+        self.loaded_subject = None
+        self._context_revision = 0
         self._ai_subset = []
         try:
             self.audit = auditlog.AuditLog()
@@ -94,11 +96,43 @@ class App(tk.Tk):
         self._load_settings()
         self._init_style()
         self._build()
+        self._bind_context_changes()
+        self.protocol("WM_DELETE_WINDOW", self._request_close)
         self.after(80, self._pump)
         self._sync_ai_state()
         self.after(250, self._autodetect)
 
     # ---------- 基础设施 ----------
+
+    def _bind_context_changes(self):
+        for name in ("install_var", "project_var", "subject_var", "year_var", "month_var",
+                     "template_var", "period_var", "unit_var"):
+            ledger = name in {"install_var", "project_var", "subject_var", "year_var", "month_var"}
+            subject = name in {"install_var", "project_var"}
+            getattr(self, name).trace_add("write", lambda *_args, ledger=ledger, subject=subject:
+                                       self._invalidate_review(clear_ledger=ledger, clear_subject=subject))
+
+    def _invalidate_review(self, *, clear_ledger=False, clear_subject=False):
+        self._context_revision += 1
+        self.scan, self.results, self._ai_subset = None, [], []
+        self._chat_clear()
+        self.report_btn.configure(state="disabled")
+        self.write_btn.configure(state="disabled")
+        self.scan_state.set("参数已变化，请重新识别")
+        if clear_ledger:
+            self.rows, self.loaded_subject = [], None
+            self.ledger_state.set("请重新读取科目余额")
+        if clear_subject:
+            self.current_subject, self.subjects = None, []
+            self.subject_box.configure(values=())
+            self.subject_var.set("")
+        self._refresh_tree()
+
+    def _request_close(self):
+        if self.busy:
+            messagebox.showinfo("任务进行中", "请等待当前任务完成后退出，以确保临时副本和输出文件正确关闭。")
+            return
+        self.destroy()
 
     def _load_settings(self):
         try:
@@ -139,7 +173,7 @@ class App(tk.Tk):
         style.configure("Ghost.TButton", background=CARD, foreground=ACC, borderwidth=0, padding=(8, 4))
         style.map("Ghost.TButton", background=[("active", ACC_SOFT)])
         style.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TX,
-                        borderwidth=0, rowheight=27, font=(FONT, 9))
+                        borderwidth=0, rowheight=29, font=(FONT, 10))
         style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
         style.configure("Treeview.Heading", background="#f7f8fa", foreground=SEC, relief="flat",
                         font=(FONT, 9, "bold"), padding=(6, 6))
@@ -150,23 +184,23 @@ class App(tk.Tk):
         style.configure("TProgressbar", background=ACC, troughcolor="#e6e9ee", borderwidth=0, thickness=5)
 
     def _build(self):
-        self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=0)
-        self.rowconfigure(3, weight=1)
         self.chat_visible = False
+        workspace.build_shell(self)
         self._build_header()
         self._build_source()
         self._build_template()
         self._build_result()
         self._build_actions()
         self._build_log()
+        workspace.build_pages(self)
         self._build_chat()
+        workspace.navigate(self, "overview")
         if self._pending_error:
             self._log("设置读取失败：" + self._pending_error, error=True)
 
     def _card(self, row, title, pady=(12, 0)):
         """白底卡片：1px 边框 + 标题，替代有年代感的 LabelFrame。"""
-        outer = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
+        outer = tk.Frame(self.workspace, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
         outer.grid(row=row, column=0, sticky="ew", padx=16, pady=pady)
         head = tk.Frame(outer, bg=CARD)
         head.pack(fill="x", padx=14, pady=(8, 0))
@@ -176,14 +210,12 @@ class App(tk.Tk):
         return outer, body, head
 
     def _build_header(self):
-        bar = tk.Frame(self, bg=CARD)
-        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        bar = tk.Frame(self.content, bg=CARD)
+        bar.grid(row=0, column=0, sticky="ew")
         tk.Frame(bar, bg=BORDER, height=1).pack(side="bottom", fill="x")
         inner = tk.Frame(bar, bg=CARD)
         inner.pack(fill="x", padx=16, pady=(10, 9))
-        tk.Label(inner, text="ZSZH TB", bg=CARD, fg=TX, font=(FONT, 13, "bold")).pack(side="left")
-        tk.Label(inner, text=f"v{VERSION}", bg=CARD, fg=MUTED, font=(FONT, 8)).pack(
-            side="left", padx=(6, 0), pady=(4, 0))
+        tk.Label(inner, textvariable=self.page_title, bg=CARD, fg=TX, font=(FONT, 15, "bold")).pack(side="left")
         ttk.Button(inner, text="对话", style="Ghost.TButton", command=self._toggle_chat).pack(side="right")
         ttk.Button(inner, text="AI 设置", command=self._open_ai_settings).pack(side="right", padx=(0, 6))
         self.ai_state = tk.StringVar(value="AI 未配置")
@@ -210,7 +242,7 @@ class App(tk.Tk):
         line.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         ttk.Label(line, text="主体单位", style="Card.TLabel").pack(side="left")
         self.subject_var = tk.StringVar()
-        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=42)
+        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=29)
         self.subject_box.pack(side="left", padx=8)
         self.subject_box.bind("<<ComboboxSelected>>", self._on_subject)
         ttk.Label(line, text="年度", style="Card.TLabel").pack(side="left")
@@ -261,25 +293,28 @@ class App(tk.Tk):
 
         bar = tk.Frame(body, bg=CARD)
         bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        controls = tk.Frame(bar, bg=CARD)
+        controls.pack(fill="x")
         self.filter_var = tk.StringVar(value="全部")
-        chooser = ttk.Combobox(bar, textvariable=self.filter_var, state="readonly", width=9,
+        chooser = ttk.Combobox(controls, textvariable=self.filter_var, state="readonly", width=9,
                                values=("全部", "可写入", "已匹配", "待确认", "未匹配", "公式保护", "已选中"))
         chooser.pack(side="left")
         chooser.bind("<<ComboboxSelected>>", lambda _event: self._refresh_tree())
         for text, command in (("全选可写入", self._select_all_fillable), ("清空", self._clear_selection),
                               ("允许覆盖", self._allow_overwrite), ("指定来源", self._manual_source),
                               ("变动分析", self._analyze_movements)):
-            ttk.Button(bar, text=text, command=command).pack(side="left", padx=(6, 0))
-        self.ai_btn = ttk.Button(bar, text="AI 复核", command=self._ai_review)
+            ttk.Button(controls, text=text, command=command).pack(side="left", padx=(6, 0))
+        self.ai_btn = ttk.Button(controls, text="AI 复核", command=self._ai_review)
         self.ai_btn.pack(side="left", padx=(6, 0))
         self.stats = tk.StringVar(value="")
-        tk.Label(bar, textvariable=self.stats, bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="right")
+        tk.Label(bar, textvariable=self.stats, bg=CARD, fg=MUTED, font=(FONT, 8), anchor="w").pack(
+            fill="x", pady=(7, 0))
 
         columns = ("sel", "status", "cell", "label", "period", "amount", "actual", "diff", "sources", "reason")
         headings = {"sel": "✓", "status": "状态", "cell": "单元格", "label": "报表项目", "period": "期间",
                     "amount": "应填值", "actual": "现有值", "diff": "差额", "sources": "来源科目",
                     "reason": "方法 / 原因"}
-        widths = {"sel": 34, "status": 76, "cell": 96, "label": 176, "period": 50, "amount": 104,
+        widths = {"sel": 34, "status": 76, "cell": 142, "label": 176, "period": 50, "amount": 104,
                   "actual": 104, "diff": 96, "sources": 166, "reason": 280}
         anchors = {"sel": "center", "status": "center", "cell": "center", "period": "center",
                    "amount": "e", "actual": "e", "diff": "e"}
@@ -295,7 +330,7 @@ class App(tk.Tk):
         hscroll = ttk.Scrollbar(body, orient="horizontal", command=self.tree.xview)
         hscroll.grid(row=2, column=0, sticky="ew")
         self.tree.configure(yscrollcommand=scroll.set, xscrollcommand=hscroll.set)
-        self.tree.tag_configure("ok", background="#f0f9f2", foreground="#14622c")
+        self.tree.tag_configure("ok", background="#f7fcfa", foreground="#285d4c")
         self.tree.tag_configure("warn", background="#fffaeb", foreground="#7a4d00")
         self.tree.tag_configure("bad", background="#fdf1f0", foreground="#7a1c16")
         self.tree.tag_configure("info", background="#f2f6fd", foreground="#1b3a6b")
@@ -305,7 +340,7 @@ class App(tk.Tk):
         self.tree.bind("<Double-1>", lambda _event: self._show_detail())
 
     def _build_actions(self):
-        bar = tk.Frame(self, bg=BG)
+        bar = tk.Frame(self.workspace, bg=BG)
         bar.grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 0))
         self.report_btn = ttk.Button(bar, text="导出报告", command=self._export_report, state="disabled")
         self.report_btn.pack(side="left")
@@ -313,12 +348,12 @@ class App(tk.Tk):
                                     command=self._write_excel, state="disabled")
         self.write_btn.pack(side="left", padx=8)
         ttk.Button(bar, text="校验日志", command=self._verify_audit).pack(side="left")
-        ttk.Button(bar, text="退出", command=self.destroy).pack(side="right")
+        ttk.Button(bar, text="退出", command=self._request_close).pack(side="right")
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=120)
         self.status_var = tk.StringVar(value="就绪")
 
     def _build_log(self):
-        outer = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
+        outer = tk.Frame(self.workspace, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
         outer.grid(row=5, column=0, sticky="ew", padx=16, pady=(8, 12))
         outer.columnconfigure(0, weight=1)
         self.log = tk.Text(outer, height=3, wrap="none", state="disabled", font=("Consolas", 8),
@@ -441,6 +476,8 @@ class App(tk.Tk):
                         "只能引用事实中的科目与金额，不确定就说明缺少哪些资料。", extra={"facts": facts})
 
     def _chat_send(self, question=None, extra=None):
+        if self.busy:
+            return
         text = (self.chat_input.get("1.0", "end") if question is None else question).strip()
         if not text:
             return
@@ -520,6 +557,8 @@ class App(tk.Tk):
         return "break"
 
     def _apply_proposals(self):
+        if self.busy or self.scan is None:
+            return
         picked = [self._chat_proposals[int(iid)] for iid in self.prop_tree.get_children()
                   if self.prop_tree.set(iid, "sel") == "☑"]
         if not picked:
@@ -531,6 +570,7 @@ class App(tk.Tk):
             self._chat_append("sys", "提案目标已失效")
             return
         applied, notes = matching.apply_ai_suggestions(subset, picked, self.rows)
+        matching.validate_claims(self.results)
         self._refresh_tree()
         self._chat_append("sys", f"已应用 {applied} 条，待确认 {len(notes)} 条")
         for note in notes[:3]:
@@ -548,7 +588,11 @@ class App(tk.Tk):
                 self.queue.get_nowait()()
         except queue.Empty:
             pass
-        self.after(80, self._pump)
+        except Exception as exc:
+            self._set_busy(False)
+            self._log(f"界面回调失败：{exc}", error=True)
+        finally:
+            self.after(80, self._pump)
 
     def _post(self, action):
         self.queue.put(action)
@@ -574,21 +618,22 @@ class App(tk.Tk):
             self.progress.stop()
             self.progress.pack_forget()
 
-    def _async(self, text, work, done=None):
+    def _async(self, text, work, done=None, *, guard_context=True):
         if self.busy:
             messagebox.showinfo("请稍候", "当前任务尚未完成。")
             return
         self._set_busy(True, text)
         self._log(text)
+        revision = self._context_revision if guard_context else None
 
         def runner():
             try:
                 value = work()
             except Exception as exc:
                 detail = traceback.format_exc(limit=3)
-                self._post(lambda: self._finish_error(text, exc, detail))
+                self._post(lambda exc=exc, detail=detail: self._finish_error(text, exc, detail))
             else:
-                self._post(lambda: self._finish_ok(text, value, done))
+                self._post(lambda: self._finish_ok(text, value, done, revision))
 
         threading.Thread(target=runner, daemon=True).start()
 
@@ -599,8 +644,11 @@ class App(tk.Tk):
             self._log("  " + line.strip(), error=True)
         messagebox.showerror("操作未完成", str(exc))
 
-    def _finish_ok(self, text, value, done):
+    def _finish_ok(self, text, value, done, revision=None):
         self._set_busy(False)
+        if revision is not None and revision != self._context_revision:
+            self._log("操作期间参数已变化，已丢弃旧任务结果，请重新操作。")
+            return
         try:
             if done:
                 done(value)
@@ -611,6 +659,8 @@ class App(tk.Tk):
     # ---------- 数据源 ----------
 
     def _choose_install(self):
+        if self.busy:
+            return
         path = filedialog.askdirectory(title="选择鼎信诺安装或服务目录（含 bin\\mysqld.exe）")
         if path:
             self.install_var.set(path)
@@ -668,6 +718,8 @@ class App(tk.Tk):
         self.month_var.set(str(self.current_subject.month))
 
     def _read_ledger(self):
+        if self.busy:
+            return
         if self.current_subject is None:
             messagebox.showwarning("缺少主体", "请先选择主体单位。")
             return
@@ -683,11 +735,15 @@ class App(tk.Tk):
         subject = Subject(self.current_subject.id, self.current_subject.name, year, month,
                           self.current_subject.project_path, self.current_subject.source_path)
         install = self.install_var.get().strip()
+        self._invalidate_review(clear_ledger=True)
         self._async("正在校验并复制科目余额（原库只读）…",
-                    lambda: dxn.read_ledger(subject, install, self._thread_log), self._on_ledger)
+                    lambda: dxn.read_ledger(subject, install, self._thread_log),
+                    lambda rows: self._on_ledger(rows, subject))
 
-    def _on_ledger(self, rows):
+    def _on_ledger(self, rows, subject):
+        self._invalidate_review()
         self.rows = list(rows)
+        self.loaded_subject = subject
         if not self.rows:
             self.ledger_state.set("未读到科目")
             self._log("未读到任何科目记录。")
@@ -695,10 +751,13 @@ class App(tk.Tk):
         self.ledger_state.set(f"已读取 {len(self.rows)} 个科目")
         self._log(f"科目余额读取完成：{len(self.rows)} 个科目，"
                   f"编码 {self.rows[0].code}–{self.rows[-1].code}。")
+        workspace.refresh_context(self)
 
     # ---------- 模板识别 ----------
 
     def _choose_template(self):
+        if self.busy:
+            return
         path = filedialog.askopenfilename(title="选择用户模板", filetypes=[
             ("Excel 模板", "*.xlsx *.xlsm"), ("所有文件", "*.*")])
         if not path:
@@ -715,6 +774,8 @@ class App(tk.Tk):
         return ("opening", "ending") if value == "both" else (value,)
 
     def _recognize(self):
+        if self.busy:
+            return
         path = self.template_var.get().strip()
         if not path:
             messagebox.showwarning("缺少模板", "请先选择模板文件。")
@@ -724,10 +785,13 @@ class App(tk.Tk):
             return
         unit = self.unit_var.get()
         periods = self._periods()
+        rows = tuple(self.rows)
+        self._invalidate_review()
 
         def work():
             scan = fields.scan_template(path, periods, unit)
-            return scan, matching.match_fields(scan.fields, self.rows)
+            scan.source_digest = ledger_digest(rows)
+            return scan, matching.match_fields(scan.fields, list(rows))
 
         self._recognize_started = time.perf_counter()
         self._async("正在识别模板字段并匹配…", work, self._on_scanned)
@@ -792,6 +856,7 @@ class App(tk.Tk):
                            tags=(STATUS_TAG.get(result.status, "muted"),))
 
     def _refresh_stats(self):
+        workspace.refresh_context(self)
         if not self.results:
             self.stats.set("")
             return
@@ -831,6 +896,8 @@ class App(tk.Tk):
         return "break"
 
     def _toggle(self, iid):
+        if self.busy:
+            return
         try:
             result = self.results[int(iid)]
         except (ValueError, IndexError):
@@ -854,6 +921,8 @@ class App(tk.Tk):
         self._refresh_stats()
 
     def _select_all_fillable(self):
+        if self.busy:
+            return
         added = 0
         for result in self.results:
             if result.selected or result.amount is None or result.status == "protected":
@@ -866,6 +935,8 @@ class App(tk.Tk):
         self._log(f"已勾选 {added}")
 
     def _clear_selection(self):
+        if self.busy:
+            return
         for result in self.results:
             result.selected = False
             result.overwrite = False
@@ -873,6 +944,8 @@ class App(tk.Tk):
         self._log("已清空")
 
     def _allow_overwrite(self):
+        if self.busy:
+            return
         selection = self.tree.selection()
         result = self._current_result()
         if result is None or not result.selected:
@@ -907,6 +980,8 @@ class App(tk.Tk):
     # ---------- 人工指定来源 ----------
 
     def _manual_source(self):
+        if self.busy or self.scan is None:
+            return
         result = self._current_result()
         if result is None:
             messagebox.showinfo("请先选择", "请在表格中选中一个目标字段。")
@@ -954,8 +1029,13 @@ class App(tk.Tk):
         self._sync_ai_state()
 
     def _ai_review(self):
+        if self.busy:
+            return
         if self.store is None or not self.store.has_key:
             messagebox.showinfo("未配置 Key", "请先在“AI 设置”中填入自己的 DeepSeek API Key。")
+            return
+        if not self.store.data.get("ai_enabled"):
+            messagebox.showinfo("AI 未启用", "请先在 AI 设置中启用。")
             return
         if not self.results:
             messagebox.showinfo("无结果", "请先识别模板。")
@@ -987,6 +1067,7 @@ class App(tk.Tk):
 
     def _on_ai_answer(self, answer):
         applied, notes = matching.apply_ai_suggestions(self._ai_subset, answer.get("suggestions", []), self.rows)
+        matching.validate_claims(self.results)
         self._refresh_tree()
         self._log(f"AI 复核：{answer.get('summary', '').strip()}")
         self._log(f"AI 采纳 {applied} 条建议（金额仍由本地规则计算）。未采纳 {len(notes)} 条。")
@@ -998,7 +1079,12 @@ class App(tk.Tk):
     # ---------- 输出 ----------
 
     def _export_report(self):
-        if not self.results:
+        if self.busy or not self.results or self.scan is None:
+            return
+        try:
+            workbook.validate_source_context(self.scan, self.results, self.rows)
+        except ValueError as exc:
+            messagebox.showerror("结果已失效", str(exc))
             return
         path = filedialog.asksaveasfilename(title="导出复核报告", defaultextension=".csv",
                                             filetypes=[("CSV 报告", "*.csv")],
@@ -1022,15 +1108,12 @@ class App(tk.Tk):
         messagebox.showinfo("已导出", str(target))
 
     def _subject_label(self):
-        if self.current_subject is None:
+        if self.loaded_subject is None:
             return ""
-        try:
-            return f"{self.current_subject.name} / {int(self.year_var.get())}-{int(self.month_var.get()):02d}"
-        except ValueError:
-            return self.current_subject.name
+        return f"{self.loaded_subject.name} / {self.loaded_subject.year}-{self.loaded_subject.month:02d}"
 
     def _write_excel(self):
-        if not self.results or self.scan is None:
+        if self.busy or not self.results or self.scan is None:
             return
         selected = [result for result in self.results if result.selected]
         if not selected:
@@ -1042,18 +1125,21 @@ class App(tk.Tk):
                                             initialfile=f"{self.scan.path.stem}-已填列{suffix}")
         if not path:
             return
+        scan, results, rows = deepcopy(self.scan), deepcopy(self.results), tuple(self.rows)
+        subject = self._subject_label()
         self._async(f"正在写入 {len(selected)} 个字段（调用 Excel 重算并逐格校验）…",
-                    lambda: workbook.write_results(self.scan, self.results, path), self._on_written)
+                    lambda: workbook.write_results(scan, results, path, rows=rows),
+                    lambda output: self._on_written(output, scan, results, subject), guard_context=False)
 
-    def _on_written(self, output):
+    def _on_written(self, output, scan, results, subject):
         self._log(f"已另存：{output}")
-        self._audit("write_excel", output=str(output), template=str(self.scan.path),
-                    template_digest=self.scan.digest, subject=self._subject_label(), unit=self.scan.unit,
+        self._audit("write_excel", output=str(output), template=str(scan.path),
+                    template_digest=scan.digest, subject=subject, unit=scan.unit,
                     cells=[{"cell": result.target.id,
                             "before": "公式" if result.target.is_formula else fmt_amount(result.target.value),
                             "after": str(result.amount), "overwrite": result.overwrite,
                             "sources": result.source_ids}
-                           for result in self.results if result.selected])
+                           for result in results if result.selected])
         messagebox.showinfo("写入完成", str(output))
 
     def _audit(self, event, **fields):
@@ -1064,6 +1150,7 @@ class App(tk.Tk):
             record = self.audit.append(event, **fields)
         except Exception as exc:
             self._log(f"审计日志写入失败：{exc}", error=True)
+            messagebox.showerror("操作未完整留痕", "业务操作可能已完成，但审计日志写入失败。请保留输出和现场，核对日志后再继续。")
             return
         ok, seq, reason = self.audit.verify()
         self._log(f"审计日志已记录（序号 {record['seq']}）：{self.audit.path}")
@@ -1077,7 +1164,8 @@ class App(tk.Tk):
         ok, seq, reason = self.audit.verify()
         total = len(self.audit.records())
         if ok:
-            messagebox.showinfo("审计日志校验", f"完整：共 {total} 条记录，哈希链连续。\n\n{self.audit.path}")
+            status = reason or "哈希链与本机末尾检查点均通过"
+            messagebox.showinfo("审计日志校验", f"共 {total} 条记录：{status}。\n\n{self.audit.path}")
         else:
             messagebox.showerror("审计日志校验", f"第 {seq} 条记录异常：{reason}\n\n{self.audit.path}\n"
                                              "请保留现场并人工核对，不要覆盖原文件。")

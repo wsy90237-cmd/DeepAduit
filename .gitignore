@@ -19,4 +19,11 @@ settings.json
 *.xlsm
 *.exe
 *.dll
+*.pyd
+*.head.dpapi
+*.jsonl.lock
+*.jsonl
+*.build/
+*.dist/
+*.onefile-build/
 !tests/fixtures/*.xlsx

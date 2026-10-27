@@ -191,6 +191,8 @@ def _row_amount(target, row):
         raise ValueError("字段金额口径未识别")
     if measure == "balance" and row.is_profit_loss and target.period == "ending" and not target.balance_side:
         measure = "profit_loss"
+    if measure != "balance" and target.occurrence_scope != "year_to_date":
+        return None
     if measure == "balance":
         amount = money(row.opening if target.period == "opening" else row.ending)
         if amount is not None and target.balance_side:
@@ -248,7 +250,10 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         return result
     if any(value is None for value in amounts):
         result.status = "missing"
-        result.reason = "缺少上期发生额依据，不能使用本年发生额" if target.period == "opening" and target.measure != "balance" else "来源金额缺失；真实零值和缺失值分开处理"
+        if target.occurrence_scope == "month":
+            result.reason = "缺少单月发生额依据，不能使用年初累计发生额"
+        else:
+            result.reason = "缺少上期发生额依据，不能使用本年发生额" if target.period == "opening" and target.measure != "balance" else "来源金额缺失；真实零值和缺失值分开处理"
         return result
     try:
         factor = money(target.unit_factor)
