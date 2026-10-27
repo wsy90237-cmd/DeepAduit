@@ -1,0 +1,156 @@
+import json
+import unittest
+from decimal import Decimal
+
+from tb_autofill.ai import AIError, DeepSeekClient, assistance_payload
+from tb_autofill.matching import apply_ai_suggestions, match_fields
+from tb_autofill.models import LedgerRow, TargetField
+
+
+def row(code="1001", name="库存现金", **kwargs):
+    values = dict(code=code, name=name, opening=Decimal("5"), ending=Decimal("12"),
+                  subject_id="S1", year=2026, month=6)
+    values.update(kwargs)
+    return LedgerRow(**values)
+
+
+def target(label="库存现金", **kwargs):
+    values = dict(sheet="期末", cell="D10", label=label, period="ending")
+    values.update(kwargs)
+    return TargetField(**values)
+
+
+def completion(content):
+    return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(content, ensure_ascii=False)}}]}
+
+
+def make_client(response, model="deepseek-chat"):
+    calls = []
+
+    def transport(path, body):
+        calls.append((path, body))
+        return response
+
+    return DeepSeekClient("sk-test", model, transport=transport), calls
+
+
+class ModelDiscoveryTests(unittest.TestCase):
+    def test_list_models_reads_account_models(self):
+        client, _ = make_client({"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}]})
+        self.assertEqual(client.list_models(), ["deepseek-chat", "deepseek-reasoner"])
+
+    def test_test_connection_rejects_model_not_granted(self):
+        client, _ = make_client({"data": [{"id": "other-model"}]})
+        with self.assertRaises(AIError) as caught:
+            client.test_connection()
+        self.assertIn("未开通", str(caught.exception))
+
+    def test_empty_models_is_error(self):
+        client, _ = make_client({"data": []})
+        with self.assertRaises(AIError):
+            client.list_models()
+
+
+class RequestShapeTests(unittest.TestCase):
+    def test_request_body_contains_verified_parameters_only(self):
+        client, calls = make_client(completion({"summary": "无", "suggestions": []}))
+        client.assist({"targets": [], "candidates": []})
+        path, body = calls[0]
+        self.assertEqual(path, "/chat/completions")
+        self.assertEqual(set(body), {"model", "messages", "stream", "thinking",
+                                     "temperature", "max_tokens", "response_format"})
+        # 关闭推理，避免 reasoning_content 挤占 max_tokens 导致 JSON 截断
+        self.assertEqual(body["thinking"], {"type": "disabled"})
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+
+    def test_empty_key_rejected(self):
+        with self.assertRaises(AIError):
+            DeepSeekClient("   ")
+
+    def test_unknown_model_name_still_usable_but_bounded(self):
+        with self.assertRaises(AIError):
+            DeepSeekClient("sk-test", "x" * 65)
+        DeepSeekClient("sk-test", "deepseek-chat-preview")
+
+
+class AssistValidationTests(unittest.TestCase):
+    def payload(self, count=1):
+        return {"targets": [{"target_id": f"期末!D{10 + i}"} for i in range(count)],
+                "candidates": [{"code": "1001"}]}
+
+    def test_valid_suggestion_accepted(self):
+        client, _ = make_client(completion({"summary": "可匹配",
+            "suggestions": [{"target_id": "期末!D10", "source_codes": ["1001"], "reason": "名称一致"}]}))
+        value = client.assist(self.payload())
+        self.assertEqual(value["suggestions"][0]["source_codes"], ["1001"])
+
+    def test_empty_suggestions_allowed(self):
+        client, _ = make_client(completion({"summary": "无法判断", "suggestions": []}))
+        self.assertEqual(client.assist(self.payload())["suggestions"], [])
+
+    def test_unknown_target_rejected(self):
+        client, _ = make_client(completion({"summary": "x",
+            "suggestions": [{"target_id": "期末!Z99", "source_codes": ["1001"], "reason": "x"}]}))
+        with self.assertRaises(AIError):
+            client.assist(self.payload())
+
+    def test_unknown_or_duplicate_code_rejected(self):
+        for codes in (["9999"], ["1001", "1001"]):
+            with self.subTest(codes=codes):
+                client, _ = make_client(completion({"summary": "x",
+                    "suggestions": [{"target_id": "期末!D10", "source_codes": codes, "reason": "x"}]}))
+                with self.assertRaises(AIError):
+                    client.assist(self.payload())
+
+    def test_truncated_response_rejected(self):
+        client, _ = make_client({"choices": [{"finish_reason": "length", "message": {"content": "{}"}}]})
+        with self.assertRaises(AIError):
+            client.assist(self.payload())
+
+    def test_non_json_content_rejected(self):
+        client, _ = make_client({"choices": [{"finish_reason": "stop", "message": {"content": "不是JSON"}}]})
+        with self.assertRaises(AIError):
+            client.assist(self.payload())
+
+    def test_payload_limits(self):
+        client, _ = make_client(completion({"summary": "", "suggestions": []}))
+        with self.assertRaises(AIError):
+            assistance_payload([type("R", (), {"target": target(cell=f"D{i}")})() for i in range(31)], [])
+        with self.assertRaises(AIError):
+            assistance_payload([], [row(code=str(1000 + i)) for i in range(301)])
+
+
+class ApplySuggestionTests(unittest.TestCase):
+    def test_ai_choice_recomputes_amount_locally(self):
+        rows = [row("660201", "其他", level=2, path="管理费用/其他"),
+                row("660301", "其他", level=2, path="财务费用/其他")]
+        results = match_fields([target("其他")], rows)
+        self.assertEqual(results[0].status, "ambiguous")
+        applied, notes = apply_ai_suggestions(results, [
+            {"target_id": "期末!D10", "source_codes": ["660201"], "reason": "按管理费用归类", "amount": "999999"}], rows)
+        self.assertEqual((applied, notes), (1, []))
+        self.assertEqual(results[0].status, "matched")
+        self.assertEqual(results[0].amount, Decimal(12))
+        self.assertEqual(results[0].source_ids, ["660201"])
+
+    def test_ai_cannot_touch_formula_or_foreign_source(self):
+        results = match_fields([target(value="=SUM(D11:D14)")], [row()])
+        applied, notes = apply_ai_suggestions(results, [{"target_id": "期末!D10", "source_codes": ["1001"]}], [row()])
+        self.assertEqual(applied, 0)
+        self.assertEqual(results[0].status, "protected")
+        self.assertTrue(notes)
+
+        plain = match_fields([target()], [row()])
+        applied, _ = apply_ai_suggestions(plain, [{"target_id": "期末!D10", "source_codes": ["8888"]}], [row()])
+        self.assertEqual(applied, 0)
+        self.assertEqual(plain[0].status, "matched")
+
+    def test_ai_suggestion_marks_overwrite_false(self):
+        results = match_fields([target(value=0)], [row()])
+        applied, _ = apply_ai_suggestions(results, [{"target_id": "期末!D10", "source_codes": ["1001"]}], [row()])
+        self.assertEqual(applied, 1)
+        self.assertFalse(results[0].overwrite)
+
+
+if __name__ == "__main__":
+    unittest.main()

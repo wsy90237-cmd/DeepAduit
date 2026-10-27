@@ -3,7 +3,9 @@ import socket
 import urllib.error
 import urllib.request
 
-from .settings import MODELS
+from .settings import MODELS, valid_model
+
+DEFAULT_MODEL = MODELS[0]
 
 
 class AIError(Exception):
@@ -18,12 +20,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class DeepSeekClient:
     base_url = "https://api.deepseek.com"
 
-    def __init__(self, key, model=MODELS[0], *, transport=None):
+    def __init__(self, key, model=DEFAULT_MODEL, *, transport=None):
         if not key.strip():
             raise AIError("请先在 AI 设置中输入自己的 API Key")
-        if model not in MODELS:
-            raise AIError("不支持的 DeepSeek 模型")
-        self.key, self.model = key.strip(), model
+        if not valid_model(model):
+            raise AIError("请选择受支持的 DeepSeek 模型")
+        self.key, self.model = key.strip(), model.strip()
         self.transport = transport
 
     def _request(self, path, payload=None):
@@ -47,12 +49,23 @@ class DeepSeekClient:
         except (ValueError, UnicodeError):
             raise AIError("DeepSeek 返回了无法解析的内容，本地结果未改变。") from None
 
-    def test_connection(self):
+    def list_models(self):
+        """以账户实际开通的模型为准，避免把模型名写死在代码里。"""
         response = self._request("/models")
         data = response.get("data") if isinstance(response, dict) else None
-        if not isinstance(data, list) or not any(isinstance(x, dict) and x.get("id") == self.model for x in data):
-            raise AIError("连接成功，但账户未返回所选模型，请更换模型。")
-        return [x["id"] for x in data if isinstance(x, dict) and isinstance(x.get("id"), str)]
+        if not isinstance(data, list):
+            raise AIError("无法读取账户可用模型列表")
+        models = [item["id"] for item in data
+                  if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip()]
+        if not models:
+            raise AIError("账户未返回任何可用模型")
+        return models
+
+    def test_connection(self):
+        models = self.list_models()
+        if self.model not in models:
+            raise AIError(f"连接成功，但账户未开通所选模型 {self.model}；可用：{'、'.join(models[:6])}")
+        return models
 
     def assist(self, payload):
         system = (
@@ -63,9 +76,12 @@ class DeepSeekClient:
             "{\"target_id\":\"给定目标ID\",\"source_codes\":[\"给定科目编码\"],\"reason\":\"建议依据\"}]}。"
             "suggestions允许空数组；金额和差异已由本地程序计算，你不能重新定义它们。"
         )
+        # thinking=disabled 经真实接口验证可被接受：关闭推理后返回体不含 reasoning_content，
+        # finish_reason 直接为 stop，避免推理 token 挤占 max_tokens 导致 JSON 被截断。
         response = self._request("/chat/completions", {
-            "model": self.model, "messages": [{"role": "system", "content": system},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+            "model": self.model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
             "stream": False, "thinking": {"type": "disabled"}, "temperature": 0.1,
             "max_tokens": 4096, "response_format": {"type": "json_object"},
         })

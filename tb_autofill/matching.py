@@ -250,6 +250,38 @@ def validate_claims(results: list[MatchResult]) -> list[MatchResult]:
     return results
 
 
+def apply_ai_suggestions(results: list[MatchResult], suggestions, rows: list[LedgerRow]):
+    """AI 只提供来源选择；金额、口径与写入前置条件仍由 resolve_match 计算。"""
+    by_id = {result.target.id: result for result in results}
+    index = {str(row.code): row for row in rows}
+    applied, notes = 0, []
+    for item in suggestions:
+        target_id = str(item.get("target_id", "")) if isinstance(item, dict) else ""
+        result = by_id.get(target_id)
+        if result is None:
+            notes.append(f"未知目标 {target_id or '(空)'}：已忽略")
+            continue
+        if result.status == "protected":
+            notes.append(f"{target_id}：公式单元格，AI 建议已忽略")
+            continue
+        picked = [index.get(str(code)) for code in item.get("source_codes", [])]
+        if not picked or any(row is None for row in picked):
+            notes.append(f"{target_id}：AI 指定的来源不在本次候选内，未采纳")
+            continue
+        check = resolve_match(result.target, picked, method="ai")
+        if check.status != "matched":
+            notes.append(f"{target_id}：{check.reason}，未采纳")
+            continue
+        result.sources, result.amount, result.method = check.sources, check.amount, check.method
+        result.status = check.status
+        result.reason = "AI 建议来源 + 本地计算；" + check.reason
+        result.selected = check.selected
+        result.overwrite = False
+        applied += 1
+    validate_claims(results)
+    return applied, notes
+
+
 def match_fields(targets: list[TargetField], rows: list[LedgerRow]) -> list[MatchResult]:
     _validate_rows(rows)
     results = []
