@@ -100,7 +100,7 @@ python -m venv .venv
 .venv\Scripts\pyinstaller packaging\zszh-tb-autofill.spec
 ```
 
-产物：`dist\ZSZH-TB自动填写.exe`。需在未安装 Python 的目标机验证取数、另存与 Key 管理。
+产物：`dist\ZSZH-TB-Autofill.exe`。需在未安装 Python 的目标机验证取数、另存与 Key 管理。
 
 ### 由 GitHub Actions 构建（推荐）
 

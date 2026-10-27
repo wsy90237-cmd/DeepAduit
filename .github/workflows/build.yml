@@ -43,22 +43,27 @@ jobs:
       - name: 生成校验值与安装说明
         shell: pwsh
         run: |
-          $exe = "dist/ZSZH-TB自动填写.exe"
+          $exe = "dist/ZSZH-TB-Autofill.exe"
           if (-not (Test-Path -LiteralPath $exe)) { throw "未生成 $exe" }
           $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  ZSZH-TB自动填写.exe" | Set-Content -LiteralPath "dist/SHA256SUMS.txt" -Encoding utf8
-          Copy-Item -LiteralPath "packaging/安装说明.txt" -Destination "dist/安装说明.txt" -Force
+          "$hash  ZSZH-TB-Autofill.exe" | Set-Content -LiteralPath "dist/SHA256SUMS.txt" -Encoding utf8
+          Copy-Item -LiteralPath "packaging/安装说明.txt" -Destination "dist/INSTALL.txt" -Force
           Get-Content -LiteralPath "dist/SHA256SUMS.txt"
           Get-Item -LiteralPath $exe | Select-Object Name, Length
+      - name: 打包产物自检
+        shell: pwsh
+        run: |
+          & "dist/ZSZH-TB-Autofill.exe" --selftest
+          if ($LASTEXITCODE -ne 0) { throw "自检失败，退出码 $LASTEXITCODE" }
       - name: 上传运行产物
         uses: actions/upload-artifact@v4
         with:
           name: zszh-tb-autofill
           if-no-files-found: error
           path: |
-            dist/ZSZH-TB自动填写.exe
+            dist/ZSZH-TB-Autofill.exe
             dist/SHA256SUMS.txt
-            dist/安装说明.txt
+            dist/INSTALL.txt
       - name: 发布到 Release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -70,5 +75,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --title $tag --generate-notes
           }
-          gh release upload $tag "dist/ZSZH-TB自动填写.exe" "dist/SHA256SUMS.txt" "dist/安装说明.txt" --clobber
-          gh release view $tag --json assets --jq '.assets[].name'
+          gh release upload $tag "dist/ZSZH-TB-Autofill.exe" "dist/SHA256SUMS.txt" "dist/INSTALL.txt" --clobber
+          gh release view $tag --json assets --jq '.assets[] | "\(.name) \(.size) bytes"'

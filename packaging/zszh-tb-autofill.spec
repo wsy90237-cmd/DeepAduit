@@ -2,7 +2,7 @@
 """PyInstaller 打包配置：单文件窗口程序，无控制台。
 
 构建：pyinstaller packaging/zszh-tb-autofill.spec
-产物：dist/ZSZH-TB自动填写.exe
+产物：dist/ZSZH-TB-Autofill.exe
 """
 
 import os
@@ -39,7 +39,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="ZSZH-TB自动填写",
+    name="ZSZH-TB-Autofill",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

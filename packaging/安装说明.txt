@@ -1,7 +1,7 @@
-ZSZH TB 自动填写系统  v0.2.0
+ZSZH TB 自动填写系统  v0.3.0
 ================================
 
-双击「ZSZH-TB自动填写.exe」即可运行，无需安装 Python。
+双击「ZSZH-TB-Autofill.exe」即可运行，无需安装 Python。
 
 运行要求
 --------
@@ -29,7 +29,7 @@ AI 只能建议「用哪个科目」，金额一律由本地规则计算。
 --------
 在解压目录打开命令提示符执行：
 
-    certutil -hashfile "ZSZH-TB自动填写.exe" SHA256
+    certutil -hashfile "ZSZH-TB-Autofill.exe" SHA256
 
 结果应与 SHA256SUMS.txt 中记录一致。
 
