@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zszh-tb-autofill"
-version = "0.2.0"
+version = "0.3.0"
 description = "鼎信诺科目余额取数、文字识别填列与 TB 复核工具"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]

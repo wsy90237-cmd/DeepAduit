@@ -102,6 +102,16 @@ python -m venv .venv
 
 产物：`dist\ZSZH-TB自动填写.exe`。需在未安装 Python 的目标机验证取数、另存与 Key 管理。
 
+### 由 GitHub Actions 构建（推荐）
+
+本机网络无法向 `uploads.github.com` 上传大文件时，改由 GitHub 的 Windows 运行器构建并挂载制品：
+
+```
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+`.github/workflows/build.yml` 会依次执行：单元测试 → PyInstaller 打包 → 生成 SHA-256 → 上传运行产物（保留 90 天）→ 按标签创建 Release 并挂载 EXE、校验值与安装说明。推送到 `main` 只跑测试与打包，不发布。
+
 ## 已知限制
 
 - 仅支持 `.xlsx` / `.xlsm` 模板；旧版 `.xls` 请先用 Excel 另存。
