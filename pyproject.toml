@@ -15,6 +15,9 @@ version = {attr = "tb_autofill.__version__"}
 [tool.setuptools.packages.find]
 include = ["tb_autofill*"]
 
+[tool.setuptools.package-data]
+tb_autofill = ["assets/*.png"]
+
 [project.gui-scripts]
 deepaudit = "tb_autofill.gui:main"
 zszh-tb-autofill = "tb_autofill.gui:main"

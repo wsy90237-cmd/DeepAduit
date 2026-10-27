@@ -10,6 +10,7 @@ local-data/
 .env
 .env.*
 settings.json
+connections.json
 *.db
 *.sqlite3
 *.sqlite3-*

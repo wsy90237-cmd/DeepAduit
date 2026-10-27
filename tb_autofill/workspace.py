@@ -7,8 +7,8 @@ from . import __version__
 from . import workflow
 from .knowledge_ui import KnowledgePanel
 
-BG, CARD, INK, MUTED = "#f3f6fa", "#ffffff", "#18263b", "#68778d"
-NAV, ACCENT, BORDER = "#13243a", "#087f8c", "#e0e7ef"
+BG, CARD, INK, MUTED = "#ffffff", "#ffffff", "#18263b", "#68778d"
+NAV, ACCENT, BORDER = "#ffffff", "#2563eb", "#dbe7fb"
 FONT = "Microsoft YaHei UI"
 PAGES = {"overview": "审计驾驶舱", "tb": "账套与 TB", "risk": "风险与计划", "execution": "程序与证据",
          "notes": "财务报表附注", "papers": "审计底稿", "report": "报告中心", "knowledge": "财会知识库",
@@ -32,25 +32,28 @@ def build_shell(app):
     sidebar = tk.Frame(app, bg=NAV, width=208)
     sidebar.grid(row=0, column=0, sticky="ns")
     sidebar.pack_propagate(False)
+    tk.Frame(sidebar, bg=BORDER, width=1).pack(side="right", fill="y")
     brand = tk.Frame(sidebar, bg=NAV)
     brand.pack(fill="x", padx=22, pady=(20, 15))
-    label(brand, "DA", size=12, color="#77ddd6", bold=True).pack(anchor="w")
-    label(brand, "DeepAudit", size=16, color="white", bold=True).pack(anchor="w", pady=(5, 2))
-    label(brand, "年度财报审计引擎", size=9, color="#97abc4").pack(anchor="w")
-    label(sidebar, "工作空间", size=8, color="#8196b3").pack(anchor="w", padx=24, pady=(3, 12))
+    mark = tk.Frame(brand, bg=NAV)
+    mark.pack(anchor="w")
+    tk.Label(mark, image=app.whale_mark, bg=NAV, bd=0).pack(side="left")
+    label(mark, "DeepAudit", size=14, color=ACCENT, bold=True).pack(side="left", padx=(5, 0))
+    label(brand, "年度财报审计引擎", size=9, color=MUTED).pack(anchor="w", pady=(5, 0))
+    label(sidebar, "工作空间", size=8, color=MUTED).pack(anchor="w", padx=24, pady=(3, 12))
     app.nav_buttons = {}
     for number, (key, title) in enumerate(PAGES.items(), 1):
         button = tk.Button(sidebar, text=f"{number:02}   {title}", anchor="w", relief="flat", bd=0,
-                           bg=NAV, fg="#c3d0e2", activebackground="#213b54", activeforeground="white",
+                           bg=NAV, fg="#526580", activebackground="#eff6ff", activeforeground=ACCENT,
                            font=(FONT, 9), padx=15, pady=9, cursor="hand2", takefocus=True,
                            command=lambda key=key: navigate(app, key))
         button.pack(fill="x", padx=10, pady=2)
         app.nav_buttons[key] = button
     footer = tk.Frame(sidebar, bg=NAV)
     footer.pack(side="bottom", fill="x", padx=23, pady=22)
-    label(footer, "●  本机处理", size=9, color="#79d7bd").pack(anchor="w")
-    label(footer, "金额由本地规则计算", size=8, color="#97abc4").pack(anchor="w", pady=6)
-    label(footer, f"DeepAudit  /  {__version__}", size=8, color="#7187a5").pack(anchor="w", pady=(8, 0))
+    label(footer, "●  本机处理", size=9, color=ACCENT).pack(anchor="w")
+    label(footer, "金额由本地规则计算", size=8, color=MUTED).pack(anchor="w", pady=6)
+    label(footer, f"DeepAudit  /  {__version__}", size=8, color=MUTED).pack(anchor="w", pady=(8, 0))
     app.content = tk.Frame(app, bg=BG)
     app.content.grid(row=0, column=1, sticky="nsew")
     app.content.columnconfigure(0, weight=1)
@@ -253,8 +256,8 @@ def navigate(app, key):
     app.pages[key].tkraise()
     app.page_title.set(PAGES[key])
     for name, button in app.nav_buttons.items():
-        button.configure(bg="#24445a" if name == key else NAV,
-                         fg="#87e2d8" if name == key else "#c3d0e2")
+        button.configure(bg="#eff6ff" if name == key else NAV,
+                         fg=ACCENT if name == key else "#526580")
     refresh_context(app)
     if key == "report":
         _refresh_report(app)

@@ -11,7 +11,7 @@ import webbrowser
 
 from . import ai, settings
 
-BG, FG = "#f3f6fa", "#18263b"
+BG, FG = "#ffffff", "#18263b"
 FONT = ("Microsoft YaHei UI", 10)
 
 
@@ -49,7 +49,7 @@ class ModelDialog(tk.Toplevel):
                  "Key 只发送到上方 API 地址。切换地址必须重新输入对应 Key，原 Key 不会跨服务复用。",
                  bg=BG, fg="#68778d", font=(FONT[0], 9), justify="left", wraplength=590).grid(
             row=5, column=0, columnspan=2, sticky="w", pady=8)
-        tk.Label(body, textvariable=self.state, bg=BG, fg="#087f8c", font=(FONT[0], 9),
+        tk.Label(body, textvariable=self.state, bg=BG, fg="#2563eb", font=(FONT[0], 9),
                  wraplength=590, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=10)
         controls = tk.Frame(body, bg=BG)
         controls.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))

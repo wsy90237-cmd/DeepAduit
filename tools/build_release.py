@@ -22,6 +22,7 @@ except ImportError:
 def build_arguments(compiler, jobs):
     output = ROOT / "dist"
     options = [sys.executable, "-m", "nuitka", "--mode=onefile", "--include-package=tb_autofill",
+               "--include-data-dir=tb_autofill/assets=tb_autofill/assets",
                "--enable-plugin=tk-inter", "--include-module=win32com.client", "--include-module=win32crypt",
                "--include-module=pythoncom", "--windows-console-mode=disable", "--python-flag=isolated",
                "--python-flag=no_docstrings", "--file-reference-choice=runtime",

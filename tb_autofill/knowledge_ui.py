@@ -9,7 +9,7 @@ from . import connections, knowledge, settings
 
 class KnowledgePanel(tk.Frame):
     def __init__(self, app, parent):
-        super().__init__(parent, bg="#f3f6fa")
+        super().__init__(parent, bg="#ffffff")
         self.app, self.refs, self.libraries = app, [], []
         self.lib_cursor = self.cursor = ""
         self.lib_query = ""

@@ -25,15 +25,15 @@ VERSION = __version__
 PAD = 8
 
 FONT = "Microsoft YaHei UI"
-BG = "#f3f6fa"
+BG = "#ffffff"
 CARD = "#ffffff"
-BORDER = "#e0e7ef"
+BORDER = "#dbe7fb"
 TX = "#18263b"
 SEC = "#68778d"
 MUTED = "#9aa1ac"
-ACC = "#087f8c"
-ACC_D = "#056773"
-ACC_SOFT = "#e7f5f4"
+ACC = "#2563eb"
+ACC_D = "#1d4ed8"
+ACC_SOFT = "#eff6ff"
 
 STATUS_LABEL = {
     "matched": "已匹配",
@@ -74,6 +74,11 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME}  v{VERSION}")
+        assets = Path(__file__).with_name("assets")
+        self.whale_small = tk.PhotoImage(master=self, file=str(assets / "pixel-whale-32.png"))
+        self.whale_mark = tk.PhotoImage(master=self, file=str(assets / "pixel-whale-48.png"))
+        self.whale_icon = tk.PhotoImage(master=self, file=str(assets / "pixel-whale-256.png"))
+        self.iconphoto(True, self.whale_icon, self.whale_small)
         # 适配小屏：窗口不超出可用桌面，避免底部操作区被裁掉。
         width = min(1440, max(1040, self.winfo_screenwidth() - 70))
         height = min(900, max(700, self.winfo_screenheight() - 90))
@@ -168,9 +173,9 @@ class App(tk.Tk):
                         lightcolor=BORDER, darkcolor=BORDER, arrowcolor=SEC, padding=4, relief="flat")
         style.map("TCombobox", fieldbackground=[("readonly", "#ffffff")],
                   bordercolor=[("focus", ACC)], lightcolor=[("focus", ACC)], darkcolor=[("focus", ACC)])
-        style.configure("TButton", background="#eef0f3", foreground=TX, borderwidth=0,
+        style.configure("TButton", background="#eff6ff", foreground=TX, borderwidth=0,
                         focusthickness=0, padding=(12, 6), relief="flat")
-        style.map("TButton", background=[("pressed", "#dfe3e8"), ("active", "#e4e8ee")],
+        style.map("TButton", background=[("pressed", "#dbeafe"), ("active", "#e0edff")],
                   foreground=[("disabled", MUTED)])
         style.configure("Accent.TButton", background=ACC, foreground="#ffffff", borderwidth=0, padding=(14, 6))
         style.map("Accent.TButton", background=[("pressed", ACC_D), ("active", ACC_D)],
@@ -180,9 +185,9 @@ class App(tk.Tk):
         style.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TX,
                         borderwidth=0, rowheight=29, font=(FONT, 10))
         style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
-        style.configure("Treeview.Heading", background="#f7f8fa", foreground=SEC, relief="flat",
+        style.configure("Treeview.Heading", background="#eff6ff", foreground=SEC, relief="flat",
                         font=(FONT, 9, "bold"), padding=(6, 6))
-        style.map("Treeview.Heading", background=[("active", "#eef0f3")])
+        style.map("Treeview.Heading", background=[("active", "#dbeafe")])
         style.map("Treeview", background=[("selected", ACC_SOFT)], foreground=[("selected", TX)])
         for bar in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
             style.configure(bar, background="#e6e9ee", troughcolor=BG, borderwidth=0, arrowsize=12)
@@ -380,7 +385,8 @@ class App(tk.Tk):
 
         head = tk.Frame(outer, bg=CARD)
         head.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(12, 6))
-        tk.Label(head, text="审计对话", bg=CARD, fg=SEC, font=(FONT, 9, "bold")).pack(side="left")
+        tk.Label(head, image=self.whale_small, bg=CARD, bd=0).pack(side="left", padx=(0, 7))
+        tk.Label(head, text="审计对话", bg=CARD, fg=ACC, font=(FONT, 9, "bold")).pack(side="left")
         ttk.Button(head, text="×", style="Ghost.TButton", width=2,
                    command=self._toggle_chat).pack(side="right")
 

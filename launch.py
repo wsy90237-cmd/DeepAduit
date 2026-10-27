@@ -12,6 +12,7 @@ def _selftest(report=None):
     from tb_autofill import ai, analysis, auditlog, connections, dxn, fields, gui, knowledge, knowledge_ui, matching, models, settings, workbook, workflow, workspace
     from openpyxl import Workbook
     from pypdf import PdfReader, PdfWriter
+    import tkinter as tk
     modules = (ai, analysis, auditlog, connections, dxn, fields, gui, knowledge, knowledge_ui, matching, models, settings, workbook, workflow, workspace)
     result = matching.resolve_match(models.TargetField("Synthetic", "B2", "库存现金", "ending"),
                                     [models.LedgerRow("1001", "库存现金", ending=Decimal("100"))])
@@ -59,9 +60,18 @@ def _selftest(report=None):
             raise RuntimeError("PDF 运行依赖自检失败")
         if workflow.readiness([], [])["ready_to_issue"]:
             raise RuntimeError("报告准备度保护自检失败")
+    icon_root = tk.Tk()
+    icon_root.withdraw()
+    try:
+        for size in (32, 48, 256):
+            icon = tk.PhotoImage(master=icon_root, file=str(Path(gui.__file__).with_name("assets") / f"pixel-whale-{size}.png"))
+            if (icon.width(), icon.height()) != (size, size):
+                raise RuntimeError("品牌图片自检失败")
+    finally:
+        icon_root.destroy()
     native = {module.__name__: bool(getattr(module, "__compiled__", False)) for module in modules}
     value = {"product": APP_NAME, "version": __version__, "native_modules": native,
-             "checks": ["decimal_amount", "dpapi_key", "audit_checkpoint", "protected_header", "local_knowledge", "pdf_runtime", "report_readiness"],
+             "checks": ["decimal_amount", "dpapi_key", "audit_checkpoint", "protected_header", "local_knowledge", "pdf_runtime", "report_readiness", "brand_assets"],
              "data": "synthetic only"}
     if report:
         with Path(report).open("x", encoding="utf-8") as stream:
