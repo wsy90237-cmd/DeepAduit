@@ -250,10 +250,11 @@ def scan_template(path, periods=("ending",), unit="自动"):
                     continue
                 if not label or len(label) > 100 or text_key(label) in {"借方", "贷方", "其中", "其中:", "金额", "索引号:", "流动资产:", "非流动资产:"}:
                     continue
-                if isinstance(primary, str) and primary.strip() and not text_key(primary).startswith(("其中", "加:", "减:")):
+                if isinstance(primary, str) and primary.strip() and not text_key(primary).startswith("其中"):
                     if label != primary.strip():
-                        parent = primary.strip().rstrip(":：")
-                    elif (any(sheet.cell(rownum, col).data_type == "f" for col in columns)
+                        if not text_key(primary).startswith(("加:", "减:")):
+                            parent = primary.strip().rstrip(":：")
+                    elif (section_profit or not text_key(primary).startswith(("加:", "减:"))
                           or (strict_tb and index and "-" not in index)):
                         parent = label.rstrip(":：")
                 for col, (period, basis, measure, side, scope) in columns.items():

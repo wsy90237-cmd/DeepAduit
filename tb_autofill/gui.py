@@ -1069,7 +1069,7 @@ class App(tk.Tk):
         self.wait_window(dialog)
         if dialog.result is None:
             return
-        check = matching.resolve_match(result.target, dialog.result, method="manual")
+        check = matching.resolve_match(result.target, dialog.result, method="manual", rows=self.rows)
         result.sources, result.amount = check.sources, check.amount
         result.status, result.method, result.reason = check.status, check.method, check.reason
         result.selected, result.overwrite = check.selected, False

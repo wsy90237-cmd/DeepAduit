@@ -1,11 +1,15 @@
 import csv
 import os
-import shutil
 import tempfile
+import ntpath
+import re
+from collections import Counter
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from openpyxl import load_workbook
+from openpyxl.formula import Tokenizer
 from openpyxl.utils.cell import coordinate_to_tuple
 
 from .fields import file_digest
@@ -37,7 +41,7 @@ def planned_writes(scan, results, *, rows=None):
         seen.add(target.id)
         if target.is_formula:
             raise ValueError(f"{target.id} 是公式，禁止覆盖。")
-        check = resolve_match(target, result.sources, method=result.method)
+        check = resolve_match(target, result.sources, method=result.method, rows=rows)
         if check.status != "matched" or check.amount is None or check.amount != result.amount:
             raise ValueError(f"{target.id} 未通过写入前复核：{check.reason}")
         if target.value is not None and str(target.value).strip() and not result.overwrite:
@@ -53,11 +57,67 @@ def planned_writes(scan, results, *, rows=None):
     return writes
 
 
-def _fingerprint(cell):
+def _external_targets(book, path):
+    result = []
+    for link in book._external_links:
+        relationship = link.file_link
+        if relationship is None:
+            result.append(None)
+            continue
+        target = relationship.Target
+        if re.match(r"^[A-Za-z]:", target) and not re.match(r"^[A-Za-z]:[/\\]", target):
+            result.append(None)
+            continue
+        url = urlsplit(target)
+        if url.scheme and url.scheme.lower() != "file" and not re.match(r"^[A-Za-z]:[/\\]", target):
+            result.append(("uri", target))
+            continue
+        drive_path = bool(re.match(r"^[A-Za-z]:[/\\]", target))
+        value = unquote(target if drive_path else url.path)
+        if url.scheme.lower() == "file":
+            value = "//"+url.netloc+value if url.netloc else re.sub(r"^/(?=[A-Za-z]:)", "", value)
+        base = str(Path(path).parent)
+        if not ntpath.splitdrive(value)[0]:
+            value = ntpath.splitdrive(base)[0]+value if ntpath.isabs(value) else ntpath.join(base,value)
+        result.append(("file", ntpath.normpath(value), "" if drive_path else url.query, "" if drive_path else url.fragment))
+    return tuple(result)
+
+
+def _verify_external_targets(before, after):
+    if None in before or None in after:
+        raise ValueError("存在无法核对的外部链接类型，未自动保存。")
+    if Counter(before) != Counter(after):
+        raise ValueError("外部链接目标发生变化，输出未通过验证。")
+
+
+def _formula_key(value, targets):
+    if not isinstance(value, str):
+        return ("opaque_formula", repr(value), targets) if targets else value
+    if not targets or not re.search(r"\[\d+\]", value):
+        return value
+    try:
+        tokens = Tokenizer(value).items
+    except Exception:
+        return "opaque_formula", value, targets
+    parts, changed = [], False
+    for token in tokens:
+        item = token.value
+        match = re.match(r"^('?)(\[(\d+)\])(?=[^!]+!)", item) if token.type == "OPERAND" and token.subtype == "RANGE" else None
+        if match and 0 < int(match[3]) <= len(targets) and targets[int(match[3])-1] is not None:
+            item = (item[:match.start(2)], targets[int(match[3])-1], item[match.end(2):])
+            changed = True
+        elif token.type == "OPERAND" and token.subtype == "RANGE" and re.search(r"\[\d+\].*!", item):
+            item = ("opaque_range", item, targets)
+            changed = True
+        parts.append((token.type, token.subtype, item))
+    return tuple(parts) if changed else value
+
+
+def _fingerprint(cell, targets=()):
     value = cell.value
     if cell.data_type == "f" and not isinstance(value, str):
-        return "formula", getattr(value, "text", str(value)), getattr(value, "ref", "")
-    return cell.data_type, value
+        return "formula", _formula_key(getattr(value, "text", str(value)), targets), getattr(value, "ref", "")
+    return cell.data_type, _formula_key(value, targets) if cell.data_type == "f" else value
 
 
 def verify_output(source, output, writes):
@@ -65,6 +125,8 @@ def verify_output(source, output, writes):
     before = load_workbook(source, read_only=False, data_only=False, keep_links=True)
     after = load_workbook(output, read_only=False, data_only=False, keep_links=True)
     try:
+        before_links, after_links = _external_targets(before, source), _external_targets(after, output)
+        _verify_external_targets(before_links, after_links)
         if before.sheetnames != after.sheetnames:
             raise ValueError("输出工作表结构发生变化，结果未通过验证。")
         for sheet in before.worksheets:
@@ -80,7 +142,7 @@ def verify_output(source, output, writes):
                     value = money(actual.value)
                     if value is None or abs(value - expected[key]) > Decimal("0.005"):
                         raise ValueError(f"{key} 保存后的金额与计划不一致。")
-                elif _fingerprint(cell) != _fingerprint(actual):
+                elif _fingerprint(cell, before_links) != _fingerprint(actual, after_links):
                     raise ValueError(f"{key} 是保护区域但内容发生变化，输出未通过验证。")
     finally:
         before.close()
@@ -103,7 +165,6 @@ def write_results(scan, results, output, *, rows=None):
     excel = book = None
     initialized = False
     try:
-        shutil.copy2(scan.path, draft)
         try:
             import pythoncom
             import win32com.client
@@ -115,7 +176,10 @@ def write_results(scan, results, output, *, rows=None):
             excel.EnableEvents = False
             excel.AskToUpdateLinks = False
             excel.AutomationSecurity = 3
-            book = excel.Workbooks.Open(str(draft), UpdateLinks=0, ReadOnly=False, IgnoreReadOnlyRecommended=True, AddToMru=False)
+            book = excel.Workbooks.Open(str(scan.path), UpdateLinks=0, ReadOnly=True, IgnoreReadOnlyRecommended=True, AddToMru=False)
+            if not book.ReadOnly:
+                raise ValueError("原始模板未以只读方式打开，未写入。")
+            book.SaveAs(str(draft), FileFormat=book.FileFormat)
             if book.ReadOnly:
                 raise ValueError("输出副本只能以只读方式打开，未写入。")
             for field, amount in writes:

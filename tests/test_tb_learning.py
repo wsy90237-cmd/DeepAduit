@@ -135,6 +135,41 @@ class TbInputTests(unittest.TestCase):
         result=matching.match_fields(scan.fields,[source])[0]
         self.assertEqual((result.status,result.amount),('matched',Decimal(900)))
 
+    def test_new_primary_account_resets_parent_without_an_index_or_formula(self):
+        book=Workbook();sheet=book.active;sheet.title='试算平衡表(期末)'
+        for address,value in {'A6':'报表项目','D6':'期末未审数','A8':'流动资产：',
+            'A9':'货币资金','D9':'=SUM(D10)','A10':'其中：','B10':'银行存款',
+            'A12':'应收账款','A13':'其中：','B13':'甲公司'}.items():sheet[address]=value
+        book.save(self.path);book.close()
+        scan=fields.scan_template(self.path,('ending',),'元')
+        by_label={f.label:f for f in scan.fields}
+        self.assertEqual(by_label['银行存款'].parent,'货币资金')
+        self.assertEqual(by_label['应收账款'].parent,'')
+        self.assertEqual(by_label['甲公司'].parent,'应收账款')
+
+    def test_asset_contra_and_loan_fields_survive_row_and_column_moves(self):
+        for moved in (False,True):
+            with self.subTest(moved=moved):
+                book=Workbook()
+                sheet=book.active
+                sheet.title='试算平衡表(期末)'
+                for address,value in {'A6':'报表项目','C6':'索引号','F6':'期末未审数',
+                    'A8':'非流动资产：','A9':'固定资产原价','C9':'ZC1','A10':'减：','B10':'累计折旧',
+                    'A12':'非流动负债：','A13':'长期借款','C13':'FA1','F13':'=SUM(F14)',
+                    'A14':'长期借款-借款本金'}.items():sheet[address]=value
+                if moved:sheet.move_range('A6:F14',rows=37,cols=3,translate=True)
+                book.save(self.path);book.close()
+                scan=fields.scan_template(self.path,('ending',),'元')
+                rows=[LedgerRow('1601','固定资产',ending=Decimal(80)),
+                      LedgerRow('1602','累计折旧',direction='贷',ending=Decimal(20)),
+                      LedgerRow('2501','长期借款',direction='贷',ending=Decimal(90)),
+                      LedgerRow('250101','本金',path='长期借款/本金',direction='贷',ending=Decimal(90),level=2)]
+                results=matching.match_fields(scan.fields,rows)
+                by_label={r.target.label:r for r in results}
+                self.assertEqual((by_label['累计折旧'].status,by_label['累计折旧'].amount),('matched',Decimal(20)))
+                self.assertEqual((by_label['长期借款-借款本金'].status,by_label['长期借款-借款本金'].amount),('matched',Decimal(90)))
+                self.assertEqual(by_label['长期借款'].status,'protected')
+
     def test_statement_sections_and_deduction_rows_set_presentation_direction(self):
         book=Workbook()
         sheet=book.active
@@ -195,6 +230,7 @@ class TbInputTests(unittest.TestCase):
         sheet=book['试算平衡表(期末)']
         sheet['A9']='其中：'
         sheet['B9']='现  金（库存现金）'
+        sheet['A10']='货币资金'
         sheet['A11']=''
         sheet['B11']='银行存款'
         sheet.move_range('D1:H13',rows=0,cols=3)

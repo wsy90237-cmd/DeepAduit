@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from openpyxl import Workbook, load_workbook
 
 from tb_autofill import auditlog, fields, gui, matching, workbook
-from tb_autofill.models import LedgerRow, Subject, ledger_digest
+from tb_autofill.models import LedgerRow, MatchResult, Subject, ledger_digest
 
 
 def rows(subject="A", amount="100"):
@@ -87,6 +87,17 @@ class WorkbookSafetyTests(unittest.TestCase):
         results = matching.match_fields(scan.fields, rows())
         with self.assertRaisesRegex(ValueError, "之外"):
             workbook.planned_writes(scan, results, rows=rows("B"))
+
+    def test_tb_write_rechecks_semantics_even_for_a_forged_exact_match(self):
+        scan=self.scan()
+        field=replace(scan.fields[0],label='应收账款',statement='balance_sheet')
+        scan.fields=[field]
+        correct=replace(rows()[0],code='1122',name='应收账款')
+        wrong=replace(rows()[0],code='1002',name='银行存款')
+        forged=MatchResult(target=field,sources=[wrong],amount=Decimal(100),status='matched',
+                           selected=True,method='exact')
+        with self.assertRaisesRegex(ValueError,'写入前复核'):
+            workbook.planned_writes(scan,[forged],rows=[correct,wrong])
 
     def test_extra_content_outside_original_extent_is_rejected(self):
         scan = self.scan()
