@@ -88,9 +88,9 @@ def build_facts(rows: list[LedgerRow], top: int = 40) -> dict:
     """
     if not rows:
         raise ValueError("没有科目余额数据")
-    contexts = {(row.subject_id, row.year, row.month) for row in rows}
+    contexts = {(row.subject_id, row.year, row.month, row.ledger_id) for row in rows}
     if len(contexts) > 1:
-        raise ValueError("科目数据包含不同主体或期间，不能混在一起做变动分析")
+        raise ValueError("科目数据包含不同账套版本、主体或期间，不能混在一起做变动分析")
     items = movements(rows)
     parents = _parents([item.code for item in items])
     leaves = [item for item in items if item.code not in parents]

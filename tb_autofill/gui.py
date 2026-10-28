@@ -808,7 +808,8 @@ class App(tk.Tk):
             messagebox.showwarning("期间不合法", "年度需在 1900–2200，月份需在 1–12。")
             return
         subject = Subject(self.current_subject.id, self.current_subject.name, year, month,
-                          self.current_subject.project_path, self.current_subject.source_path)
+                          self.current_subject.project_path, self.current_subject.source_path,
+                          self.current_subject.ledger_id)
         install = self.install_var.get().strip()
         self._invalidate_review(clear_ledger=True)
         self._async("正在校验并复制科目余额（原库只读）…",

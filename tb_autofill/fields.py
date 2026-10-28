@@ -35,17 +35,43 @@ class TemplateScan:
 UNITS = {"元": Decimal("1"), "千元": Decimal("1000"), "万元": Decimal("10000"), "亿元": Decimal("100000000")}
 
 
-def _find_units(workbook):
+def _unit_text(workbook, sheet, value, seen=()):
+    if not isinstance(value, str) or not value.startswith("="):
+        return str(value or "")
+    if len(seen) >= 5:
+        return ""
+    expression = value[1:]
+    reference = re.fullmatch(r"(?:(?:'([^']+)'|([^'!]+))!)?(\$?[A-Z]{1,3}\$?\d+)", expression)
+    if reference:
+        name = reference[1] or reference[2] or sheet.title
+        address = reference[3].replace("$", "")
+        identity = (name, address)
+        if name in workbook.sheetnames and identity not in seen:
+            return _unit_text(workbook, workbook[name], workbook[name][address].value, (*seen, identity))
+    concat = re.fullmatch(r'"((?:[^"]|"")*)"&((?:\$?[A-Z]{1,3}\$?\d+))', expression)
+    if concat:
+        return concat[1].replace('""', '"') + _unit_text(workbook, sheet, "=" + concat[2], seen)
+    return ""
+
+
+def _find_units(workbook, sheets=None):
     units = set()
-    for sheet in workbook.worksheets:
+    for sheet in workbook.worksheets if sheets is None else sheets:
         for row in sheet.iter_rows(max_row=min(sheet.max_row, 100), max_col=min(sheet.max_column, 40)):
             for cell in row:
-                text = text_key(cell.value)
-                if "单位" not in text or not any(x in text for x in ("金额", "币种", "单位:", "单位：")):
+                text = text_key(_unit_text(workbook, sheet, cell.value))
+                label = re.search(r"(?:金额单位|币种单位)[:：]?|^单位[:：]", text)
+                if not label:
                     continue
-                nearby = text + " ".join(str(sheet.cell(cell.row, col).value or "") for col in range(cell.column + 1, min(cell.column + 5, sheet.max_column) + 1))
-                found = re.findall(r"亿元|万元|千元|(?<![万千亿])元", nearby)
-                units.update(found)
+                value = text[label.end():]
+                if not value:
+                    for col in range(cell.column + 1, min(cell.column + 5, sheet.max_column) + 1):
+                        value = text_key(_unit_text(workbook, sheet, sheet.cell(cell.row, col).value))
+                        if value:
+                            break
+                found = re.fullmatch(r"(?:人民币)?[（(]?(亿元|万元|千元|元)[）)]?", value)
+                if found:
+                    units.add(found[1])
     return units
 
 
@@ -99,7 +125,10 @@ def scan_template(path, periods=("ending",), unit="自动"):
     workbook = load_workbook(path, read_only=False, data_only=False, keep_links=True)
     fields, warnings = [], []
     try:
-        found_units = _find_units(workbook)
+        tb_sheets = [sheet for sheet in workbook.worksheets
+                     if re.fullmatch(r"试算平衡表\((?:期初|期末)\)", text_key(sheet.title))]
+        sheets = tb_sheets or workbook.worksheets
+        found_units = _find_units(workbook, sheets)
         if unit == "自动":
             if len(found_units) > 1:
                 raise ValueError("模板内识别到多种金额单位，请在界面明确选择输出单位，或统一模板单位后重试。")
@@ -108,7 +137,11 @@ def scan_template(path, periods=("ending",), unit="自动"):
                 warnings.append("未识别到金额单位，当前按元；请在预览前核对并可手动改选单位。")
         if unit not in UNITS:
             raise ValueError("请选择有效的金额单位")
-        for sheet in workbook.worksheets:
+        for sheet in sheets:
+            strict_tb = sheet in tb_sheets
+            if strict_tb and re.search(r"\((?:合并|合并抵消)\)", text_key(path.stem)):
+                warnings.append(f"{sheet.title}：合并或抵消底稿不能使用单体账套自动填列，已跳过。")
+                continue
             if sheet.max_row > 50000 or sheet.max_column > 500:
                 warnings.append(f"{sheet.title}：使用区域过大，未自动识别，请清理无用格式后重试。")
                 continue
@@ -122,6 +155,7 @@ def scan_template(path, periods=("ending",), unit="自动"):
                 return value
             context = sheet.title + " " + " ".join(str(c.value or "") for row in sheet.iter_rows(max_row=min(5, sheet.max_row)) for c in row if c.data_type != "f")
             header_row, label_col, columns, parent, section_profit = 0, 0, {}, "", False
+            index_cols = set()
             for row in sheet.iter_rows():
                 rownum = row[0].row
                 values = [(c.column, c.value) for c in row if c.value is not None and c.data_type != "f"]
@@ -146,14 +180,25 @@ def scan_template(path, periods=("ending",), unit="自动"):
                                 for v in fragments):
                             break
                         band_end = candidate
+                    index_cols = {col for col in range(1, sheet.max_column + 1)
+                                  if any("索引" in text_key(header_value(r, col))
+                                         for r in range(rownum, band_end + 1))}
                     proposed = {}
                     for col in range(1, sheet.max_column + 1):
                         header = " ".join(str(header_value(r, col) or "") for r in range(rownum, band_end + 1))
                         if not header:
                             continue
-                        role = _column_role(header, context)
+                        if strict_tb:
+                            fragments = {text_key(header_value(r, col)) for r in range(rownum, band_end + 1)} - {""}
+                            wanted = "上期审定数" if "期初" in sheet.title else "期末未审数"
+                            role = _column_role(wanted, context) if fragments == {wanted} else None
+                        else:
+                            role = _column_role(header, context)
                         if role and role[0] in periods:
                             proposed[col] = role
+                    if strict_tb and len(proposed) > 1:
+                        warnings.append(f"{sheet.title}：同一表头存在多列目标金额，需要确认，未自动填列。")
+                        proposed = {}
                     if proposed:
                         # A book input column takes precedence over an audited result column for the same period.
                         for period in periods:
@@ -172,17 +217,23 @@ def scan_template(path, periods=("ending",), unit="自动"):
                     value = sheet.cell(rownum, col).value
                     if not isinstance(value, str) or not value.strip() or value.startswith("="):
                         continue
-                    if CODE_PATTERN.fullmatch(text_key(value)):
+                    if (CODE_PATTERN.fullmatch(text_key(value))
+                            or (re.fullmatch(r"[A-Z]{1,4}", text_key(value))
+                                and col in index_cols)):
                         index = text_key(value)
                     else:
                         label = value
                 label = str(label).strip()
+                if strict_tb and (re.search(r"试\s*算\s*平\s*衡\s*表|^被审计单位|^截止日期|^会计期间|^项\s*目\s*[:：]|^本表取值说明", label)
+                                  or text_key(label).endswith(":") or text_key(label) in {"减:", "加:"}):
+                    continue
                 if not label or len(label) > 100 or text_key(label) in {"借方", "贷方", "其中", "其中:", "金额", "索引号:", "流动资产:", "非流动资产:"}:
                     continue
                 if isinstance(primary, str) and primary.strip() and not text_key(primary).startswith(("其中", "加:", "减:")):
                     if label != primary.strip():
                         parent = primary.strip().rstrip(":：")
-                    elif any(sheet.cell(rownum, col).data_type == "f" for col in columns):
+                    elif (any(sheet.cell(rownum, col).data_type == "f" for col in columns)
+                          or (strict_tb and index and "-" not in index)):
                         parent = label.rstrip(":：")
                 for col, (period, basis, measure, side, scope) in columns.items():
                     cell = sheet.cell(rownum, col)
@@ -193,6 +244,8 @@ def scan_template(path, periods=("ending",), unit="自动"):
                         parent if parent != label else "", index, cell.value, cell.data_type == "f", actual_measure, side, UNITS[unit], scope))
         if not fields:
             warnings.append("未找到所选期间的输入字段：请检查项目名称、科目名称以及期初/期末余额等表头文字。")
+        if tb_sheets:
+            warnings.append("已限定识别期初表的上期审定数、期末表的期末未审数；其他表和调整列保留。上期审定数需要审定来源，不能使用账面期初替代。")
     finally:
         workbook.close()
     if file_digest(path) != before:

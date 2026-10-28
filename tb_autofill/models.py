@@ -34,6 +34,7 @@ class LedgerRow:
     month: int = 0
     basis: str = "book"
     is_profit_loss: bool = False
+    ledger_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -44,10 +45,12 @@ class Subject:
     month: int
     project_path: str
     source_path: str = ""
+    ledger_id: str = ""
 
     @property
     def label(self):
-        return f"{self.name} / {self.year}-{self.month:02d} / {self.id}"
+        suffix = f" / 账套{self.ledger_id}" if self.ledger_id else ""
+        return f"{self.name} / {self.year}-{self.month:02d} / {self.id}{suffix}"
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,7 @@ from .models import LedgerRow, MatchResult, TargetField, money
 @lru_cache(maxsize=20000)
 def _normalize_cached(text: str) -> str:
     text = unicodedata.normalize("NFKC", text).strip().lower()
-    text = re.sub(r"^(?:[一二三四五六七八九十百]+[、.．]|\([一二三四五六七八九十]+\)|\d+[、.．]|(?:加|减)[:：])\s*", "", text)
+    text = re.sub(r"^(?:(?:[一二三四五六七八九十百]+[、.．]|\([一二三四五六七八九十]+\)|\d+[、.．]|(?:加|减|其中)[:：])\s*)+", "", text)
     return re.sub(r"[\s\u3000]+", "", text)
 
 
@@ -32,6 +32,12 @@ _ALIAS_GROUPS = (
     ("固定资产", "固定资产原价", "固定资产原值"),
     ("交易性金融资产", "以公允价值计量且其变动计入当期损益的金融资产"),
     ("销售费用", "营业费用"),
+    ("其他业务成本", "其他业务支出"),
+    ("研发费用", "研究与开发费"),
+    ("所得税费用", "所得税"),
+    ("手续费支出", "手续费"),
+    ("累计摊销", "无形资产累计摊销"),
+    ("资产处置收益", "资产处置损益"),
     ("税金及附加", "营业税金及附加"),
     ("工资", "职工工资", "工资薪金"),
     ("福利费", "职工福利", "职工福利费"),
@@ -46,6 +52,7 @@ _ALIAS_GROUPS = (
 )
 _ALIASES = {normalize(name): normalize(group[0]) for group in _ALIAS_GROUPS for name in group}
 _NOTE_PAREN = re.compile(r"^(?:注\d*|附注|备注|说明|详见|见附注)[:：、.\s\d]*")
+_SIGN_PAREN = re.compile(r'\((?:[^()]*(?:损失|亏损|收益)[^()]*以[“”"\'＋+－−-]+号填列|以[“”"\'＋+－−-]+(?:号|值)填列)\)$')
 _PATH_SEP = re.compile(r"[/\\>＞—–－-]+")
 
 
@@ -56,6 +63,7 @@ def _canonical_cached(name: str) -> str:
     match = re.search(r"\(([^()]*)\)$", name)
     if match and _NOTE_PAREN.match(match.group(1)):
         name = name[:match.start()]
+    name = _SIGN_PAREN.sub("", name)
     return _ALIASES.get(name, name)
 
 
@@ -110,9 +118,9 @@ class _Index:
 
 
 def _validate_rows(rows):
-    contexts = {(str(row.subject_id), row.year, row.month) for row in rows}
+    contexts = {(str(row.subject_id), row.year, row.month, row.ledger_id) for row in rows}
     if len(contexts) > 1:
-        raise ValueError("科目数据包含不同主体、年度或期间，请分别处理")
+        raise ValueError("科目数据包含不同账套版本、主体、年度或期间，请分别处理")
     codes = [str(row.code).strip() for row in rows]
     if any(not code for code in codes):
         raise ValueError("科目编码不能为空")
@@ -139,10 +147,13 @@ def _in_root(row, root):
 
 
 def _detail_label(target, index):
-    label = normalize(target.label)
+    label = _canonical(target.label)
     parts = _PATH_SEP.split(label)
     if len(parts) > 1 and _root_codes(parts[0], index):
         return parts[0], parts[-1]
+    impairment = re.fullmatch(r"(应收账款|其他应收款|应收票据|应收利息|应收股利|预付账款)(?:坏账准备|减值准备)", label)
+    if impairment and _root_codes("坏账准备", index):
+        return "坏账准备", impairment[1]
     if target.parent and _root_codes(target.parent, index):
         return target.parent, target.label
     if _canonical(target.label) in index.by_name:
@@ -210,7 +221,21 @@ def _row_amount(target, row):
     if measure == "credit":
         return money(row.credit)
     if measure == "profit_loss":
-        return money(row.debit if _direction(row) == 1 else row.credit)
+        direction = _direction(row)
+        if not row.is_profit_loss:
+            return None
+        amount = money(row.debit if direction == 1 else row.credit)
+        presentation = normalize(target.label)
+        if _canonical(target.parent) in {"信用减值损失", "资产减值损失"}:
+            presentation += normalize(target.parent)
+        income_positive = ("利息收入" in presentation and re.search(r'以[“”"\'＋+]+(?:号|值)填列', presentation))
+        loss_negative = re.search(r'(?:损失|亏损)以[“”"\'－−-]+号填列', presentation)
+        gain_negative = re.search(r'(?:收益)以[“”"\'－−-]+号填列', presentation)
+        if amount is not None and (income_positive or loss_negative):
+            amount *= -direction
+        elif amount is not None and gain_negative:
+            amount *= direction
+        return amount
     debit, credit = money(row.debit), money(row.credit)
     if debit is None or credit is None:
         return None
@@ -250,7 +275,9 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         return result
     if any(value is None for value in amounts):
         result.status = "missing"
-        if target.occurrence_scope == "month":
+        if target.measure == "profit_loss" and any(not row.is_profit_loss for row in sources):
+            result.reason = "损益表字段不能直接使用资产负债科目的发生额，需要对应的损益来源"
+        elif target.occurrence_scope == "month":
             result.reason = "缺少单月发生额依据，不能使用年初累计发生额"
         else:
             result.reason = "缺少上期发生额依据，不能使用本年发生额" if target.period == "opening" and target.measure != "balance" else "来源金额缺失；真实零值和缺失值分开处理"
@@ -267,7 +294,7 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
     result.selected = target.value is None or (isinstance(target.value, str) and not target.value.strip())
     result.reason = "按已确认来源本地计算；科目余额按自然方向保留符号"
     if target.measure == "profit_loss" or (target.measure == "balance" and any(row.is_profit_loss for row in sources) and not target.balance_side):
-        result.reason += "；损益按科目方向一侧发生额"
+        result.reason += "；损益按科目方向一侧发生额，正负号遵循模板明确的填列说明"
     if not result.selected:
         result.reason += "；目标已有值，默认保留，覆盖需明确选择"
     return result

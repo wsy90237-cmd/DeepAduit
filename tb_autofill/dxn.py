@@ -17,8 +17,17 @@ from decimal import Decimal
 from .models import LedgerRow, Subject, money
 
 _DRAFT = "财务报表底稿.xls"
-_ITEM_ID = re.compile(r"^I\d+D(\d+)N\d+Z", re.I)
+_ITEM_ID = re.compile(r"^I\d+D(\d+)N(\d+)Z", re.I)
 _TABLES = ("c_kmyek", "c_cwkmk")
+_PROFIT_LOSS_NAMES = {
+    "主营业务收入", "产品销售收入", "其他业务收入", "其他收益", "营业收入",
+    "主营业务成本", "产品销售成本", "其他业务成本", "其他业务支出", "营业成本",
+    "销售费用", "产品销售费用", "营业费用", "管理费用", "财务费用", "研发费用",
+    "税金及附加", "产品销售税金及附加", "经营税金及附加", "营业税金及附加",
+    "投资收益", "投资损益", "资产处置损益", "公允价值变动损益", "公允价值变动收益",
+    "信用减值损失", "资产减值损失", "营业外收入", "营业外支出", "补贴收入",
+    "所得税", "所得税费用", "以前年度损益调整",
+}
 
 
 def _service_dir(path: str | Path) -> Path | None:
@@ -162,10 +171,11 @@ def _subject_from_draft(path: Path, project: Path) -> Subject:
         for row in range(min(main.nrows, 100)):
             hit = _ITEM_ID.match(str(main.cell_value(row, 0)).strip())
             if hit:
-                identities.add(hit.group(1))
+                identities.add((hit.group(1), hit.group(2)))
         if len(identities) != 1:
-            raise ValueError("底稿未能唯一识别单位 dwid")
-        return Subject(identities.pop(), name, year, month, str(project), str(path))
+            raise ValueError("底稿未能唯一识别单位及账套编号（dwid/ndid）")
+        subject_id, ledger_id = identities.pop()
+        return Subject(subject_id, name, year, month, str(project), str(path), ledger_id)
     finally:
         book.release_resources()
 
@@ -180,7 +190,7 @@ def list_subjects(project_path: str) -> list[Subject]:
         except (ValueError, OSError) as exc:
             failures.append(str(exc))
             continue
-        key = (subject.id, subject.year, subject.month)
+        key = (subject.id, subject.year, subject.month, subject.ledger_id)
         if key in subjects and subjects[key].name != subject.name:
             raise ValueError("同一单位编号和期间出现不同单位名称，请检查鼎信诺底稿")
         subjects[key] = subject
@@ -321,15 +331,26 @@ class DxnLedgerDB:
             raise ValueError("不能在同一数据库会话混用不同项目")
         if not subject.id.isdigit() or not 1900 <= subject.year <= 2200 or not 1 <= subject.month <= 12:
             raise ValueError("主体编号、年度或月份不合法")
+        ledger_id = subject.ledger_id
+        if ledger_id and not ledger_id.isdigit():
+            raise ValueError("账套编号不合法")
         with self.connection.cursor() as cursor:
+            if not ledger_id:
+                cursor.execute("SELECT DISTINCT ndid FROM c_kmyek WHERE dwid=%s AND kjyear=%s AND kjmonth=%s",
+                               (int(subject.id), subject.year, subject.month))
+                identities = cursor.fetchall()
+                if len(identities) != 1 or not str(identities[0]["ndid"]).isdigit():
+                    raise ValueError("所选主体期间缺少唯一账套编号，请重新选择对应的鼎信诺底稿")
+                ledger_id = str(identities[0]["ndid"])
             cursor.execute(
                 "SELECT kjmonth,kmbh,kmmc,kmjc,jdfx,qcs,jffse,dffse,qms,sjkmmc "
-                "FROM c_kmyek WHERE dwid=%s AND kjyear=%s AND kjmonth BETWEEN %s AND %s "
-                "ORDER BY kmbh,kjmonth", (int(subject.id), subject.year, 1, subject.month))
+                "FROM c_kmyek WHERE dwid=%s AND ndid=%s AND kjyear=%s AND kjmonth BETWEEN %s AND %s "
+                "ORDER BY kmbh,kjmonth", (int(subject.id), int(ledger_id), subject.year, 1, subject.month))
             rows = cursor.fetchall()
         if not any(_integer(row["kjmonth"], "月份") == subject.month for row in rows):
             raise ValueError("科目余额库没有所选主体和截止月份的数据，不自动改用其他月份")
-        return _aggregate(rows, subject)
+        from dataclasses import replace
+        return _aggregate(rows, replace(subject, ledger_id=ledger_id))
 
     def close(self):
         errors = []
@@ -389,20 +410,22 @@ def _aggregate(rows: list[dict], subject: Subject) -> list[LedgerRow]:
         opening = money(months[1]["qcs"]) if 1 in months else None
         ending = money(months[subject.month]["qms"]) if subject.month in months else None
         values = {field: [money(row.get(field)) for row in months.values()] for field in ("jffse", "dffse")}
-        debit = sum(values["jffse"], Decimal(0)) if None not in values["jffse"] else None
-        credit = sum(values["dffse"], Decimal(0)) if None not in values["dffse"] else None
+        complete = set(months) == set(range(1, subject.month + 1))
+        debit = sum(values["jffse"], Decimal(0)) if complete and None not in values["jffse"] else None
+        credit = sum(values["dffse"], Decimal(0)) if complete and None not in values["dffse"] else None
         # qcs/qms 是原库自然方向金额；不把普通贷方余额统一转负。
         level = _integer(last.get("kmjc", ""), "科目级次")
-        is_pl = code.startswith("6") or (code[:4] in {"5001", "5101", "5201", "5301", "5401", "5402", "5405", "5501", "5502", "5503", "5601", "5701", "5801"}
-                                       and any(word in name for word in ("收入", "收益", "损益", "费用", "支出", "主营业务成本", "所得税")))
         output.append(LedgerRow(code=code, name=name, direction=direction, opening=opening, ending=ending,
                                 debit=debit, credit=credit, level=level, subject_id=subject.id,
-                                year=subject.year, month=subject.month, basis="book", is_profit_loss=is_pl))
+                                year=subject.year, month=subject.month, basis="book",
+                                ledger_id=subject.ledger_id))
     from dataclasses import replace
     for index, row in enumerate(output):
         parents = sorted((p for p in output if row.code.startswith(p.code) and len(p.code) < len(row.code)
                           and p.level < row.level), key=lambda p: p.level)
-        output[index] = replace(row, path="/".join([p.name for p in parents] + [row.name]))
+        root_name = re.sub(r"\s+", "", parents[0].name if parents else row.name)
+        output[index] = replace(row, path="/".join([p.name for p in parents] + [row.name]),
+                                is_profit_loss=row.code.startswith("6") or root_name in _PROFIT_LOSS_NAMES)
     return output
 
 
