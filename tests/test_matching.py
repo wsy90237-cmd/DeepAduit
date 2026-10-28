@@ -3,7 +3,7 @@ from dataclasses import replace
 from decimal import Decimal
 from time import perf_counter
 
-from tb_autofill.matching import match_fields, normalize, resolve_match, validate_claims
+from tb_autofill.matching import apply_ai_suggestions, match_fields, normalize, resolve_match, validate_claims
 from tb_autofill.models import LedgerRow, TargetField
 
 
@@ -20,6 +20,96 @@ def target(label="库存现金", **kwargs):
 
 
 class MatchingTests(unittest.TestCase):
+    def test_vat_summary_does_not_use_zero_component_as_complete_tax_balance(self):
+        field=target('应交税费-增值税',statement='balance_sheet',presentation_direction='贷')
+        zero=row('222101','增值税',path='应交税费/增值税',direction='贷',level=2,ending=Decimal(0))
+        unpaid=row('222102','未交增值税',path='应交税费/未交增值税',direction='贷',level=2,ending=Decimal(-30))
+        result=match_fields([field],[row('2221','应交税费'),zero,unpaid])[0]
+        self.assertEqual(result.status,'ambiguous')
+        self.assertIsNone(result.amount)
+        self.assertEqual(resolve_match(field,[zero]).status,'missing')
+        self.assertEqual(resolve_match(field,[zero,unpaid]).status,'missing')
+    def test_tax_details_use_tax_root_and_specific_tax_name(self):
+        parent=row('2221','应交税金',direction='贷')
+        details=[('城建税','应交城市维护建设税'),('土增税','土地增值税'),
+                 ('个人所得税','应交个人所得税'),('印花税','应交印花税')]
+        sources=[parent]+[row(f'22210{i}',source,path=f'应交税金/{source}',level=2,
+                       direction='贷',ending=Decimal(i)) for i,(_,source) in enumerate(details,1)]
+        for i,(label,_) in enumerate(details,1):
+            field=target('应交税费-'+label,statement='balance_sheet',presentation_direction='贷')
+            result=match_fields([field],sources)[0]
+            self.assertEqual((result.status,result.amount,result.source_ids),('matched',Decimal(i),[f'22210{i}']))
+
+    def test_tax_detail_cannot_use_unrelated_root_or_wrong_tax(self):
+        field=target('应交税费-印花税',statement='balance_sheet',presentation_direction='贷')
+        wrong=row('222101','应交个人所得税',path='应交税费/应交个人所得税',level=2,direction='贷')
+        expense=row('640101','应交印花税',path='管理费用/应交印花税',level=2,direction='借')
+        self.assertEqual(resolve_match(field,[wrong]).status,'missing')
+        self.assertEqual(resolve_match(field,[expense]).status,'missing')
+        self.assertEqual(match_fields([field],[row('2221','应交税费'),wrong,expense])[0].status,'unmatched')
+
+    def test_multiple_tax_roots_or_disjoint_details_are_ambiguous(self):
+        field=target('应交税费-印花税',statement='balance_sheet')
+        parent=row('2221','应交税费')
+        a=row('222101','应交印花税',path='应交税费/应交印花税',level=2)
+        b=row('222102','印花税',path='应交税费/印花税',level=2)
+        self.assertEqual(match_fields([field],[parent,a,b])[0].status,'ambiguous')
+        other=row('2222','应交税金')
+        self.assertEqual(match_fields([field],[parent,other,a])[0].status,'ambiguous')
+
+    def test_other_receivable_allowance_standalone_name_uses_its_own_balance(self):
+        field=target("其他应收款坏账准备",parent="其他应收款",statement="balance_sheet",presentation_direction="贷")
+        allowance=row("120","坏账准备-其他应收款",direction="贷",ending=Decimal("23"),level=1)
+        unrelated=row("114","坏账准备",direction="贷",ending=Decimal("7"),level=1)
+        result=match_fields([field],[unrelated,allowance])[0]
+        self.assertEqual((result.status,result.amount,result.source_ids),("matched",Decimal("23"),["120"]))
+
+    def test_allowance_loss_name_is_valid_only_under_asset_allowance(self):
+        field=target("应收账款坏账准备",parent="应收账款",statement="balance_sheet",presentation_direction="贷")
+        root=row("1231","坏账准备",direction="贷",ending=Decimal("10"),level=1)
+        child=row("123101","应收账款坏账损失",path="坏账准备/应收账款坏账损失",direction="贷",ending=Decimal("10"),level=2)
+        expense=row("670101","应收账款坏账损失",path="信用减值损失/应收账款坏账损失",direction="借",ending=Decimal("0"),level=2,is_profit_loss=True)
+        result=match_fields([field],[root,child,expense])[0]
+        self.assertEqual((result.status,result.amount,result.source_ids),("matched",Decimal("10"),["123101"]))
+        self.assertEqual(resolve_match(field,[expense]).status,"missing")
+
+    def test_allowance_never_assigns_an_unspecified_total_or_principal(self):
+        field=target("应收账款坏账准备",parent="应收账款",statement="balance_sheet",presentation_direction="贷")
+        root=row("1231","坏账准备",direction="贷",ending=Decimal("40"))
+        principal=row("1122","应收账款",direction="借",ending=Decimal("500"))
+        self.assertEqual(match_fields([field],[root,principal])[0].status,"unmatched")
+        for source in (root,principal):
+            self.assertEqual(resolve_match(field,[source]).status,"missing")
+
+    def test_allowance_two_disjoint_components_are_not_guessed(self):
+        field=target("应收账款坏账准备",statement="balance_sheet")
+        a=row("123101","应收账款坏账准备",direction="贷",level=2)
+        b=row("123201","应收账款坏账准备",direction="贷",level=2)
+        result=match_fields([field],[a,b])[0]
+        self.assertEqual(result.status,"ambiguous")
+        self.assertIsNone(result.amount)
+
+    def test_allowance_component_root_wins_over_same_named_child(self):
+        field=target("应收账款坏账准备",statement="balance_sheet",presentation_direction="贷")
+        root=row("123101","应收账款坏账准备",direction="贷",ending=Decimal("40"),level=2)
+        child=row("12310101","应收账款坏账准备",direction="贷",ending=Decimal("10"),level=3)
+        result=match_fields([field],[child,root])[0]
+        self.assertEqual((result.status,result.amount,result.source_ids),("matched",Decimal("40"),["123101"]))
+
+    def test_allowance_categories_are_separate_and_ai_cannot_replace_with_principal(self):
+        receivable=target("应收账款坏账准备",cell="D50",statement="balance_sheet",presentation_direction="贷")
+        other=target("其他应收款坏账准备",cell="D70",statement="balance_sheet",presentation_direction="贷")
+        root=row("1231","坏账准备",direction="贷",ending=Decimal("40"),level=1)
+        one=row("123101","应收账款坏账损失",path="坏账准备/应收账款坏账损失",direction="贷",ending=Decimal("10"),level=2)
+        two=row("123102","其他应收款坏账损失",path="坏账准备/其他应收款坏账损失",direction="贷",ending=Decimal("30"),level=2)
+        principal=row("1122","应收账款",ending=Decimal("500"))
+        rows=[root,one,two,principal]
+        results=match_fields([receivable,other],rows)
+        self.assertEqual([(r.status,r.amount,r.source_ids) for r in results],[("matched",Decimal("10"),["123101"]),("matched",Decimal("30"),["123102"])])
+        applied,_=apply_ai_suggestions(results,[{"target_id":receivable.id,"source_codes":["1122"]}],rows)
+        self.assertEqual(applied,0)
+        self.assertEqual(results[0].amount,Decimal("10"))
+
     def test_normalize_full_width_and_numbering(self):
         self.assertEqual(normalize(" 一、 现金（库存现金） "), "现金(库存现金)")
 

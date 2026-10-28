@@ -181,10 +181,90 @@ def _cash_bank_total(target):
             and _canonical(target.parent) in {"", "货币资金"})
 
 
+def _allowance_subject(target):
+    if target.statement != "balance_sheet":
+        return ""
+    label = _canonical(target.label)
+    for subject in ("其他应收款", "应收账款", "应收票据", "应收利息", "应收股利"):
+        if label in {subject + "坏账准备", subject + "减值准备"}:
+            return subject
+    return ""
+
+
+def _allowance_matches(subject, row):
+    if row.is_profit_loss:
+        return False
+    name = _PATH_SEP.sub("-", _canonical(row.name))
+    variants = {subject + "坏账准备", subject + "减值准备", subject + "-坏账准备",
+                "坏账准备-" + subject, "坏账准备" + subject}
+    if name in variants:
+        return True
+    root = _canonical(str(row.path).split("/")[0])
+    return root == "坏账准备" and row.level > 1 and name in {subject, subject + "坏账损失", subject + "-坏账损失"}
+
+
+def _tax_name(name):
+    name = normalize(name)
+    name = re.sub(r"^(?:应交|应缴)", "", name)
+    return {"城建税": "城市维护建设税", "城市建设维护税": "城市维护建设税",
+            "土增税": "土地增值税"}.get(name, name)
+
+
+def _vat_summary(target):
+    if target.statement != "balance_sheet":
+        return False
+    parts = _PATH_SEP.split(normalize(target.label))
+    return ((len(parts) == 2 and _canonical(parts[0]) == "应交税费" and parts[1] == "增值税")
+            or (_canonical(target.parent) == "应交税费" and normalize(target.label) == "增值税"))
+
+
+def _tax_subject(target):
+    if target.statement != "balance_sheet":
+        return ""
+    parts = _PATH_SEP.split(normalize(target.label))
+    if len(parts) == 2 and _canonical(parts[0]) == "应交税费":
+        name = _tax_name(parts[1])
+    elif _canonical(target.parent) == "应交税费":
+        name = _tax_name(target.label)
+    else:
+        return ""
+    return name if name in {"城市维护建设税", "土地增值税", "个人所得税", "印花税"} else ""
+
+
+def _tax_matches(subject, row):
+    return (not row.is_profit_loss and row.level > 1
+            and _canonical(str(row.path).split("/")[0]) == "应交税费"
+            and _tax_name(row.name) == subject)
+
+
 def _candidate_rows(target, index):
     if target.component:
         candidates = [row for row in index.rows if _component_matches(target, row)]
         return candidates, "template_component"
+    if _vat_summary(target):
+        candidates = [row for row in index.rows if row.level == 2 and not row.is_profit_loss
+                      and _canonical(str(row.path).split("/")[0]) == "应交税费"
+                      and "增值税" in normalize(row.name) and "土地增值税" not in normalize(row.name)]
+        return candidates, "ambiguous_parent"
+    subject = _allowance_subject(target)
+    if subject:
+        candidates = [row for row in index.rows if _allowance_matches(subject, row)]
+        roots = [row for row in candidates if not any(other != row and other.level < row.level
+                 and _in_root(row, other.code) for other in candidates)]
+        if len(roots) == 1 and all(_in_root(row, roots[0].code) for row in candidates):
+            return roots, "allowance_component"
+        return candidates, "ambiguous_parent" if candidates else "allowance_component"
+    tax = _tax_subject(target)
+    if tax:
+        parents = [row for row in index.rows if row.level == 1 and _canonical(row.name) == "应交税费"]
+        candidates = [row for row in index.rows if _tax_matches(tax, row)]
+        if len(parents) != 1 or any(not _in_root(row, parents[0].code) for row in candidates):
+            return candidates, "ambiguous_parent" if candidates else "tax_detail"
+        roots = [row for row in candidates if not any(other != row and other.level < row.level
+                 and _in_root(row, other.code) for other in candidates)]
+        if len(roots) == 1 and all(_in_root(row, roots[0].code) for row in candidates):
+            return roots, "tax_detail"
+        return candidates, "ambiguous_parent" if candidates else "tax_detail"
     if _cash_bank_total(target):
         key = _canonical(target.label)
         candidates = index.by_name.get(key, [])
@@ -230,6 +310,14 @@ def _row_amount(target, row):
     if target.component not in {"", "cost", "fair_value_change"}:
         raise ValueError("模板金额分项未识别")
     if target.component and not _component_matches(target, row):
+        return None
+    if _vat_summary(target):
+        return None
+    subject = _allowance_subject(target)
+    if subject and not _allowance_matches(subject, row):
+        return None
+    tax = _tax_subject(target)
+    if tax and not _tax_matches(tax, row):
         return None
     if _cash_bank_total(target) and (row.level != 1 or _canonical(row.path or row.name) != _canonical(target.label)):
         return None
@@ -326,7 +414,13 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         return result
     if any(value is None for value in amounts):
         result.status = "missing"
-        if _cash_bank_total(target) and any(row.level != 1 or _canonical(row.path or row.name) != _canonical(target.label) for row in sources):
+        if _vat_summary(target):
+            result.reason = "增值税汇总需确认应交、未交、预交等明细的取数范围，不能用单个同名余额代替"
+        elif _allowance_subject(target) and any(not _allowance_matches(_allowance_subject(target), row) for row in sources):
+            result.reason = "坏账准备字段必须使用对应应收类别的明确备抵分项，不能使用混合总额或应收本金"
+        elif _tax_subject(target) and any(not _tax_matches(_tax_subject(target), row) for row in sources):
+            result.reason = "税费明细必须来自应交税费或应交税金下的对应税种"
+        elif _cash_bank_total(target) and any(row.level != 1 or _canonical(row.path or row.name) != _canonical(target.label) for row in sources):
             result.reason = "现金或银行存款总额字段需要对应一级总科目，不能用单个账户明细替代"
         elif target.component and any(not _component_matches(target, row) for row in sources):
             result.reason = "来源不属于模板指定的投资性房地产成本或公允价值变动分项"
@@ -360,6 +454,10 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         result.reason += "；按模板的投资性房地产" + ("成本分项" if target.component == "cost" else "公允价值变动分项")
     if method == "account_total":
         result.reason += "；字段为现金或银行存款总额，取对应一级总科目，不重复叠加同名明细"
+    elif method == "allowance_component":
+        result.reason += "；按应收类别及坏账准备科目路径匹配，不将混合准备总额直接分配"
+    elif method == "tax_detail":
+        result.reason += "；按应交税费科目路径和税种名称匹配"
     if target.measure == "profit_loss" or (target.measure == "balance" and any(row.is_profit_loss for row in sources) and not target.balance_side):
         result.reason += "；损益按科目方向一侧发生额，正负号遵循模板明确的填列说明"
     if not result.selected:
@@ -454,6 +552,8 @@ def match_fields(targets: list[TargetField], rows: list[LedgerRow]) -> list[Matc
             result = MatchResult(target=target, sources=candidates, method=method)
             result.status = "ambiguous" if candidates or method == "ambiguous_parent" else "unmatched"
             result.reason = "父科目存在多个候选，需要确认完整路径" if method == "ambiguous_parent" else ("存在多个同名候选，需要按科目路径确认" if candidates else "没有可靠匹配，不猜测或自动归入其他")
+            if _vat_summary(target):
+                result.reason = "增值税汇总需确认应交、未交、预交等明细的取数范围，不能用单个同名余额代替"
         else:
             result = resolve_match(target, candidates, method)
         results.append(result)

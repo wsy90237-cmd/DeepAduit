@@ -146,6 +146,11 @@ def scan_template(path, periods=("ending",), unit="自动"):
                 warnings.append(f"{sheet.title}：使用区域过大，未自动识别，请清理无用格式后重试。")
                 continue
             merged_ranges = list(sheet.merged_cells.ranges)
+            def resolved_label(cell):
+                value = cell.value
+                if cell.data_type == "f":
+                    return _unit_text(workbook, sheet, value) if isinstance(value, str) else ""
+                return value
             def header_value(row, col):
                 value = sheet.cell(row, col).value
                 if value is None:
@@ -209,9 +214,9 @@ def scan_template(path, periods=("ending",), unit="自动"):
                         proposed = {}
                     if proposed:
                         if strict_tb and business_labels is None:
-                            business_labels = {text_key(cell.value).replace("-", "")
+                            business_labels = {text_key(value).replace("-", "")
                                 for cells in sheet.iter_rows(min_col=labels[0], max_col=min(proposed) - 1)
-                                for cell in cells if isinstance(cell.value, str) and cell.data_type != "f"}
+                                for cell in cells if isinstance((value := resolved_label(cell)), str) and value}
                         # A book input column takes precedence over an audited result column for the same period.
                         for period in periods:
                             if any(r[0] == period and r[1] == "book" for r in proposed.values()):
@@ -222,16 +227,19 @@ def scan_template(path, periods=("ending",), unit="自动"):
                     continue
                 if not columns or rownum <= header_row:
                     continue
-                primary = sheet.cell(rownum, label_col).value
+                primary = resolved_label(sheet.cell(rownum, label_col))
                 label = primary if isinstance(primary, str) and not primary.startswith("=") else ""
                 index = ""
                 for col in range(label_col + 1, min(columns)):
-                    value = sheet.cell(rownum, col).value
+                    value = resolved_label(sheet.cell(rownum, col))
                     if not isinstance(value, str) or not value.strip() or value.startswith("="):
                         continue
-                    if (CODE_PATTERN.fullmatch(text_key(value))
-                            or (re.fullmatch(r"[A-Z]{1,4}", text_key(value))
-                                and col in index_cols)):
+                    if col in index_cols:
+                        candidate = text_key(value)
+                        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", candidate):
+                            index = candidate
+                        continue
+                    if CODE_PATTERN.fullmatch(text_key(value)):
                         index = text_key(value)
                     else:
                         label = value

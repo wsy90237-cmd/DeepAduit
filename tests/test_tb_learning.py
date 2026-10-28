@@ -113,6 +113,28 @@ class TbInputTests(unittest.TestCase):
         book.close()
         self.assertEqual(fields.scan_template(self.path).unit,"万元")
 
+    def test_internal_label_reference_is_recognized_without_executing_formulas(self):
+        book=Workbook()
+        opening=book.active
+        opening.title='试算平衡表(期初)'
+        opening['A35']='其他应付款'
+        opening['C35']=15
+        ending=book.create_sheet('试算平衡表(期末)')
+        ending['A40']='报表项目'
+        ending['C40']='索引号'
+        ending['F40']='期末未审数'
+        ending['A41']='流动负债：'
+        ending['A42']="='试算平衡表(期初)'!A35"
+        ending['C42']="='试算平衡表(期初)'!C35"
+        ending['A43']="='[old.xlsx]试算平衡表(期初)'!A35"
+        book.save(self.path)
+        book.close()
+        scan=fields.scan_template(self.path,('ending',),'元')
+        self.assertEqual([(f.cell,f.label,f.presentation_direction,f.index_code) for f in scan.fields], [('F42','其他应付款','贷','15')])
+        source=LedgerRow('2241','其他应付款',ending=Decimal(900),direction='贷')
+        result=matching.match_fields(scan.fields,[source])[0]
+        self.assertEqual((result.status,result.amount),('matched',Decimal(900)))
+
     def test_statement_sections_and_deduction_rows_set_presentation_direction(self):
         book=Workbook()
         sheet=book.active
@@ -157,6 +179,14 @@ class TbInputTests(unittest.TestCase):
         book.close()
         moved=fields.scan_template(self.path,("ending",),"元")
         self.assertEqual(next(f for f in moved.fields if f.label=='投资性房地产').component,'cost')
+        book=load_workbook(self.path)
+        book['封面']['Z99']='投资性房地产公允价值变动'
+        book['试算平衡表(期末)']['B45']='=封面!Z99'
+        book.save(self.path)
+        book.close()
+        linked=fields.scan_template(self.path,("ending",),"元")
+        self.assertEqual(next(f for f in linked.fields if f.label=='投资性房地产').component,'cost')
+        self.assertEqual(next(f for f in linked.fields if f.label=='投资性房地产公允价值变动').component,'fair_value_change')
 
     def test_cash_and_bank_identification_survives_row_and_column_movement(self):
         self.make_book()
