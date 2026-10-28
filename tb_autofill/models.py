@@ -68,6 +68,9 @@ class TargetField:
     balance_side: str = ""
     unit_factor: Decimal = Decimal("1")
     occurrence_scope: str = "year_to_date"
+    statement: str = ""
+    presentation_direction: str = ""
+    component: str = ""
 
     @property
     def id(self):

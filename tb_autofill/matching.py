@@ -165,7 +165,34 @@ def _detail_label(target, index):
     return "", target.label
 
 
+def _component_matches(target, row):
+    if row.is_profit_loss:
+        return False
+    name = _canonical(row.name)
+    root = _canonical(str(row.path).split("/")[0])
+    property_root = root in {"投资性房地产", "投资性房地产(公允计价)", "投资性房地产(公允价值计量)", "投资性房地产(成本计量)"}
+    if target.component == "cost":
+        return name in {"投资性房地产-成本", "投资性房地产成本"} or (property_root and name == "成本")
+    return name in {"投资性房地产-公允价值变动", "投资性房地产公允价值变动"} or (property_root and name == "公允价值变动")
+
+
+def _cash_bank_total(target):
+    return (target.statement == "balance_sheet" and _canonical(target.label) in {"库存现金", "银行存款"}
+            and _canonical(target.parent) in {"", "货币资金"})
+
+
 def _candidate_rows(target, index):
+    if target.component:
+        candidates = [row for row in index.rows if _component_matches(target, row)]
+        return candidates, "template_component"
+    if _cash_bank_total(target):
+        key = _canonical(target.label)
+        candidates = index.by_name.get(key, [])
+        roots = [row for row in candidates if row.level == 1 and _canonical(row.path or row.name) == key]
+        if len(roots) == 1 and all(row == roots[0] or (row.level > roots[0].level and _in_root(row, roots[0].code)) for row in candidates):
+            return roots, "account_total"
+        if candidates:
+            return candidates, "ambiguous_parent"
     parent, leaf = _detail_label(target, index)
     roots = _root_codes(parent, index)
     scoped, scoped_set = index.scoped(roots)
@@ -196,6 +223,20 @@ def _direction(row):
 
 def _row_amount(target, row):
     measure = target.measure
+    if target.statement not in {"", "balance_sheet", "profit_loss"}:
+        raise ValueError("报表区段未识别")
+    if target.presentation_direction not in {"", "借", "贷"}:
+        raise ValueError("模板列示方向未识别")
+    if target.component not in {"", "cost", "fair_value_change"}:
+        raise ValueError("模板金额分项未识别")
+    if target.component and not _component_matches(target, row):
+        return None
+    if _cash_bank_total(target) and (row.level != 1 or _canonical(row.path or row.name) != _canonical(target.label)):
+        return None
+    if target.statement == "balance_sheet" and row.is_profit_loss:
+        return None
+    if target.statement == "profit_loss" and measure == "balance":
+        measure = "profit_loss"
     if target.period not in {"opening", "ending"}:
         raise ValueError("字段期间未识别")
     if measure not in {"balance", "debit", "credit", "movement", "profit_loss"}:
@@ -211,6 +252,8 @@ def _row_amount(target, row):
                 raise ValueError("余额列的借贷侧未识别")
             signed = amount * _direction(row)
             amount = max(signed if target.balance_side == "借" else -signed, Decimal(0))
+        elif amount is not None and target.presentation_direction:
+            amount *= _direction(row) * (1 if target.presentation_direction == "借" else -1)
         elif amount is not None and _canonical(target.label) == "未确认融资费用":
             amount *= _direction(row)
         return amount
@@ -283,7 +326,13 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         return result
     if any(value is None for value in amounts):
         result.status = "missing"
-        if target.measure == "profit_loss" and any(not row.is_profit_loss for row in sources):
+        if _cash_bank_total(target) and any(row.level != 1 or _canonical(row.path or row.name) != _canonical(target.label) for row in sources):
+            result.reason = "现金或银行存款总额字段需要对应一级总科目，不能用单个账户明细替代"
+        elif target.component and any(not _component_matches(target, row) for row in sources):
+            result.reason = "来源不属于模板指定的投资性房地产成本或公允价值变动分项"
+        elif target.statement == "balance_sheet" and any(row.is_profit_loss for row in sources):
+            result.reason = "资产负债表字段不能使用损益科目的余额或发生额，需要资产负债来源"
+        elif target.measure == "profit_loss" and any(not row.is_profit_loss for row in sources):
             result.reason = "损益表字段不能直接使用资产负债科目的发生额，需要对应的损益来源"
         elif target.measure == "profit_loss" and "利息收入" in normalize(target.label):
             result.reason = "利息收入发生额、期初期末或入账与结转方式依据不足，未推定金额和正负号"
@@ -303,8 +352,14 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
     result.status = "matched"
     result.selected = target.value is None or (isinstance(target.value, str) and not target.value.strip())
     result.reason = "按已确认来源本地计算；科目余额按自然方向保留符号"
-    if target.measure == "balance" and _canonical(target.label) == "未确认融资费用" and not target.balance_side:
+    if target.measure == "balance" and target.presentation_direction and not target.balance_side:
+        result.reason = f"按已确认来源本地计算；按模板{target.presentation_direction}方方向列示，冲回保留反向符号"
+    elif target.measure == "balance" and _canonical(target.label) == "未确认融资费用" and not target.balance_side:
         result.reason = "按已确认来源本地计算；未确认融资费用按借方方向列示，冲回保留反向符号"
+    if target.component:
+        result.reason += "；按模板的投资性房地产" + ("成本分项" if target.component == "cost" else "公允价值变动分项")
+    if method == "account_total":
+        result.reason += "；字段为现金或银行存款总额，取对应一级总科目，不重复叠加同名明细"
     if target.measure == "profit_loss" or (target.measure == "balance" and any(row.is_profit_loss for row in sources) and not target.balance_side):
         result.reason += "；损益按科目方向一侧发生额，正负号遵循模板明确的填列说明"
     if not result.selected:
@@ -382,12 +437,19 @@ def apply_ai_suggestions(results: list[MatchResult], suggestions, rows: list[Led
 def match_fields(targets: list[TargetField], rows: list[LedgerRow]) -> list[MatchResult]:
     _validate_rows(rows)
     index = _Index(rows)
+    balance_index = _Index([row for row in rows if not row.is_profit_loss]) if any(target.statement == "balance_sheet" for target in targets) else index
     results = []
     for target in targets:
         if target.is_formula or (isinstance(target.value, str) and target.value.lstrip().startswith("=")):
             results.append(resolve_match(target, []))
             continue
-        candidates, method = _candidate_rows(target, index)
+        candidates, method = _candidate_rows(target, balance_index if target.statement == "balance_sheet" else index)
+        if target.statement == "balance_sheet" and not candidates:
+            rejected, _ = _candidate_rows(target, index)
+            if rejected and all(row.is_profit_loss for row in rejected):
+                results.append(MatchResult(target=target, sources=rejected, method=method, status="missing",
+                    reason="同名候选均为损益科目，不能作为资产负债表来源"))
+                continue
         if method == "ambiguous_parent" or len(candidates) != 1:
             result = MatchResult(target=target, sources=candidates, method=method)
             result.status = "ambiguous" if candidates or method == "ambiguous_parent" else "unmatched"

@@ -156,6 +156,8 @@ def scan_template(path, periods=("ending",), unit="自动"):
             context = sheet.title + " " + " ".join(str(c.value or "") for row in sheet.iter_rows(max_row=min(5, sheet.max_row)) for c in row if c.data_type != "f")
             header_row, label_col, columns, parent, section_profit = 0, 0, {}, "", False
             index_cols = set()
+            balance_direction = ""
+            business_labels = None
             for row in sheet.iter_rows():
                 rownum = row[0].row
                 values = [(c.column, c.value) for c in row if c.value is not None and c.data_type != "f"]
@@ -164,6 +166,12 @@ def scan_template(path, periods=("ending",), unit="自动"):
                     section_profit = True
                 if "资产负债表试算" in text_key(joined):
                     section_profit = False
+                section_label = text_key(sheet.cell(rownum, label_col or 1).value)
+                if strict_tb and not section_profit and section_label.endswith(":"):
+                    if "负债" in section_label or "权益" in section_label:
+                        balance_direction = "贷"
+                    elif "资产" in section_label:
+                        balance_direction = "借"
                 labels = [col for col, val in values if text_key(val) in LABEL_HEADERS]
                 if labels:
                     band_end = rownum
@@ -200,6 +208,10 @@ def scan_template(path, periods=("ending",), unit="自动"):
                         warnings.append(f"{sheet.title}：同一表头存在多列目标金额，需要确认，未自动填列。")
                         proposed = {}
                     if proposed:
+                        if strict_tb and business_labels is None:
+                            business_labels = {text_key(cell.value).replace("-", "")
+                                for cells in sheet.iter_rows(min_col=labels[0], max_col=min(proposed) - 1)
+                                for cell in cells if isinstance(cell.value, str) and cell.data_type != "f"}
                         # A book input column takes precedence over an audited result column for the same period.
                         for period in periods:
                             if any(r[0] == period and r[1] == "book" for r in proposed.values()):
@@ -225,6 +237,7 @@ def scan_template(path, periods=("ending",), unit="自动"):
                         label = value
                 label = str(label).strip()
                 if strict_tb and (re.search(r"试\s*算\s*平\s*衡\s*表|^被审计单位|^截止日期|^会计期间|^项\s*目\s*[:：]|^本表取值说明", label)
+                                  or text_key(label).startswith(("资产负债表试算", "利润表试算", "损益表试算", "利润试算"))
                                   or text_key(label).endswith(":") or text_key(label) in {"减:", "加:"}):
                     continue
                 if not label or len(label) > 100 or text_key(label) in {"借方", "贷方", "其中", "其中:", "金额", "索引号:", "流动资产:", "非流动资产:"}:
@@ -240,8 +253,24 @@ def scan_template(path, periods=("ending",), unit="自动"):
                     if cell.__class__.__name__ == "MergedCell":
                         continue
                     actual_measure = "profit_loss" if section_profit and measure == "balance" else measure
+                    statement = ("profit_loss" if section_profit else "balance_sheet") if strict_tb else ""
+                    direction = balance_direction if statement == "balance_sheet" else ""
+                    if direction and (text_key(primary).startswith("减:") or text_key(label).startswith("减:")):
+                        direction = "贷" if direction == "借" else "借"
+                    if direction and text_key(label).endswith(("未确认融资费用", "未确认的融资费用")):
+                        direction = "借"
+                    elif direction and text_key(label).endswith(("未确认融资收益", "未实现融资收益")):
+                        direction = "贷"
+                    component = ""
+                    if statement == "balance_sheet":
+                        name = text_key(label).replace("-", "")
+                        if name == "投资性房地产公允价值变动":
+                            component = "fair_value_change"
+                        elif name == "投资性房地产" and "投资性房地产公允价值变动" in (business_labels or set()):
+                            component = "cost"
                     fields.append(TargetField(sheet.title, cell.coordinate, label, period, basis,
-                        parent if parent != label else "", index, cell.value, cell.data_type == "f", actual_measure, side, UNITS[unit], scope))
+                        parent if parent != label else "", index, cell.value, cell.data_type == "f", actual_measure, side, UNITS[unit], scope,
+                        statement=statement, presentation_direction=direction, component=component))
         if not fields:
             warnings.append("未找到所选期间的输入字段：请检查项目名称、科目名称以及期初/期末余额等表头文字。")
         if tb_sheets:
