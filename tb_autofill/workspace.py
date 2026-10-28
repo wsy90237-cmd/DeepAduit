@@ -14,7 +14,7 @@ NAV_TXT, NAV_HOVER, ACCENT_SOFT = "#526580", "#f5f9ff", "#eff6ff"
 LINE = "#eef2f8"
 FONT = "Microsoft YaHei UI"
 PAGES = {"overview": "工作台", "tb": "账套与 TB",
-         "notes": "财务报表附注", "papers": "审计底稿", "report": "报告中心", "knowledge": "财会知识库",
+         "papers": "审计底稿", "notes": "财务报表附注", "report": "报告中心", "knowledge": "财会知识库",
          "security": "模型与安全"}
 
 
@@ -42,7 +42,6 @@ def build_shell(app):
     mark.pack(anchor="w")
     tk.Label(mark, image=app.whale_mark, bg=NAV, bd=0).pack(side="left")
     label(mark, "DeepAudit", size=14, color=ACCENT, bold=True).pack(side="left", padx=(5, 0))
-    label(brand, "年度财报审计引擎", size=9, color=MUTED).pack(anchor="w", pady=(5, 0))
     label(sidebar, "工作空间", size=8, color=MUTED).pack(anchor="w", padx=24, pady=(3, 12))
     app.nav_buttons = {}
     app.nav_stripes = {}
@@ -88,8 +87,6 @@ def build_pages(app):
     app.review_status = tk.StringVar(value="尚未选择待复核文档。")
     app.overview_template = tk.StringVar(value="未选择模板")
     app.overview_notice = tk.StringVar()
-    app.overview_values = []
-    app.overview_value_labels = []
     _build_overview(app)
     for key, title, description, steps in (
             ("notes", "让附注与已复核 TB 保持一致", "当前支持文字与知识来源辅助复核；完整生成与模板导出待实现。",
@@ -134,7 +131,7 @@ def _build_overview(app):
     hero.columnconfigure(0, weight=1)
 
     left = tk.Frame(hero, bg=CARD)
-    left.grid(row=0, column=0, sticky="ew", padx=(24, 12), pady=18)
+    left.grid(row=0, column=0, sticky="ew", padx=(26, 12), pady=22)
     label(left, "当前项目", size=8, color=MUTED).pack(anchor="w")
     tk.Label(left, textvariable=app.page_context, bg=CARD, fg=INK, font=(FONT, 17, "bold"),
              anchor="w").pack(anchor="w", pady=(4, 12))
@@ -150,56 +147,33 @@ def _build_overview(app):
             row=index, column=1, sticky="ew", pady=(0 if index == 0 else 7, 0))
 
     actions = tk.Frame(hero, bg=CARD, width=170)
-    actions.grid(row=0, column=1, sticky="ne", padx=(0, 24), pady=18)
+    actions.grid(row=0, column=1, sticky="ne", padx=(0, 26), pady=22)
     ttk.Button(actions, text="进入账套与 TB", style="Accent.TButton", width=15,
                command=lambda: navigate(app, "tb")).pack(fill="x")
-    ttk.Button(actions, text="报告准备清单", width=15,
-               command=lambda: navigate(app, "report")).pack(fill="x", pady=(8, 0))
-
-    kpi = tk.Frame(page, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
-    kpi.grid(row=1, column=0, sticky="ew", padx=24, pady=(12, 0))
-    for col, (title, unit) in enumerate((("已读取科目", "个"), ("已识别字段", "项"),
-                                         ("待确认", "项"), ("已勾选写入", "项"))):
-        cell = col * 2
-        kpi.columnconfigure(cell, weight=1, uniform="kpi")
-        if col:
-            kpi.columnconfigure(cell - 1, minsize=1)
-            tk.Frame(kpi, bg=LINE, width=1).grid(row=0, column=cell - 1, sticky="ns", pady=18)
-        tile = tk.Frame(kpi, bg=CARD)
-        tile.grid(row=0, column=cell, sticky="nsew", padx=24, pady=16)
-        label(tile, title, size=9, color=MUTED).pack(anchor="w")
-        value = tk.StringVar(value="—")
-        group = tk.Frame(tile, bg=CARD)
-        group.pack(anchor="w", pady=(3, 0))
-        number = tk.Label(group, textvariable=value, bg=CARD, fg="#a8b3c4", font=(FONT, 24, "bold"))
-        number.pack(side="left")
-        label(group, unit, size=9, color=MUTED).pack(side="left", padx=(4, 0), pady=(7, 0))
-        app.overview_values.append(value)
-        app.overview_value_labels.append(number)
 
     modules = tk.Frame(page, bg=BG)
-    modules.grid(row=2, column=0, sticky="new", padx=24, pady=(12, 20))
+    modules.grid(row=1, column=0, sticky="new", padx=24, pady=(18, 20))
     for col in range(4):
         modules.columnconfigure(col, weight=1, uniform="module")
     for col, (key, number, title, summary, chip) in enumerate((
             ("tb", "01", "TB 填列与复核", "取数、识别、复核后另存。", "可用"),
-            ("notes", "02", "财务报表附注", "复核附注文字与依据。", "辅助复核"),
-            ("papers", "03", "审计底稿", "核对底稿文字与依据。", "辅助复核"),
-            ("report", "04", "报告中心", "查看资料准备清单。", "准备清单"))):
+            ("papers", "02", "审计底稿", "核对底稿文字与依据。", "辅助复核"),
+            ("notes", "03", "财务报表附注", "复核附注文字与依据。", "辅助复核"),
+            ("report", "04", "报告中心", "按 TB 与附注生成审计报告。", "固定模板"))):
         card = tk.Frame(modules, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
         card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 12, 0))
         head = tk.Frame(card, bg=CARD)
-        head.pack(fill="x", padx=20, pady=(16, 0))
+        head.pack(fill="x", padx=22, pady=(20, 0))
         label(head, number, size=9, color=ACCENT, bold=True).pack(side="left")
         tk.Label(head, text=chip, bg=ACCENT_SOFT, fg=ACCENT, font=(FONT, 8), padx=7, pady=2).pack(side="right")
-        label(card, title, size=13, bold=True).pack(anchor="w", padx=20, pady=(8, 0))
+        label(card, title, size=13, bold=True).pack(anchor="w", padx=22, pady=(10, 0))
         tk.Label(card, text=summary, bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w", justify="left",
-                 wraplength=210).pack(anchor="w", padx=20, pady=(6, 12))
+                 wraplength=210).pack(anchor="w", padx=22, pady=(8, 14))
         link = tk.Label(card, text="进入  →", bg=CARD, fg=ACCENT, font=(FONT, 9, "bold"), cursor="hand2")
-        link.pack(anchor="w", padx=20, pady=(0, 16))
+        link.pack(anchor="w", padx=22, pady=(0, 20))
         link.bind("<Button-1>", lambda _event, name=key: navigate(app, name))
 
-    page.rowconfigure(3, weight=1)
+    page.rowconfigure(2, weight=1)
 
 
 def _build_security(app):
@@ -234,7 +208,7 @@ def _build_report(app):
     page.rowconfigure(1, weight=1)
     head = panel(page, 0, pady=(22, 10))
     label(head, "报告中心", size=22, bold=True).pack(anchor="w", padx=22, pady=(20, 10))
-    label(head, "账套是数据主线，报告需要资料、程序证据与人工复核闭环。当前不具备自动签发能力。",
+    label(head, "报告由已复核的 TB 与附注生成，采用固定模板；生成与签发尚未接入，当前可核对准备情况。",
           color=MUTED, wraplength=900, justify="left").pack(anchor="w", padx=22, pady=(0, 18))
     tk.Label(head, textvariable=app.review_status, bg=CARD, fg=ACCENT, font=(FONT, 9),
              wraplength=850, justify="left").pack(anchor="w", padx=22, pady=(0, 12))
@@ -308,17 +282,9 @@ def navigate(app, key):
 
 
 def refresh_context(app):
-    if not hasattr(app, "overview_values"):
+    if not hasattr(app, "overview_notice"):
         return
     pending = sum(result.status not in {"matched", "protected"} for result in app.results)
-    values = (len(app.rows) if app.loaded_subject else "—", len(app.results) if app.scan else "—",
-              pending if app.scan else "—", sum(r.selected for r in app.results) if app.scan else "—")
-    for variable, count in zip(app.overview_values, values):
-        variable.set(str(count))
-    number_labels = getattr(app, "overview_value_labels", [])
-    for index, variable in enumerate(app.overview_values):
-        if index < len(number_labels):
-            number_labels[index].configure(fg=INK if variable.get() not in ("—", "") else "#a8b3c4")
     subject = app._subject_label()
     app.page_context.set(subject if subject else "尚未读取账套")
     template = app.template_var.get().strip()

@@ -14,25 +14,26 @@ class WorkspaceTests(unittest.TestCase):
         variable = lambda value="": tk.StringVar(master=self.interpreter, value=value)
         self.app = SimpleNamespace(
             rows=[], results=[], scan=None, loaded_subject=None, review_document=None,
-            overview_values=[variable() for _ in range(4)], page_context=variable(),
+            page_context=variable(),
             overview_template=variable(), overview_notice=variable(), review_status=variable(),
             template_var=variable(), _subject_label=lambda: "合成企业 / 2026-06" if self.app.loaded_subject else "",
         )
 
     def test_navigation_retains_available_work_and_removes_placeholder_pages(self):
-        self.assertEqual(list(workspace.PAGES), ["overview", "tb", "notes", "papers", "report", "knowledge", "security"])
+        self.assertEqual(list(workspace.PAGES), ["overview", "tb", "papers", "notes", "report", "knowledge", "security"])
         self.assertEqual(workspace.PAGES["overview"], "工作台")
 
     def test_home_reflects_real_work_state_and_invalidation(self):
         workspace.refresh_context(self.app)
-        self.assertEqual([item.get() for item in self.app.overview_values], ["—"] * 4)
+        self.assertEqual(self.app.page_context.get(), "尚未读取账套")
+        self.assertEqual(self.app.overview_template.get(), "未选择模板")
         self.assertIn("读取科目余额", self.app.overview_notice.get())
 
         self.app.loaded_subject = object()
         self.app.rows = [object(), object()]
         self.app.template_var.set("example.xlsx")
         workspace.refresh_context(self.app)
-        self.assertEqual(self.app.overview_values[0].get(), "2")
+        self.assertEqual(self.app.page_context.get(), "合成企业 / 2026-06")
         self.assertIn("待识别", self.app.overview_template.get())
         self.assertIn("识别字段", self.app.overview_notice.get())
 
@@ -41,13 +42,11 @@ class WorkspaceTests(unittest.TestCase):
         self.app.results = [MatchResult(target, amount=Decimal("10"), status="matched", selected=True),
                             MatchResult(target, status="unmatched")]
         workspace.refresh_context(self.app)
-        self.assertEqual([item.get() for item in self.app.overview_values], ["2", "2", "1", "1"])
         self.assertIn("单位：万元", self.app.overview_template.get())
         self.assertIn("待确认 1 项，现有值差异 1 项", self.app.overview_notice.get())
 
         self.app.rows, self.app.results, self.app.scan, self.app.loaded_subject = [], [], None, None
         workspace.refresh_context(self.app)
-        self.assertEqual([item.get() for item in self.app.overview_values], ["—"] * 4)
         self.assertEqual(self.app.page_context.get(), "尚未读取账套")
 
     def test_result_display_treats_whitespace_as_empty_but_keeps_zero(self):
