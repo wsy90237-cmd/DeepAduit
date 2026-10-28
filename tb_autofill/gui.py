@@ -58,10 +58,9 @@ STATUS_TAG = {
 
 
 def fmt_amount(value):
-    if value is None or value == "":
-        return ""
     try:
-        return f"{money(value):,}"
+        amount = money(value)
+        return "" if amount is None else f"{amount:,}"
     except ValueError:
         return str(value)
 
