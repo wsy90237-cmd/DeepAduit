@@ -211,6 +211,8 @@ def _row_amount(target, row):
                 raise ValueError("余额列的借贷侧未识别")
             signed = amount * _direction(row)
             amount = max(signed if target.balance_side == "借" else -signed, Decimal(0))
+        elif amount is not None and _canonical(target.label) == "未确认融资费用":
+            amount *= _direction(row)
         return amount
     if target.period == "opening":
         return None
@@ -231,6 +233,12 @@ def _row_amount(target, row):
         income_positive = ("利息收入" in presentation and re.search(r'以[“”"\'＋+]+(?:号|值)填列', presentation))
         loss_negative = re.search(r'(?:损失|亏损)以[“”"\'－−-]+号填列', presentation)
         gain_negative = re.search(r'(?:收益)以[“”"\'－−-]+号填列', presentation)
+        if income_positive and direction == 1:
+            debit, credit = money(row.debit), money(row.credit)
+            if debit is not None and debit > 0 and credit is not None and credit > 0:
+                return None
+            if debit == 0 and credit is not None and credit > 0:
+                return credit if money(row.opening) == 0 and money(row.ending) == -credit else None
         if amount is not None and (income_positive or loss_negative):
             amount *= -direction
         elif amount is not None and gain_negative:
@@ -277,6 +285,8 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         result.status = "missing"
         if target.measure == "profit_loss" and any(not row.is_profit_loss for row in sources):
             result.reason = "损益表字段不能直接使用资产负债科目的发生额，需要对应的损益来源"
+        elif target.measure == "profit_loss" and "利息收入" in normalize(target.label):
+            result.reason = "利息收入发生额、期初期末或入账与结转方式依据不足，未推定金额和正负号"
         elif target.occurrence_scope == "month":
             result.reason = "缺少单月发生额依据，不能使用年初累计发生额"
         else:
@@ -293,6 +303,8 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
     result.status = "matched"
     result.selected = target.value is None or (isinstance(target.value, str) and not target.value.strip())
     result.reason = "按已确认来源本地计算；科目余额按自然方向保留符号"
+    if target.measure == "balance" and _canonical(target.label) == "未确认融资费用" and not target.balance_side:
+        result.reason = "按已确认来源本地计算；未确认融资费用按借方方向列示，冲回保留反向符号"
     if target.measure == "profit_loss" or (target.measure == "balance" and any(row.is_profit_loss for row in sources) and not target.balance_side):
         result.reason += "；损益按科目方向一侧发生额，正负号遵循模板明确的填列说明"
     if not result.selected:

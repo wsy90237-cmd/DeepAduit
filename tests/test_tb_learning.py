@@ -163,6 +163,29 @@ class PresentationTests(unittest.TestCase):
         result=matching.match_fields([target],rows)[0]
         self.assertEqual((result.status,result.source_ids,result.amount),("matched",["123101"],Decimal(3)))
 
+    def test_deferred_finance_cost_uses_debit_presentation_without_abs(self):
+        target=TargetField("期末","D350","未确认融资费用","ending",parent="租赁负债")
+        source=LedgerRow("227101","未确认融资费用",direction="贷",ending=Decimal(-6))
+        self.assertEqual(matching.resolve_match(target,[source]).amount,Decimal(6))
+        self.assertEqual(matching.resolve_match(target,[replace(source,ending=Decimal(6))]).amount,Decimal(-6))
+        self.assertEqual(matching.resolve_match(target,[replace(source,direction="借",ending=Decimal(6))]).amount,Decimal(6))
+
+    def test_interest_income_credit_without_closing_uses_consistent_movement(self):
+        target=self.target('财务费用-利息收入（以“+”值填列）')
+        source=LedgerRow("52207","利息收入",direction="借",opening=Decimal(0),ending=Decimal(-7),
+                         debit=Decimal(0),credit=Decimal(7),is_profit_loss=True)
+        self.assertEqual(matching.resolve_match(target,[source]).amount,Decimal(7))
+        self.assertEqual(matching.resolve_match(target,[replace(source,ending=Decimal(-8))]).status,"missing")
+
+    def test_interest_income_with_both_positive_sides_requires_review(self):
+        target=self.target('财务费用-利息收入（以“+”值填列）')
+        source=LedgerRow("52202","利息收入",direction="借",debit=Decimal(7),credit=Decimal(7),is_profit_loss=True)
+        result=matching.resolve_match(target,[source])
+        self.assertEqual(result.status,"missing")
+        self.assertIsNone(result.amount)
+        self.assertFalse(result.selected)
+        self.assertIn("结转方式",result.reason)
+
 
 def record(code="1001",name="库存现金",month=1,level=1):
     return dict(kmbh=code,kmmc=name,kjmonth=month,kmjc=level,jdfx="借",qcs="10",qms="12",jffse="2",dffse="0")
