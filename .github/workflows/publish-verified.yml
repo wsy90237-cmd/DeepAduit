@@ -1,0 +1,113 @@
+name: DeepAudit Publish Verified
+
+on:
+  push:
+    branches: [main]
+    paths: ["packaging/publish.json", ".github/workflows/publish-verified.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deepaudit-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 验证已完成的构建及发布目标
+        id: plan
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $plan = Get-Content packaging/publish.json -Raw | ConvertFrom-Json
+          if ($plan.version -notmatch '^\d+\.\d+\.\d+$' -or $plan.revision -notmatch '^[a-f0-9]{40}$' -or
+              "$($plan.run_id)" -notmatch '^\d+$' -or $plan.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Invalid release plan' }
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($plan.run_id)" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.status -ne 'completed' -or $run.conclusion -ne 'success' -or
+              $run.head_sha -ne $plan.revision -or $run.path -ne '.github/workflows/build.yml' -or
+              $run.repository.full_name -ne $env:GITHUB_REPOSITORY) { throw 'Build provenance mismatch' }
+          $source = git show "$($plan.revision):tb_autofill/__init__.py"
+          if ($LASTEXITCODE -ne 0 -or ($source -join "`n") -notmatch ('__version__ = "' + [regex]::Escape($plan.version) + '"')) { throw 'Version mismatch' }
+          "run_id=$($plan.run_id)" >> $env:GITHUB_OUTPUT
+          "version=$($plan.version)" >> $env:GITHUB_OUTPUT
+          "revision=$($plan.revision)" >> $env:GITHUB_OUTPUT
+          "sha256=$($plan.sha256)" >> $env:GITHUB_OUTPUT
+      - uses: actions/download-artifact@v4
+        with:
+          name: DeepAudit-windows-x64
+          run-id: ${{ steps.plan.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: 复验运行包、草稿上传及下载校验后发布
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+          RELEASE_REVISION: ${{ steps.plan.outputs.revision }}
+          RELEASE_SHA256: ${{ steps.plan.outputs.sha256 }}
+          VERIFIED_RUN: ${{ steps.plan.outputs.run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @('BUILDINFO.json', 'DeepAudit.exe', 'INSTALL.txt', 'SHA256SUMS.txt')
+          $actual = @(Get-ChildItem candidate -Force)
+          if ($actual.Count -ne 4 -or @($actual | Where-Object PSIsContainer).Count -ne 0 -or
+              (($actual.Name | Sort-Object) -join '|') -ne (($files | Sort-Object) -join '|')) { throw 'Unexpected package files' }
+          $info = Get-Content candidate/BUILDINFO.json -Raw | ConvertFrom-Json
+          $hash = (Get-FileHash candidate/DeepAudit.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $native = @($info.native_modules.PSObject.Properties)
+          if ($hash -ne $env:RELEASE_SHA256 -or $info.sha256 -ne $hash -or $info.product -ne 'DeepAudit' -or
+              $info.version -ne $env:RELEASE_VERSION -or $info.source_revision -ne $env:RELEASE_REVISION -or
+              $info.source_dirty -ne $false -or $info.compiler -ne 'msvc' -or $native.Count -ne 15 -or
+              @($native | Where-Object Value -ne $true).Count -ne 0 -or $info.selftest -notcontains 'brand_assets') { throw 'Package validation failed' }
+          if ((Get-Content candidate/SHA256SUMS.txt -Raw).Trim() -ne "$hash  DeepAudit.exe") { throw 'Checksum file mismatch' }
+          $report = Join-Path $env:RUNNER_TEMP 'deepaudit-publish-selftest.json'
+          $process = Start-Process -FilePath (Resolve-Path candidate/DeepAudit.exe).Path -ArgumentList @('--selftest', "--selftest-report=$report") -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0 -or !(Test-Path -LiteralPath $report)) { throw 'Executable selftest failed' }
+          $check = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          $runtimeModules = @($check.native_modules.PSObject.Properties)
+          if ($check.version -ne $env:RELEASE_VERSION -or $check.product -ne 'DeepAudit' -or $runtimeModules.Count -ne 15 -or
+              @($runtimeModules | Where-Object Value -ne $true).Count -ne 0 -or $check.checks -notcontains 'brand_assets') { throw 'Runtime validation failed' }
+          $tag = "v$env:RELEASE_VERSION"
+          $notes = @(git show "$($env:RELEASE_REVISION):docs/release-$tag.md") -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Missing release notes' }
+          $notes += "`n`nSource: $env:RELEASE_REVISION`nVerified build: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:VERIFIED_RUN`n`nUnsigned release: Windows Application Control may block startup with error 4551. Cloud checks do not establish compatibility with every local policy."
+          $notes | Set-Content release-notes.md -Encoding utf8NoBOM
+          $existing = gh release view $tag --json targetCommitish,isDraft 2>$null | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --target $env:RELEASE_REVISION --title "DeepAudit $tag" --notes-file release-notes.md --draft
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot create release draft' }
+            $isDraft = $true
+          } else {
+            if ($existing.targetCommitish -ne $env:RELEASE_REVISION) { throw 'Existing release targets another commit' }
+            $isDraft = $existing.isDraft
+          }
+          if ($isDraft) {
+            gh release upload $tag candidate/DeepAudit.exe candidate/SHA256SUMS.txt candidate/INSTALL.txt candidate/BUILDINFO.json --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Upload failed' }
+          }
+          $verify = Join-Path $env:RUNNER_TEMP 'deepaudit-remote-verification'
+          gh release download $tag --pattern '*' --dir $verify
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify remote assets' }
+          if (@(Get-ChildItem -LiteralPath $verify -Force).Count -ne 4) { throw 'Unexpected remote assets' }
+          foreach ($file in $files) {
+            if ((Get-FileHash (Join-Path $verify $file) -Algorithm SHA256).Hash -ne (Get-FileHash "candidate/$file" -Algorithm SHA256).Hash) { throw "Remote mismatch: $file" }
+          }
+          if ($isDraft) {
+            gh release edit $tag --draft=false --latest
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot publish release' }
+          }
+          $published = gh release view $tag --json url,isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $published.isDraft) { throw 'Release is not published' }
+          "Published: $($published.url)`nSHA256: $hash" >> $env:GITHUB_STEP_SUMMARY
