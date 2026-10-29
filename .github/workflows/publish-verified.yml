@@ -33,7 +33,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $plan = Get-Content packaging/publish.json -Raw | ConvertFrom-Json
           if ($plan.version -notmatch '^\d+\.\d+\.\d+$' -or $plan.revision -notmatch '^[a-f0-9]{40}$' -or
-              "$($plan.run_id)" -notmatch '^\d+$' -or $plan.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Invalid release plan' }
+              "$($plan.run_id)" -notmatch '^\d+$' -or $plan.sha256 -notmatch '^[a-f0-9]{64}$' -or
+              "$($plan.notes_commit)" -notmatch '^(head|[a-f0-9]{40})$') { throw 'Invalid release plan' }
           $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($plan.run_id)" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $run.status -ne 'completed' -or $run.conclusion -ne 'success' -or
               $run.head_sha -ne $plan.revision -or $run.path -ne '.github/workflows/build.yml' -or
@@ -44,6 +45,7 @@ jobs:
           "version=$($plan.version)" >> $env:GITHUB_OUTPUT
           "revision=$($plan.revision)" >> $env:GITHUB_OUTPUT
           "sha256=$($plan.sha256)" >> $env:GITHUB_OUTPUT
+          "notes_commit=$("$($plan.notes_commit)")" >> $env:GITHUB_OUTPUT
       - uses: actions/download-artifact@v4
         with:
           name: DeepAudit-windows-x64
@@ -57,6 +59,7 @@ jobs:
           RELEASE_VERSION: ${{ steps.plan.outputs.version }}
           RELEASE_REVISION: ${{ steps.plan.outputs.revision }}
           RELEASE_SHA256: ${{ steps.plan.outputs.sha256 }}
+          RELEASE_NOTES_COMMIT: ${{ steps.plan.outputs.notes_commit }}
           VERIFIED_RUN: ${{ steps.plan.outputs.run_id }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -80,7 +83,8 @@ jobs:
           if ($check.version -ne $env:RELEASE_VERSION -or $check.product -ne 'DeepAudit' -or $runtimeModules.Count -ne 15 -or
               @($runtimeModules | Where-Object Value -ne $true).Count -ne 0 -or $check.checks -notcontains 'brand_assets') { throw 'Runtime validation failed' }
           $tag = "v$env:RELEASE_VERSION"
-          $notes = @(git show "$($env:RELEASE_REVISION):docs/release-$tag.md") -join "`n"
+          $notesRef = if ($env:RELEASE_NOTES_COMMIT -eq 'head') { 'HEAD' } else { $env:RELEASE_NOTES_COMMIT }
+          $notes = @(git show "${notesRef}:docs/release-$tag.md") -join "`n"
           if ($LASTEXITCODE -ne 0) { throw 'Missing release notes' }
           $notes += "`n`nSource: $env:RELEASE_REVISION`nVerified build: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:VERIFIED_RUN`n`nUnsigned release: Windows Application Control may block startup with error 4551. Cloud checks do not establish compatibility with every local policy."
           $notes | Set-Content release-notes.md -Encoding utf8NoBOM
