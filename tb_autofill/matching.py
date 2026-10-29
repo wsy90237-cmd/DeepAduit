@@ -209,8 +209,11 @@ def _asset_contra(target):
         return {"累计折旧", "固定资产累计折旧"}
     if label == "累计摊销" and parent in {"", "无形资产"}:
         return {"累计摊销"}
-    impairment = {"固定资产减值准备":"固定资产", "无形资产减值准备":"无形资产", "在建工程减值准备":"在建工程"}
-    if label in impairment and parent in {"",impairment[label],impairment[label]+"净值",impairment[label]+"净额"}:
+    if label == "使用权资产累计折旧" and parent in {"", "使用权资产"}:
+        return {label}
+    impairment = {"固定资产减值准备":"固定资产", "无形资产减值准备":"无形资产", "在建工程减值准备":"在建工程",
+                  "合同资产减值准备":"合同资产", "债权投资减值准备":"债权投资"}
+    if label in impairment and parent in {"",impairment[label],impairment[label]+"净值",impairment[label]+"净额",impairment[label]+"成本"}:
         return {label}
     return set()
 
@@ -275,19 +278,33 @@ def _tax_subject(target):
     if target.statement != "balance_sheet":
         return ""
     parts = _PATH_SEP.split(normalize(target.label))
-    if len(parts) == 2 and _canonical(parts[0]) == "应交税费":
+    if len(parts) == 2 and (_canonical(parts[0]) == "应交税费"
+            or (parts[0] == "其他应交" and _canonical(target.parent) == "应交税费")):
         name = _tax_name(parts[1])
     elif _canonical(target.parent) == "应交税费":
         name = _tax_name(target.label)
     else:
         return ""
-    return name if name in {"城市维护建设税", "土地增值税", "个人所得税", "印花税"} else ""
+    return name if name in {"城市维护建设税", "土地增值税", "个人所得税", "印花税", "教育费附加",
+                           "地方教育费附加", "企业所得税", "房产税", "土地使用税", "车船使用税",
+                           "营业税", "资源税", "消费税", "烟叶税", "防洪费"} else ""
 
 
 def _tax_matches(subject, row):
-    return (not row.is_profit_loss and row.level > 1
-            and _canonical(str(row.path).split("/")[0]) == "应交税费"
-            and _tax_name(row.name) == subject)
+    parts = str(row.path).split("/")
+    direct_category = len(parts) == 2 or (len(parts) == 3 and normalize(parts[1]) in {"其他应交税费", "其他应缴税费"})
+    return (not row.is_profit_loss and row.level == len(parts) and direct_category
+            and _canonical(parts[0]) == "应交税费"
+            and _tax_name(parts[-1]) == _tax_name(row.name) == subject)
+
+
+def _welfare_detail(target):
+    if target.statement != "balance_sheet":
+        return False
+    parts = _PATH_SEP.split(normalize(target.label))
+    if len(parts) == 2 and _canonical(parts[0]) == "应付职工薪酬":
+        return _canonical(parts[1]) == "福利费"
+    return _canonical(target.parent) == "应付职工薪酬" and _canonical(target.label) == "福利费"
 
 
 def _candidate_rows(target, index):
@@ -327,8 +344,15 @@ def _candidate_rows(target, index):
         return candidates, "ambiguous_parent" if candidates else "allowance_component"
     tax = _tax_subject(target)
     if tax:
+        if _canonical(target.parent) not in {"", "应交税费"}:
+            return [], "ambiguous_parent"
         parents = [row for row in index.rows if row.level == 1 and _canonical(row.name) == "应交税费"]
         candidates = [row for row in index.rows if _tax_matches(tax, row)]
+        if tax == "防洪费":
+            related = [row for row in index.rows if any(_tax_matches(name, row)
+                       for name in ("水利建设基金", "水利基金", "地方水利基金"))]
+            if related:
+                return candidates + related, "ambiguous_parent"
         if len(parents) != 1 or any(not _in_root(row, parents[0].code) for row in candidates):
             return candidates, "ambiguous_parent" if candidates else "tax_detail"
         roots = [row for row in candidates if not any(other != row and other.level < row.level
@@ -336,6 +360,18 @@ def _candidate_rows(target, index):
         if len(roots) == 1 and all(_in_root(row, roots[0].code) for row in candidates):
             return roots, "tax_detail"
         return candidates, "ambiguous_parent" if candidates else "tax_detail"
+    if _welfare_detail(target):
+        if _canonical(target.parent) not in {"", "应付职工薪酬"}:
+            return [], "ambiguous_parent"
+        parents = [row for row in index.rows if row.level == 1 and _canonical(row.name) == "应付职工薪酬"]
+        candidates = [row for row in index.rows if not row.is_profit_loss and row.level == 2
+                      and len(str(row.path).split("/")) == 2
+                      and _canonical(str(row.path).split("/")[0]) == "应付职工薪酬"
+                      and _canonical(re.sub(r"^应付", "", normalize(str(row.path).split("/")[-1])))
+                      == _canonical(re.sub(r"^应付", "", normalize(row.name))) == "福利费"]
+        if len(parents) != 1 or any(not _in_root(row, parents[0].code) for row in candidates):
+            return candidates, "ambiguous_parent" if candidates else "payroll_detail"
+        return candidates, "payroll_detail"
     if _account_total(target):
         key = _canonical(target.label)
         candidates = index.by_name.get(key, [])
@@ -683,6 +719,8 @@ def match_fields(targets: list[TargetField], rows: list[LedgerRow]) -> list[Matc
             result.reason = "父科目存在多个候选，需要确认完整路径" if method == "ambiguous_parent" else ("存在多个同名候选，需要按科目路径确认" if candidates else "没有可靠匹配，不猜测或自动归入其他")
             if _vat_summary(target):
                 result.reason = "增值税汇总需确认应交、未交、预交等明细的取数范围，不能用单个同名余额代替"
+            elif _tax_subject(target) == "防洪费" and method == "ambiguous_parent":
+                result.reason = "防洪费来源或水利基金等范围存在歧义，需复核模板的填列范围，不能自动当作同义税费"
             elif _loan_component(target) and _canonical(target.parent) not in {"",_loan_component(target)[0]}:
                 result.reason = "借款字段名称与所属类别或到期范围不一致，需要确认"
         else:
