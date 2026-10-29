@@ -1,10 +1,11 @@
 """Synthetic standalone detail boundaries; no customer data."""
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 import unittest
 
-from tb_autofill import matching
-from tb_autofill.models import LedgerRow, TargetField
+from tb_autofill import fields, matching, workbook
+from tb_autofill.models import LedgerRow, MatchResult, TargetField
 
 
 class StandaloneDetailsTests(unittest.TestCase):
@@ -102,6 +103,34 @@ class StandaloneDetailsTests(unittest.TestCase):
         self.assertEqual(matching.match_fields([target],[root,row,other])[0].status,'ambiguous')
         ai=matching.match_fields([target],[root,row,other]);applied,_=matching.apply_ai_suggestions(ai,[{'target_id':target.id,'source_codes':['P01']}],[root,row,other])
         self.assertEqual(applied,0)
+
+    def test_payable_welfare_target_spelling_cannot_bypass_scope(self):
+        root=LedgerRow('P','应付职工薪酬',direction='贷')
+        wrong=LedgerRow('P0101','应付福利费',path='应付职工薪酬/劳务派遣/应付福利费',direction='贷',ending=Decimal(13),level=3)
+        for label in ('应付福利费','应付薪酬-应付福利费'):
+            target=self.target(label,'应付职工薪酬');rows=[root,wrong]
+            results=matching.match_fields([target],rows)
+            self.assertNotEqual(results[0].status,'matched')
+            self.assertNotEqual(matching.resolve_match(target,[wrong],rows=rows).status,'matched')
+            applied,_=matching.apply_ai_suggestions(results,[{'target_id':target.id,'source_codes':[wrong.code]}],rows)
+            self.assertEqual(applied,0)
+
+    def test_property_cost_does_not_take_only_one_of_multiple_measurement_roots(self):
+        target=self.target('投资性房地产','',component='cost')
+        fair=LedgerRow('F','投资性房地产（公允计价）',direction='借')
+        cost=LedgerRow('F01','投资性房地产-成本',path='投资性房地产（公允计价）/投资性房地产-成本',ending=Decimal(0),level=2)
+        for name in ('投资性房地产','投资性房地产（成本计量）'):
+            other=LedgerRow('C',name,ending=Decimal(19))
+            results=matching.match_fields([target],[other,fair,cost])
+            self.assertEqual(results[0].status,'ambiguous')
+            self.assertIsNone(results[0].amount)
+            self.assertEqual(matching.resolve_match(target,[cost],method='template_component',rows=[other,fair,cost]).status,'ambiguous')
+            old=MatchResult(target,[cost],amount=Decimal(0),status='matched',method='template_component',selected=True)
+            scan=fields.TemplateScan(Path('synthetic.xlsx'),'', [target], [])
+            with self.assertRaises(ValueError):
+                workbook.planned_writes(scan,[old],rows=[other,fair,cost])
+            applied,_=matching.apply_ai_suggestions(results,[{'target_id':target.id,'source_codes':['F01']}],[other,fair,cost])
+            self.assertEqual(applied,0)
 
 
 if __name__=='__main__':unittest.main()

@@ -303,13 +303,17 @@ def _welfare_detail(target):
         return False
     parts = _PATH_SEP.split(normalize(target.label))
     if len(parts) == 2 and _canonical(parts[0]) == "应付职工薪酬":
-        return _canonical(parts[1]) == "福利费"
-    return _canonical(target.parent) == "应付职工薪酬" and _canonical(target.label) == "福利费"
+        return _canonical(re.sub(r"^应付", "", parts[1])) == "福利费"
+    return (_canonical(target.parent) == "应付职工薪酬"
+            and _canonical(re.sub(r"^应付", "", normalize(target.label))) == "福利费")
 
 
 def _candidate_rows(target, index):
     if target.component:
         candidates = [row for row in index.rows if _component_matches(target, row)]
+        if target.component == "cost" and any(row.level == 1 and not row.is_profit_loss
+                and _canonical(row.name) in {"投资性房地产", "投资性房地产(成本计量)"} for row in index.rows):
+            return candidates, "ambiguous_parent"
         return candidates, "template_component"
     contra = _asset_contra(target)
     if contra:
@@ -593,8 +597,8 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         if any(source not in candidates for source in sources):
             result.status, result.reason = "missing", "来源科目名称、类别或父路径与字段不符，或缺少完整账套上下文"
             return result
-        if method == "ai" and (candidate_method == "ambiguous_parent" or len(candidates) != 1):
-            result.status, result.reason = "ambiguous", "来源存在歧义，AI不能自动确定或选中"
+        if method != "manual" and (candidate_method == "ambiguous_parent" or len(candidates) != 1):
+            result.status, result.reason = "ambiguous", "来源存在歧义，自动匹配或AI不能确定或选中"
             return result
     try:
         factor = money(target.unit_factor)
@@ -721,6 +725,8 @@ def match_fields(targets: list[TargetField], rows: list[LedgerRow]) -> list[Matc
                 result.reason = "增值税汇总需确认应交、未交、预交等明细的取数范围，不能用单个同名余额代替"
             elif _tax_subject(target) == "防洪费" and method == "ambiguous_parent":
                 result.reason = "防洪费来源或水利基金等范围存在歧义，需复核模板的填列范围，不能自动当作同义税费"
+            elif target.component == "cost" and method == "ambiguous_parent":
+                result.reason = "投资性房地产成本与整体或其他计量根并存，需确认完整范围，不能只取一类成本分项"
             elif _loan_component(target) and _canonical(target.parent) not in {"",_loan_component(target)[0]}:
                 result.reason = "借款字段名称与所属类别或到期范围不一致，需要确认"
         else:
