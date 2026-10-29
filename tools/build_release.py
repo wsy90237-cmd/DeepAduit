@@ -20,14 +20,15 @@ except ImportError:
 
 
 def build_arguments(compiler, jobs):
+    """原生编译参数：单文件、全模块原生、链接期优化，且不携带源码与调试信息。"""
     output = ROOT / "dist"
     options = [sys.executable, "-m", "nuitka", "--mode=onefile", "--include-package=tb_autofill",
                "--include-data-dir=tb_autofill/assets=tb_autofill/assets",
                "--enable-plugin=tk-inter", "--include-module=win32com.client", "--include-module=win32crypt",
                "--include-module=pythoncom", "--windows-console-mode=disable", "--python-flag=isolated",
-               "--python-flag=no_docstrings", "--file-reference-choice=runtime",
-               "--nofollow-import-to=tests,unittest,pytest,tkinter.test",
-               "--assume-yes-for-downloads", f"--jobs={jobs}", "--lto=no",
+               "--python-flag=no_docstrings", "--python-flag=no_asserts", "--file-reference-choice=runtime",
+               "--nofollow-import-to=tests,unittest,pytest,tkinter.test,doctest,pydoc",
+               "--assume-yes-for-downloads", f"--jobs={jobs}", "--lto=yes",
                f"--output-dir={output}", "--output-filename=DeepAudit.exe",
                f"--report={ROOT / 'build' / 'native-compilation-report.xml'}",
                f"--product-name={APP_NAME}", f"--file-description={APP_NAME} Audit Workspace",
