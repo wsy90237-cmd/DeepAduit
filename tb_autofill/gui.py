@@ -629,10 +629,7 @@ class App(tk.Tk):
     def _agent_review(self, role="TB"):
         if self.busy:
             return
-        if not self.knowledge_refs:
-            workspace.navigate(self, "knowledge")
-            self.knowledge_panel.status.set("请先检索并选用正文，或点击“Agent 检索并复核”。")
-            return
+        # 知识库已内置并在对话中自动检索，无需先手工选用条目。
         if role == "TB" and not self.results:
             workspace.navigate(self, "tb")
             messagebox.showinfo("缺少 TB", "请先读取账套并识别模板，再进行 TB 知识库复核。")

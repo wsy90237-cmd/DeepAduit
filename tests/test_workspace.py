@@ -20,7 +20,7 @@ class WorkspaceTests(unittest.TestCase):
         )
 
     def test_navigation_retains_available_work_and_removes_placeholder_pages(self):
-        self.assertEqual(list(workspace.PAGES), ["overview", "tb", "papers", "notes", "report", "knowledge", "security"])
+        self.assertEqual(list(workspace.PAGES), ["overview", "tb", "papers", "notes", "report", "security"])
         self.assertEqual(workspace.PAGES["overview"], "工作台")
 
     def test_home_reflects_real_work_state_and_invalidation(self):

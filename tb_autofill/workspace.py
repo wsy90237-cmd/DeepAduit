@@ -6,7 +6,6 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
 from . import workflow
-from .knowledge_ui import KnowledgePanel
 
 BG, CARD, INK, MUTED = "#ffffff", "#ffffff", "#18263b", "#68778d"
 NAV, ACCENT, BORDER = "#ffffff", "#2563eb", "#dbe7fb"
@@ -14,7 +13,7 @@ NAV_TXT, NAV_HOVER, ACCENT_SOFT = "#526580", "#f5f9ff", "#eff6ff"
 LINE = "#eef2f8"
 FONT = "Microsoft YaHei UI"
 PAGES = {"overview": "工作台", "tb": "账套与 TB",
-         "papers": "审计底稿", "notes": "财务报表附注", "report": "报告中心", "knowledge": "财会知识库",
+         "papers": "审计底稿", "notes": "财务报表附注", "report": "报告中心",
          "security": "模型与安全"}
 
 
@@ -183,7 +182,6 @@ def build_pages(app):
         ttk.Button(card, text=f"按知识依据复核{role}", style="Accent.TButton", command=lambda role=role: app._agent_review(role)).pack(anchor="w", padx=28, pady=(0, 12))
         ttk.Button(card, text="返回 TB 复核", command=lambda: navigate(app, "tb")).pack(
             anchor="w", padx=28, pady=(0, 28))
-    app.knowledge_panel = KnowledgePanel(app, app.pages["knowledge"])
     _build_report(app)
     _build_security(app)
     refresh_context(app)
