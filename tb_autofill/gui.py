@@ -201,6 +201,8 @@ class App(tk.Tk):
         self.form_scroll = workspace.ScrollArea(self.workspace, bg=BG, height=280)
         self.form_scroll.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
         self.form_wide = self.winfo_screenwidth() >= 1280
+        # 两列布局需要最小可用宽度，否则卡片内容会被挤到相邻卡片上。
+        self.minsize(1180 if self.form_wide else 1000, 620)
         self.form_row = self.form_scroll.body
         if self.form_wide:
             self.form_row.columnconfigure(0, weight=3)
