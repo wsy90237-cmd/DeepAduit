@@ -178,6 +178,9 @@ def build_pages(app):
         tk.Label(card, textvariable=app.review_status, bg=CARD, fg=ACCENT, font=(FONT, 9),
                  wraplength=820, justify="left").pack(anchor="w", padx=28, pady=(0, 8))
         role = "附注" if key == "notes" else "底稿"
+        if key == "papers":
+            ttk.Button(card, text="制作底稿（模型 + 内置知识库）", style="Accent.TButton",
+                       command=app._draft_paper).pack(anchor="w", padx=28, pady=(0, 10))
         ttk.Button(card, text=f"选择待复核{role}", command=lambda role=role: app._attach_review_document(role)).pack(anchor="w", padx=28, pady=(4, 8))
         ttk.Button(card, text=f"按知识依据复核{role}", style="Accent.TButton", command=lambda role=role: app._agent_review(role)).pack(anchor="w", padx=28, pady=(0, 12))
         ttk.Button(card, text="返回 TB 复核", command=lambda: navigate(app, "tb")).pack(

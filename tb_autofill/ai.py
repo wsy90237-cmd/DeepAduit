@@ -190,18 +190,48 @@ class DeepSeekClient:
             raise AIError(f"连接成功，但账户未开通所选模型 {self.model}；可用：{'、'.join(models[:6])}")
         return models
 
+    PROBE_PROMPTS = (
+        '只输出一行合法 JSON，不要解释，不要代码块：{"ok": true}',
+        'Return only this JSON object: {"ok": true}',
+    )
+
+    @staticmethod
+    def _probe_ok(content):
+        """宽松判定 JSON 能力：模型偶尔漏引号或加代码块，不应误判为鉴权失败。"""
+        text = str(content or "").strip().strip("`")
+        if text.startswith("json"):
+            text = text[4:].lstrip()
+        for candidate in (text, text[text.find("{"):text.rfind("}") + 1]):
+            try:
+                value = json.loads(candidate)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(value, dict):
+                flag = value.get("ok", value.get("status"))
+                if flag is True or str(flag).strip().lower() in {"true", "ok", "1"}:
+                    return True
+        return False
+
     def probe_chat(self):
-        response = self._request("/chat/completions", {
-            "model": self.model, "messages": [{"role": "user", "content": '仅返回JSON对象：{"ok":true}'}],
-            "stream": False, "thinking": {"type": "disabled"}, "max_tokens": 64,
-            "response_format": {"type": "json_object"}})
-        try:
-            choice = response["choices"][0]
-            if choice.get("finish_reason") != "stop" or json.loads(choice["message"]["content"]).get("ok") is not True:
-                raise ValueError()
-        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-            raise AIError("鉴权可能成功，但对话返回未通过 JSON 能力验证。") from None
-        return True
+        """验证对话与 JSON 返回能力；鉴权通过但格式不符时给出可继续使用的提示。"""
+        last = ""
+        for prompt in self.PROBE_PROMPTS:
+            response = self._request("/chat/completions", {
+                "model": self.model, "messages": [{"role": "user", "content": prompt}],
+                "stream": False, "thinking": {"type": "disabled"}, "max_tokens": 64,
+                "response_format": {"type": "json_object"}})
+            try:
+                choice = response["choices"][0]
+                content = choice["message"]["content"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise AIError("模型服务返回结构异常，未通过对话验证。") from exc
+            last = str(content or "").strip()[:60]
+            if choice.get("finish_reason") == "stop" and self._probe_ok(content):
+                return True
+        raise AIError(
+            f"鉴权与对话均已连通，但模型未按 JSON 返回（最近一次：{last or '空'}）。"
+            "这不影响普通对话与问答，可直接保存 Key 后在对话中使用；"
+            "若需要结构化复核建议，请改选支持 JSON 输出的模型。")
 
     def assist(self, payload):
         system = (

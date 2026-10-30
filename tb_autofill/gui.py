@@ -17,7 +17,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import APP_NAME, __version__, ai as ai_module
-from . import analysis, auditlog, dxn, fields, knowledge, matching, settings, workbook, workspace
+from . import analysis, auditlog, dxn, fields, knowledge, matching, papers, settings, workbook, workspace
 from .models import Subject, ledger_digest, money
 from .connections import ModelDialog as AISettingsDialog
 
@@ -143,6 +143,148 @@ class SubjectPicker(tk.Toplevel):
         entry.bind("<Down>", lambda _event: (tree.focus_set(), tree.selection_set(tree.get_children()[0]) if tree.get_children() else None))
         self.grab_set()
         self.wait_window(self)
+
+
+class PaperDialog(tk.Toplevel):
+    """生成底稿草稿：选科目与类型，模型结合本机账套事实与内置知识库起草。"""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.title("生成审计底稿草稿")
+        self.transient(app)
+        self.geometry("880x640")
+        self.minsize(760, 520)
+        self.app = app
+        self.queue = queue.Queue()
+        self.draft = None
+        self.running = False
+
+        shell = tk.Frame(self, bg=CARD)
+        shell.pack(fill="both", expand=True, padx=16, pady=12)
+        shell.columnconfigure(1, weight=1)
+        shell.rowconfigure(3, weight=1)
+
+        tk.Label(shell, text="科目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w")
+        self.choices = papers.account_choices(app.rows) if app.rows else []
+        self.code_var = tk.StringVar()
+        self.code_box = ttk.Combobox(shell, textvariable=self.code_var, state="readonly",
+                                     values=[label for _code, label in self.choices])
+        self.code_box.grid(row=0, column=1, sticky="ew", padx=8)
+
+        tk.Label(shell, text="底稿类型", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        kind_row = tk.Frame(shell, bg=CARD)
+        kind_row.grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
+        self.kind_var = tk.StringVar(value=papers.KIND_LABELS[papers.DEFAULT_KIND])
+        ttk.Combobox(kind_row, textvariable=self.kind_var, state="readonly", width=22,
+                     values=list(papers.KIND_LABELS.values())).pack(side="left")
+        tk.Label(kind_row, text="仅生成草稿，需注册会计师复核", bg=CARD, fg=MUTED,
+                 font=(FONT, 8)).pack(side="left", padx=10)
+
+        tk.Label(shell, text="关注点", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=2, column=0, sticky="nw", pady=(8, 0))
+        self.focus_text = tk.Text(shell, height=2, wrap="word", font=(FONT, 9), relief="flat",
+                                  highlightthickness=1, highlightbackground=BORDER, padx=8, pady=6)
+        self.focus_text.grid(row=2, column=1, sticky="ew", padx=8, pady=(8, 0))
+
+        self.view = tk.Text(shell, wrap="word", font=(FONT, 9), relief="flat", state="disabled",
+                            highlightthickness=1, highlightbackground=BORDER, padx=12, pady=10)
+        self.view.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        bar = ttk.Scrollbar(shell, orient="vertical", command=self.view.yview)
+        bar.grid(row=3, column=2, sticky="ns", pady=(10, 0))
+        self.view.configure(yscrollcommand=bar.set)
+
+        actions = tk.Frame(shell, bg=CARD)
+        actions.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.run_btn = ttk.Button(actions, text="生成草稿", style="Accent.TButton", command=self._generate)
+        self.run_btn.pack(side="left")
+        self.export_btn = ttk.Button(actions, text="导出 HTML", command=self._export, state="disabled")
+        self.export_btn.pack(side="left", padx=8)
+        ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
+        self.state = tk.StringVar(value="选择科目后生成；金额取自本机账套。")
+        tk.Label(actions, textvariable=self.state, bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=12)
+
+        if self.choices:
+            self.code_box.current(0)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+    def _close(self):
+        self.running = False
+        self.destroy()
+
+    def _kind_key(self):
+        label = self.kind_var.get()
+        return next((key for key, value in papers.KIND_LABELS.items() if value == label), papers.DEFAULT_KIND)
+
+    def _generate(self):
+        if self.running:
+            return
+        if not self.app.rows:
+            self.state.set("请先在「账套与 TB」读取科目余额。")
+            return
+        index = self.code_box.current()
+        if index < 0:
+            self.state.set("请选择科目。")
+            return
+        code = self.choices[index][0]
+        focus = self.focus_text.get("1.0", "end").strip()
+        self.running = True
+        self.run_btn.configure(state="disabled")
+        self.state.set("正在生成草稿（模型 + 内置知识库）…")
+
+        def work():
+            try:
+                client = ai_module.DeepSeekClient.from_store(self.app.store)
+                result = papers.draft(client, rows=self.app.rows, code=code, kind=self._kind_key(),
+                                      subject_label=self.app._subject_label(), focus=focus)
+                self.queue.put(("ok", result))
+            except Exception as exc:  # 网络、校验、知识库异常都回到界面
+                self.queue.put(("error", str(exc)))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(150, self._poll)
+
+    def _poll(self):
+        if not self.running:
+            return
+        try:
+            status, value = self.queue.get_nowait()
+        except queue.Empty:
+            self.after(150, self._poll)
+            return
+        self.running = False
+        self.run_btn.configure(state="normal")
+        if status == "error":
+            self.state.set("生成失败：" + value)
+            return
+        self.draft = value
+        self.draft["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        self.view.configure(state="normal")
+        self.view.delete("1.0", "end")
+        self.view.insert("1.0", value["body"])
+        if value.get("refs"):
+            self.view.insert("end", "\n\n依据内置知识库：\n")
+            for item in value["refs"]:
+                self.view.insert("end", f"[{item['citation_id']}] {item['title']}\n")
+        self.view.configure(state="disabled")
+        self.export_btn.configure(state="normal")
+        self.state.set("草稿已生成；请复核后使用，金额未由模型改写。")
+
+    def _export(self):
+        if not self.draft:
+            return
+        name = f"底稿草稿-{self.draft['subject']['code']}-{self.draft['kind_label']}.html"
+        path = filedialog.asksaveasfilename(title="导出底稿草稿（非正式底稿）", defaultextension=".html",
+                                            filetypes=[("可阅读的底稿草稿", "*.html")], initialfile=name)
+        if not path:
+            return
+        try:
+            output = papers.export(path, self.draft["kind_label"], self.draft,
+                                   subject_label=self.app._subject_label())
+        except OSError as exc:
+            messagebox.showerror("无法导出", str(exc), parent=self)
+            return
+        self.app._audit("draft_paper", output=str(output), code=self.draft["subject"]["code"],
+                        kind=self.draft["kind"], reviewed=False)
+        self.state.set(f"已导出：{output}")
 
 
 class HoverTip:
@@ -718,6 +860,18 @@ class App(tk.Tk):
         if answer.get("intent") == "offtopic":
             return
         self._set_chat_proposals(answer.get("proposals", []))
+
+    def _draft_paper(self):
+        """制作底稿：把本机账套事实与内置知识交给模型起草，产出仍标注为草稿。"""
+        if self.busy:
+            return
+        if self.store is None or not self.store.has_key or not self.store.data.get("ai_enabled"):
+            messagebox.showinfo("需要模型服务", "请先在「AI 设置」配置并启用模型服务。")
+            return
+        if not self.rows:
+            messagebox.showinfo("缺少科目余额", "请先在「账套与 TB」读取科目余额，再制作底稿。")
+            return
+        PaperDialog(self)
 
     def _set_knowledge_refs(self, refs):
         if not 1 <= len(refs) <= 5 or any(not item.get("excerpt") for item in refs):
