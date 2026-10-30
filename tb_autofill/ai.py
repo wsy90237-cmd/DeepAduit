@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 import re
 import socket
 import urllib.error
@@ -444,7 +445,8 @@ def review_payload(results, rows, *, limit=25, candidate_limit=8):
                        "parent": item.target.parent, "period": item.target.period,
                        "basis": item.target.basis, "status": item.status,
                        "local_reason": item.reason,
-                       "existing": None if item.target.value is None else str(item.target.value)})
+                       "existing": None if item.target.value is None else str(item.target.value),
+                       "account_evidence": account_evidence(item, rows, limit=candidate_limit)})
     candidates = []
     for code, label in _candidate_labels(pending, rows, candidate_limit):
         row = next((item for item in rows if item.code == code), None)
@@ -457,6 +459,66 @@ def review_payload(results, rows, *, limit=25, candidate_limit=8):
                            "ending": None if row.ending is None else str(row.ending)})
     return {"targets": wanted, "candidates": candidates,
             "note": "金额由本地按来源科目计算，模型只判断来源范围。"}
+
+
+def account_evidence(item, rows, *, limit=8):
+    """为单个疑点构造账套证据：候选科目的级次、方向、余额与父子合计校验。
+
+    鼎信诺 c_kmyek 已给出 kmbh/科目名称/级次/方向/期初期末；这里把父子关系与
+    合计是否相符算清楚，模型据此判断"整体还是分项"，而不是凭名称猜。
+    """
+    label, parent = str(item.target.label or ""), str(item.target.parent or "")
+    value_of = (lambda row: row.opening) if item.target.period == "opening" else (lambda row: row.ending)
+    paths = {row.path or row.code: row for row in rows}
+    scored = []
+    for row in rows:
+        name = str(row.name or "")
+        points = 0
+        if name and label:
+            if name == label:
+                points += 5
+            elif name in label or label in name:
+                points += 4
+        if parent and name == parent:
+            points += 3
+        if item.source_ids and row.code in item.source_ids:
+            points += 6
+        if points:
+            scored.append((points, row))
+    scored.sort(key=lambda pair: (-pair[0], pair[1].code))
+    picked, seen = [], set()
+    for _points, row in scored:
+        if row.code in seen:
+            continue
+        seen.add(row.code)
+        picked.append(row)
+        if len(picked) >= limit:
+            break
+    evidence = []
+    for row in picked:
+        prefix = f"{row.path}/" if row.path else ""
+        children = [child for child in rows if prefix and (child.path or "").startswith(prefix)]
+        child_total = sum((value_of(child) or 0) for child in children)
+        node_value = value_of(row) or 0
+        evidence.append({
+            "code": row.code, "name": row.name, "path": row.path, "level": row.level,
+            "direction": row.direction,
+            "value": None if value_of(row) is None else str(value_of(row)),
+            "children": [{"code": child.code, "name": child.name,
+                          "value": None if value_of(child) is None else str(value_of(child))}
+                         for child in children[:8]],
+            "child_count": len(children),
+            "parent_equals_children": (len(children) > 0 and abs(child_total - node_value) <= Decimal("0.005")),
+        })
+    return {"target_id": item.target.id, "label": item.target.label,
+            "period": item.target.period, "basis": item.target.basis,
+            "existing": None if item.target.value is None else str(item.target.value),
+            "candidates": evidence}
+
+
+def _is_ancestor(a, b):
+    """b 是否位于 a 之下（用于阻断父子重复叠加）。"""
+    return bool(a.path) and bool(b.path) and b.path.startswith(f"{a.path}/")
 
 
 def _candidate_labels(results, rows, limit):
@@ -504,22 +566,33 @@ def review(client, results, rows, *, limit=25):
         decisions = data.get("decisions") or []
     except (KeyError, IndexError, TypeError, ValueError):
         raise AIError("AI 复核返回未通过解析，未采纳任何判断。") from None
-    allowed = {item["target_id"] for item in payload["targets"]}
-    codes = {item["code"] for item in payload["candidates"]}
+    by_target = {item["target_id"]: item for item in payload["targets"]}
+    rows_by_code = {row.code: row for row in rows}
     checked = []
     for item in decisions:
         if not isinstance(item, dict):
             continue
         target_id = str(item.get("target_id", ""))
         action = str(item.get("action", "")).strip()
-        chosen = [str(code) for code in (item.get("source_codes") or []) if str(code) in codes]
-        reason = str(item.get("reason", ""))[:160]
-        if target_id not in allowed or action not in {"fill", "hold", "drop"}:
+        target = by_target.get(target_id)
+        if target is None or action not in {"fill", "hold", "drop"}:
             continue
+        # 只接受该疑点证据里的候选，避免跨疑点串用科目
+        allowed_codes = {entry["code"] for entry in target.get("account_evidence", {}).get("candidates", [])}
+        chosen = [str(code) for code in (item.get("source_codes") or []) if str(code) in allowed_codes]
+        reason = str(item.get("reason", ""))[:160]
         if action == "fill" and not chosen:
-            action = "hold"
-            reason = reason or "AI 未给出候选来源，转人工"
-        checked.append({"target_id": target_id, "action": action, "source_codes": chosen[:3],
+            action, reason = "hold", reason or "AI 未给出该疑点候选中的来源，转人工"
+        if action == "fill":
+            picked = [rows_by_code[code] for code in chosen if code in rows_by_code]
+            # 算术守卫：父子科目不得同时选，否则金额重复叠加。
+            for index, left in enumerate(picked):
+                if any(_is_ancestor(left, right) or _is_ancestor(right, left)
+                       for right in picked[index + 1:]):
+                    action, reason = "hold", "父子科目混选会重复叠加，退回人工确认"
+                    break
+        checked.append({"target_id": target_id, "action": action,
+                        "source_codes": chosen[:3] if action == "fill" else [],
                         "reason": reason})
     return checked
 
