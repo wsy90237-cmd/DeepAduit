@@ -181,6 +181,9 @@ def build_pages(app):
         if key == "papers":
             ttk.Button(card, text="制作底稿（模型 + 内置知识库）", style="Accent.TButton",
                        command=app._draft_paper).pack(anchor="w", padx=28, pady=(0, 10))
+        if key == "notes":
+            ttk.Button(card, text="生成附注草稿（模型 + 内置知识库）", style="Accent.TButton",
+                       command=app._draft_notes).pack(anchor="w", padx=28, pady=(0, 10))
         ttk.Button(card, text=f"选择待复核{role}", command=lambda role=role: app._attach_review_document(role)).pack(anchor="w", padx=28, pady=(4, 8))
         ttk.Button(card, text=f"按知识依据复核{role}", style="Accent.TButton", command=lambda role=role: app._agent_review(role)).pack(anchor="w", padx=28, pady=(0, 12))
         ttk.Button(card, text="返回 TB 复核", command=lambda: navigate(app, "tb")).pack(
@@ -303,6 +306,8 @@ def _build_report(app):
     actions.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 20))
     ttk.Button(actions, text="导出报告准备清单", command=lambda: _export_readiness(app)).pack(side="left")
     ttk.Button(actions, text="按知识依据复核现有报告", command=lambda: app._agent_review("报告")).pack(side="left", padx=10)
+    ttk.Button(actions, text="生成报告草稿", style="Accent.TButton",
+               command=app._draft_report).pack(side="left", padx=10)
     label(actions, "正式报告生成与签发：待接模板及项目复核流程", size=9, color=MUTED).pack(side="right")
 
 

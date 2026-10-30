@@ -119,6 +119,63 @@ def draft(client, *, rows, code, kind=DEFAULT_KIND, subject_label="", focus="", 
             "warnings": answer.get("warnings", []) + answer.get("citation_warnings", [])}
 
 
+# ---------- 附注与报告草稿 ----------
+
+DOCUMENTS = {
+    "notes": ("财务报表附注草稿",
+              "按已复核 TB 列示重要报表项目、会计政策要点、变动说明与待补披露。"),
+    "report": ("审计报告草稿",
+               "按固定要素起草意见段与基础段；证据不足时只能写保留或无法表示意见的理由，不得直接出具。"),
+}
+
+
+def _summary_context(rows, results):
+    """附注与报告共用的事实摘要：科目规模、匹配情况、差异与缺证据项。"""
+    matched = [item for item in results if item.status == "matched"]
+    pending = [item for item in results if item.status not in {"matched", "protected"}]
+    totals = {"debit": _amount(sum((row.debit or ZERO) for row in rows)),
+              "credit": _amount(sum((row.credit or ZERO) for row in rows)),
+              "accounts": len(rows),
+              "profit_loss_accounts": sum(1 for row in rows if row.is_profit_loss)}
+    return {
+        "ledger": totals,
+        "targets": {"total": len(results), "matched": len(matched), "pending": len(pending),
+                    "protected": len(results) - len(matched) - len(pending)},
+        "matched_samples": [{"target": item.target.label, "amount": _amount(item.amount),
+                             "sources": list(item.source_ids)} for item in matched[:20]],
+        "pending_samples": [{"target": item.target.label, "status": item.status,
+                             "reason": item.reason} for item in pending[:15]],
+        "note": "以上仅为本地账套与匹配结果摘要，不含凭证、合同、函证、盘点与截止测试证据。",
+    }
+
+
+def draft_document(client, *, rows, results, kind="notes", subject_label="", focus="", limit=5):
+    """生成附注或报告草稿；结论必须停在“可支持/不支持”，不得声称已签发。"""
+    if kind not in DOCUMENTS:
+        raise ValueError("不支持的文档类型")
+    if not rows:
+        raise ValueError("请先读取科目余额。")
+    label, guidance = DOCUMENTS[kind]
+    facts = _summary_context(rows, results)
+    facts.update({"kind": label, "kind_guidance": guidance, "subject_label": subject_label,
+                  "focus": str(focus or "")[:500]})
+    query = " ".join(part for part in (label, facts["focus"], "披露 认定 审计意见") if part)
+    refs = skills.as_knowledge_refs(skills.search(query, limit=limit), limit=limit)
+    context = {"facts": facts, "knowledge_refs": refs,
+               "constraints": {"amount_source": "账套与本地匹配结果", "no_fabrication": True,
+                               "status": "草稿，需注册会计师复核"}}
+    question = (f"请起草《{label}》。只依据 facts 与知识条目；缺少证据的段落写“待补”，"
+                "并在结尾列出无法支持结论的事项。")
+    answer = client.converse_with_skills(question, context=context)
+    body = str(answer.get("answer") or "").strip()
+    if answer.get("intent") != "audit" or not body:
+        raise ValueError(answer.get("answer") or "模型未返回可用草稿。")
+    subject = {"code": "—", "name": label, "direction": "", "opening": "", "debit": "", "credit": "",
+               "ending": ""}
+    return {"kind": kind, "kind_label": label, "subject": subject, "body": body, "refs": refs,
+            "warnings": answer.get("warnings", []) + answer.get("citation_warnings", [])}
+
+
 def to_html(title, draft, *, subject_label=""):
     """导出可读的底稿草稿（非正式报告，页眉明确标注）。"""
     def escape(text):

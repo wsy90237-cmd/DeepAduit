@@ -148,9 +148,13 @@ class SubjectPicker(tk.Toplevel):
 class PaperDialog(tk.Toplevel):
     """生成底稿草稿：选科目与类型，模型结合本机账套事实与内置知识库起草。"""
 
-    def __init__(self, app):
+    SCOPE_TITLE = {"paper": "生成审计底稿草稿", "notes": "生成财务报表附注草稿", "report": "生成审计报告草稿"}
+    SCOPE_LABEL = {"paper": "底稿", "notes": "附注", "report": "报告"}
+
+    def __init__(self, app, scope="paper"):
         super().__init__(app)
-        self.title("生成审计底稿草稿")
+        self.scope = scope
+        self.title(self.SCOPE_TITLE.get(scope, "生成草稿"))
         self.transient(app)
         self.geometry("880x640")
         self.minsize(760, 520)
@@ -204,6 +208,11 @@ class PaperDialog(tk.Toplevel):
 
         if self.choices:
             self.code_box.current(0)
+        if scope != "paper":
+            # 附注与报告不按单个科目起草，隐藏科目与类型两行，避免误导。
+            for row in (0, 1):
+                for child in shell.grid_slaves(row=row):
+                    child.grid_remove()
         self.protocol("WM_DELETE_WINDOW", self._close)
 
     def _close(self):
@@ -221,10 +230,10 @@ class PaperDialog(tk.Toplevel):
             self.state.set("请先在「账套与 TB」读取科目余额。")
             return
         index = self.code_box.current()
-        if index < 0:
+        if self.scope == "paper" and index < 0:
             self.state.set("请选择科目。")
             return
-        code = self.choices[index][0]
+        code = self.choices[index][0] if self.scope == "paper" and index >= 0 else ""
         focus = self.focus_text.get("1.0", "end").strip()
         self.running = True
         self.run_btn.configure(state="disabled")
@@ -233,8 +242,13 @@ class PaperDialog(tk.Toplevel):
         def work():
             try:
                 client = ai_module.DeepSeekClient.from_store(self.app.store)
-                result = papers.draft(client, rows=self.app.rows, code=code, kind=self._kind_key(),
-                                      subject_label=self.app._subject_label(), focus=focus)
+                if self.scope == "paper":
+                    result = papers.draft(client, rows=self.app.rows, code=code, kind=self._kind_key(),
+                                          subject_label=self.app._subject_label(), focus=focus)
+                else:
+                    result = papers.draft_document(client, rows=self.app.rows, results=self.app.results,
+                                                   kind=self.scope, subject_label=self.app._subject_label(),
+                                                   focus=focus)
                 self.queue.put(("ok", result))
             except Exception as exc:  # 网络、校验、知识库异常都回到界面
                 self.queue.put(("error", str(exc)))
@@ -271,7 +285,8 @@ class PaperDialog(tk.Toplevel):
     def _export(self):
         if not self.draft:
             return
-        name = f"底稿草稿-{self.draft['subject']['code']}-{self.draft['kind_label']}.html"
+        tag = self.draft["subject"]["code"] if self.scope == "paper" else self.SCOPE_LABEL.get(self.scope, "草稿")
+        name = f"{self.SCOPE_LABEL.get(self.scope, '草稿')}草稿-{tag}-{self.draft['kind_label']}.html"
         path = filedialog.asksaveasfilename(title="导出底稿草稿（非正式底稿）", defaultextension=".html",
                                             filetypes=[("可阅读的底稿草稿", "*.html")], initialfile=name)
         if not path:
@@ -861,6 +876,24 @@ class App(tk.Tk):
             return
         self._set_chat_proposals(answer.get("proposals", []))
 
+    def _draft_notes(self):
+        self._draft_document("notes")
+
+    def _draft_report(self):
+        self._draft_document("report")
+
+    def _draft_document(self, scope):
+        """附注与报告草稿：同一套事实约束，产出仍标注为草稿。"""
+        if self.busy:
+            return
+        if self.store is None or not self.store.has_key or not self.store.data.get("ai_enabled"):
+            messagebox.showinfo("需要模型服务", "请先在「AI 设置」配置并启用模型服务。")
+            return
+        if not self.rows:
+            messagebox.showinfo("缺少科目余额", "请先在「账套与 TB」读取科目余额。")
+            return
+        PaperDialog(self, scope)
+
     def _draft_paper(self):
         """制作底稿：把本机账套事实与内置知识交给模型起草，产出仍标注为草稿。"""
         if self.busy:
@@ -871,7 +904,7 @@ class App(tk.Tk):
         if not self.rows:
             messagebox.showinfo("缺少科目余额", "请先在「账套与 TB」读取科目余额，再制作底稿。")
             return
-        PaperDialog(self)
+        PaperDialog(self, "paper")
 
     def _set_knowledge_refs(self, refs):
         if not 1 <= len(refs) <= 5 or any(not item.get("excerpt") for item in refs):
@@ -1533,6 +1566,16 @@ class App(tk.Tk):
         if not selected:
             messagebox.showwarning("尚未勾选", "请先勾选需要写入的字段。")
             return
+        mismatch = getattr(self.scan, "period_mismatch", None)
+        confirmed_mismatch = False
+        if mismatch:
+            periods = "、".join(f"{year}-{month:02d}" for year, month in mismatch)
+            if not messagebox.askyesno(
+                    "期间口径不一致",
+                    f"模板声明的截止日期为 {periods}，与当前账套期间不一致。\n\n"
+                    "金额仍按当前账套填列，是否继续写入？\n（建议写入后复核期间与附注口径）"):
+                return
+            confirmed_mismatch = True
         suffix = self.scan.path.suffix
         path = filedialog.asksaveasfilename(title="另存为新的 Excel 文件", defaultextension=suffix,
                                             filetypes=[("Excel 工作簿", f"*{suffix}")],
@@ -1540,6 +1583,8 @@ class App(tk.Tk):
         if not path:
             return
         scan, results, rows = deepcopy(self.scan), deepcopy(self.results), tuple(self.rows)
+        if confirmed_mismatch:
+            scan.allow_period_mismatch = True     # 已人工确认期间差异，放行本次写入
         subject = self._subject_label()
         self._async(f"正在写入 {len(selected)} 个字段（调用 Excel 重算并逐格校验）…",
                     lambda: workbook.write_results(scan, results, path, rows=rows),

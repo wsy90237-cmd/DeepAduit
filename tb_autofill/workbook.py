@@ -16,13 +16,24 @@ from .fields import file_digest
 from .models import ledger_digest, money
 
 
-def validate_source_context(scan, results, rows):
+def validate_source_context(scan, results, rows, *, strict_period=False):
     if scan.source_digest and (rows is None or ledger_digest(rows) != scan.source_digest):
         raise ValueError("账套或主体期间已变化，请重新读取并识别模板。")
     if scan.ending_periods:
         actual = {(row.year, row.month) for row in rows} if rows else set()
+        declared = {(year, month) for _, year, month in scan.ending_periods}
         if any(actual != {(year, month)} for _, year, month in scan.ending_periods):
-            raise ValueError("账套期间与模板截止日期不一致或缺失，请核对主体与期间后重新识别。")
+            # 金额仍按账套取数；期间差异只提示，不阻断识别，写入前由人工再确认。
+            scan.period_mismatch = sorted(declared)
+            note = "模板声明的截止日期与账套期间不一致（模板：%s；账套：%s）。金额按当前账套填列，写入前请确认期间口径。" % (
+                "、".join(f"{year}-{month:02d}" for year, month in sorted(declared)) or "未声明",
+                "、".join(f"{year}-{month:02d}" for year, month in sorted(actual)) or "缺失")
+            if note not in scan.warnings:
+                scan.warnings.append(note)
+            if strict_period and not getattr(scan, "allow_period_mismatch", False):
+                raise ValueError("模板截止日期与账套期间不一致，已按人工确认要求停止写入；确认口径后可继续。")
+        else:
+            scan.period_mismatch = None
     if rows is not None:
         available = set(rows)
         if any(source not in available for result in results for source in result.sources):
@@ -31,7 +42,7 @@ def validate_source_context(scan, results, rows):
 
 def planned_writes(scan, results, *, rows=None):
     from .matching import resolve_match, validate_claims
-    validate_source_context(scan, results, rows)
+    validate_source_context(scan, results, rows, strict_period=True)
     known = {field.id: field for field in scan.fields}
     selected = [result for result in results if result.selected]
     if not selected:
