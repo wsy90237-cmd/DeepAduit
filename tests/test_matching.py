@@ -253,7 +253,9 @@ class MatchingTests(unittest.TestCase):
 
     def test_alias_and_real_zero(self):
         result = match_fields([target("现金（库存现金）")], [row(ending=Decimal(0))])[0]
-        self.assertEqual((result.status, result.amount, result.selected), ("matched", Decimal(0), True))
+        # 金额 0 仍算匹配成立，但不默认写入空白格：答案语料里空白通常表示无此项。
+        self.assertEqual((result.status, result.amount, result.selected), ("matched", Decimal(0), False))
+        self.assertIn("0", result.reason)
 
     def test_formula_is_protected_even_if_flag_missing(self):
         result = match_fields([target(value="=SUM(D11:D14)")], [row()])[0]

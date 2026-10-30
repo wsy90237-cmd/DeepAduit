@@ -648,7 +648,13 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         return result
     result.amount = sum(amounts, Decimal(0)) / factor
     result.status = "matched"
-    result.selected = target.value is None or (isinstance(target.value, str) and not target.value.strip())
+    blank = target.value is None or (isinstance(target.value, str) and not target.value.strip())
+    result.selected = blank
+    if blank and result.amount == 0:
+        # 答案语料显示：空白格通常表示无此项，写 0 会污染底稿；需要时手动勾选。
+        result.selected = False
+        result.reason = "来源合计为 0，默认不写入空白格；确需填 0 请手动勾选"
+        return result
     result.reason = "按已确认来源本地计算；科目余额按自然方向保留符号"
     if target.measure == "opening_balance":
         result.reason = "按明确未分配利润科目的年初余额取数；按贷方方向列示，保留亏损或冲回符号"

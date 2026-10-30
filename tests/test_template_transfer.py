@@ -85,7 +85,7 @@ class TemplateTransferTests(unittest.TestCase):
                         self.assertEqual(actual, {'货币资金': ('protected', None), '库存现金': ('matched', Decimal(0)),
                                                  '银行存款': ('matched', Decimal(25)), '专项应付款': ('matched', Decimal(-3))})
                         writes = workbook.planned_writes(scan, results, rows=self.rows())
-                        self.assertEqual(len(writes), 3)
+                        self.assertEqual(len(writes), 2)   # 库存现金为 0，默认不写入空白格
                         self.assertEqual(fields.file_digest(self.path), digest)
 
     def test_renamed_split_opening_still_requires_audited_source(self):

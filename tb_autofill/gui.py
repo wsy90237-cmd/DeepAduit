@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from copy import deepcopy
 import queue
 import threading
@@ -300,6 +301,162 @@ class PaperDialog(tk.Toplevel):
         self.app._audit("draft_paper", output=str(output), code=self.draft["subject"]["code"],
                         kind=self.draft["kind"], reviewed=False)
         self.state.set(f"已导出：{output}")
+
+
+class ReviewDialog(tk.Toplevel):
+    """AI 复核：模型只判断来源范围，金额仍由本地按来源重算。"""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.title("AI 复核疑点")
+        self.transient(app)
+        self.geometry("980x560")
+        self.minsize(860, 480)
+        self.app, self.queue = app, queue.Queue()
+        self.decisions, self.targets, self.rows_by_code = [], {}, {}
+        self.running = False
+
+        shell = tk.Frame(self, bg=CARD)
+        shell.pack(fill="both", expand=True, padx=14, pady=12)
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(1, weight=1)
+
+        head = tk.Frame(shell, bg=CARD)
+        head.grid(row=0, column=0, sticky="ew")
+        self.state = tk.StringVar(value="正在把疑点交给模型复核…")
+        tk.Label(head, textvariable=self.state, bg=CARD, fg=SEC, font=(FONT, 9)).pack(side="left")
+
+        holder = tk.Frame(shell, bg=CARD)
+        holder.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        holder.columnconfigure(0, weight=1)
+        holder.rowconfigure(0, weight=1)
+        columns = ("take", "action", "label", "sources", "amount", "reason")
+        titles = {"take": "采纳", "action": "判断", "label": "报表项目", "sources": "AI 指定来源",
+                  "amount": "本地重算", "reason": "理由"}
+        widths = {"take": 50, "action": 60, "label": 210, "sources": 190, "amount": 140, "reason": 320}
+        self.tree = ttk.Treeview(holder, columns=columns, show="headings", selectmode="browse", height=14)
+        for key in columns:
+            self.tree.heading(key, text=titles[key])
+            self.tree.column(key, width=widths[key],
+                             anchor="center" if key in {"take", "action", "amount"} else "w")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        bar = ttk.Scrollbar(holder, orient="vertical", command=self.tree.yview)
+        bar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=bar.set)
+        self.tree.bind("<Button-1>", self._toggle)
+
+        actions = tk.Frame(shell, bg=CARD)
+        actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        ttk.Button(actions, text="采纳所选", style="Accent.TButton", command=self._apply).pack(side="left")
+        ttk.Button(actions, text="全选 fill", command=lambda: self._check_all("fill")).pack(side="left", padx=8)
+        ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
+        tk.Label(actions, text="hold 表示需补证据；drop 表示不该填。采纳后金额仍由本地重算。",
+                 bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=12)
+        self._load()
+
+    def _load(self):
+        app = self.app
+        try:
+            client = ai_module.DeepSeekClient.from_store(app.store)
+        except (ai_module.AIError, settings.SettingsError) as exc:
+            self.state.set(str(exc))
+            return
+        self.running = True
+        payload = ai_module.review_payload(app.results, app.rows, limit=25)
+        self.targets = {item["target_id"]: item for item in payload["targets"]}
+        self.rows_by_code = {row.code: row for row in app.rows}
+
+        def work():
+            try:
+                self.queue.put(("ok", ai_module.review(client, app.results, app.rows, limit=25)))
+            except Exception as exc:            # 网络、解析失败都回到界面
+                self.queue.put(("error", str(exc)))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(150, self._poll)
+
+    def _poll(self):
+        if not self.running:
+            return
+        try:
+            status, value = self.queue.get_nowait()
+        except queue.Empty:
+            self.after(150, self._poll)
+            return
+        self.running = False
+        if status == "error":
+            self.state.set("复核失败：" + value)
+            return
+        self.decisions = value
+        if not value:
+            self.state.set("没有需要复核的疑点。")
+            return
+        for decision in value:
+            target = self.targets.get(decision["target_id"], {})
+            codes = [code for code in decision["source_codes"] if code in self.rows_by_code]
+            amount = ""
+            result = next((item for item in self.app.results if item.target.id == decision["target_id"]), None)
+            if result is not None and codes:
+                check = matching.resolve_match(result.target, [self.rows_by_code[c] for c in codes],
+                                               method="manual", rows=self.app.rows)
+                amount = "" if check.amount is None else f"{check.amount:,}"
+            self.tree.insert("", "end", iid=decision["target_id"],
+                             values=("☐", decision["action"], target.get("label", ""),
+                                     ", ".join(decision["source_codes"]) or "—", amount,
+                                     decision["reason"]))
+        self.state.set(f"共 {len(value)} 条判断；勾选后点「采纳所选」。")
+        self._check_all("fill")
+
+    def _toggle(self, event):
+        row = self.tree.identify_row(event.y)
+        if not row or self.tree.identify_column(event.x) != "#1":
+            return
+        values = list(self.tree.item(row, "values"))
+        values[0] = "☐" if values[0] == "☑" else "☑"
+        self.tree.item(row, values=values)
+
+    def _check_all(self, action):
+        for iid in self.tree.get_children():
+            values = list(self.tree.item(iid, "values"))
+            values[0] = "☑" if values[1] == action else "☐"
+            self.tree.item(iid, values=values)
+
+    def _apply(self):
+        applied = Counter()
+        for decision in self.decisions:
+            iid = decision["target_id"]
+            if iid not in self.tree.get_children():
+                continue
+            if self.tree.item(iid, "values")[0] != "☑":
+                continue
+            result = next((item for item in self.app.results if item.target.id == iid), None)
+            if result is None or result.status == "protected":
+                continue
+            if decision["action"] == "fill" and decision["source_codes"]:
+                codes = [code for code in decision["source_codes"] if code in self.rows_by_code]
+                check = matching.resolve_match(result.target, [self.rows_by_code[c] for c in codes],
+                                               method="manual", rows=self.app.rows)
+                result.sources, result.amount = check.sources, check.amount
+                result.status, result.method = check.status, "ai-review"
+                blank = result.target.value is None or str(result.target.value).strip() == ""
+                zero_blank = check.amount == 0 and blank
+                result.reason = check.reason + "｜AI 复核：" + decision["reason"][:40]
+                result.selected = check.status == "matched" and not zero_blank
+                if zero_blank:
+                    result.reason += "（余额为 0，未写入空白格）"
+                applied["fill"] += 1
+            elif decision["action"] == "drop":
+                result.selected = False
+                result.reason = "AI 复核建议放弃：" + decision["reason"][:60]
+                applied["drop"] += 1
+            else:
+                result.reason = "AI 复核保留待补：" + decision["reason"][:60]
+                applied["hold"] += 1
+        matching.validate_claims(self.app.results)
+        self.app._refresh_tree()
+        self.app._audit("ai_review_apply", **{key: int(value) for key, value in applied.items()})
+        self.state.set(f"已采纳：fill {applied['fill']} · drop {applied['drop']} · hold {applied['hold']}")
+        self.destroy()
 
 
 class HoverTip:
@@ -629,7 +786,7 @@ class App(tk.Tk):
                               ("允许覆盖", self._allow_overwrite), ("指定来源", self._manual_source),
                               ("变动分析", self._analyze_movements)):
             ttk.Button(controls, text=text, command=command).pack(side="left", padx=(6, 0))
-        self.ai_btn = ttk.Button(controls, text="AI 复核", command=self._ai_review)
+        self.ai_btn = ttk.Button(controls, text="AI 复核", command=self._open_review)
         self.ai_btn.pack(side="left", padx=(6, 0))
         self.stats = tk.StringVar(value="")
         tk.Label(bar, textvariable=self.stats, bg=CARD, fg=MUTED, font=(FONT, 8), anchor="w").pack(
@@ -893,6 +1050,18 @@ class App(tk.Tk):
             messagebox.showinfo("缺少科目余额", "请先在「账套与 TB」读取科目余额。")
             return
         PaperDialog(self, scope)
+
+    def _open_review(self):
+        """AI 复核：把疑点交模型判来源范围，采纳后金额仍本地重算。"""
+        if self.busy or self.scan is None:
+            return
+        if self.store is None or not self.store.has_key or not self.store.data.get("ai_enabled"):
+            messagebox.showinfo("需要模型服务", "请先在「AI 设置」配置并启用模型服务。")
+            return
+        if not self.results:
+            messagebox.showinfo("缺少识别结果", "请先识别并匹配模板。")
+            return
+        ReviewDialog(self)
 
     def _draft_paper(self):
         """制作底稿：把本机账套事实与内置知识交给模型起草，产出仍标注为草稿。"""

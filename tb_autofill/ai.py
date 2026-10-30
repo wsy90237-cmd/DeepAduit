@@ -400,6 +400,130 @@ def narrow_candidates(results, rows, limit=300):
     return picked, True, len(rows)
 
 
+REVIEW_SYSTEM = (
+    "你是审计复核者，只处理给定的疑点清单。"
+    "对每个疑点判断：fill（可从候选科目确定来源并填列）、hold（需补证据或人工判断）、drop（不该填）。"
+    "只能从该疑点的 candidates 里选择科目编码，禁止编造编码、金额或凭证。"
+    "父子科目范围由你判断：整体科目与成本/分项明细并存时，按报表项目含义选择完整范围，"
+    "不能用单个分项替代整体，也不能父子重复叠加。"
+    "只返回 JSON 对象：{\"decisions\":[{\"target_id\":\"给定ID\",\"action\":\"fill|hold|drop\","
+    "\"source_codes\":[\"候选中的编码\"],\"reason\":\"不超过120字\"}]}。"
+)
+
+
+
+def _relevant_value(item, row):
+    return row.opening if item.target.period == "opening" else row.ending
+
+
+def _has_balance(item, rows):
+    """该疑点是否值得复核：候选里至少有一个非零余额。"""
+    label, parent = str(item.target.label or ""), str(item.target.parent or "")
+    for row in rows:
+        value = _relevant_value(item, row)
+        if value in (None, 0):
+            continue
+        name = str(row.name or "")
+        if (name and label and (name in label or label in name)) or (parent and name == parent):
+            return True
+    return False
+
+
+def review_payload(results, rows, *, limit=25, candidate_limit=8):
+    """把疑点与候选交给模型：漏匹配、歧义、匹配未勾选、覆盖风险。"""
+    pending = [item for item in results
+               if item.status != "protected" and (item.status != "matched" or not item.selected)]
+    # 余额全为 0 的疑点没有可判断的内容，不占用模型与人工注意力。
+    pending = [item for item in pending if _has_balance(item, rows)]
+    pending = pending[:limit]
+    if not pending:
+        return {"targets": [], "candidates": [], "note": "没有需要复核的疑点。"}
+    wanted = []
+    for item in pending:
+        wanted.append({"target_id": item.target.id, "label": item.target.label,
+                       "parent": item.target.parent, "period": item.target.period,
+                       "basis": item.target.basis, "status": item.status,
+                       "local_reason": item.reason,
+                       "existing": None if item.target.value is None else str(item.target.value)})
+    candidates = []
+    for code, label in _candidate_labels(pending, rows, candidate_limit):
+        row = next((item for item in rows if item.code == code), None)
+        if row is None:
+            continue
+        value = row.opening if any(item.target.period == "opening" for item in pending) else row.ending
+        candidates.append({"code": row.code, "name": row.name, "path": row.path,
+                           "direction": row.direction,
+                           "opening": None if row.opening is None else str(row.opening),
+                           "ending": None if row.ending is None else str(row.ending)})
+    return {"targets": wanted, "candidates": candidates,
+            "note": "金额由本地按来源科目计算，模型只判断来源范围。"}
+
+
+def _candidate_labels(results, rows, limit):
+    """按相关度为每个疑点取候选科目，合并去重，返回 (code, label) 列表。"""
+    picked, seen = [], set()
+    for item in results:
+        label, parent = str(item.target.label or ""), str(item.target.parent or "")
+        scored = []
+        for row in rows:
+            name = str(row.name or "")
+            points = 0
+            if name and label:
+                if name == label:
+                    points += 4
+                elif name in label or label in name:
+                    points += 3
+            if parent and name == parent:
+                points += 3
+            if item.source_ids and row.code in item.source_ids:
+                points += 5
+            points += 1 if (row.ending or 0) not in (0, None) else 0
+            if points:
+                scored.append((points, row))
+        scored.sort(key=lambda pair: (-pair[0], pair[1].code))
+        for _points, row in scored[:limit]:
+            if row.code not in seen:
+                seen.add(row.code)
+                picked.append(row.code)
+    return [(row.code, row.name) for row in rows if row.code in seen]
+
+
+def review(client, results, rows, *, limit=25):
+    """AI 复核：返回经本地校验的判断清单，金额不在此处计算。"""
+    payload = review_payload(results, rows, limit=limit)
+    if not payload["targets"]:
+        return []
+    response = client._request("/chat/completions", {
+        "model": client.model, "stream": False, "thinking": {"type": "disabled"},
+        "temperature": 0.1, "max_tokens": 2048, "response_format": {"type": "json_object"},
+        "messages": [{"role": "system", "content": REVIEW_SYSTEM},
+                     {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]})
+    try:
+        content = response["choices"][0]["message"]["content"]
+        data = json.loads(content)
+        decisions = data.get("decisions") or []
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise AIError("AI 复核返回未通过解析，未采纳任何判断。") from None
+    allowed = {item["target_id"] for item in payload["targets"]}
+    codes = {item["code"] for item in payload["candidates"]}
+    checked = []
+    for item in decisions:
+        if not isinstance(item, dict):
+            continue
+        target_id = str(item.get("target_id", ""))
+        action = str(item.get("action", "")).strip()
+        chosen = [str(code) for code in (item.get("source_codes") or []) if str(code) in codes]
+        reason = str(item.get("reason", ""))[:160]
+        if target_id not in allowed or action not in {"fill", "hold", "drop"}:
+            continue
+        if action == "fill" and not chosen:
+            action = "hold"
+            reason = reason or "AI 未给出候选来源，转人工"
+        checked.append({"target_id": target_id, "action": action, "source_codes": chosen[:3],
+                        "reason": reason})
+    return checked
+
+
 def assistance_payload(results, rows):
     if len(results) > 30:
         raise AIError("一次最多辅助核验30个字段，请缩小选中范围。")
