@@ -128,6 +128,13 @@ class ApplySuggestionTests(unittest.TestCase):
         self.assertEqual(results[0].status, "ambiguous")
         applied, notes = apply_ai_suggestions(results, [
             {"target_id": "期末!D10", "source_codes": ["660201"], "reason": "按管理费用归类", "amount": "999999"}], rows)
+        self.assertEqual(applied, 0)
+        self.assertTrue(notes)
+        self.assertEqual(results[0].status, "ambiguous")
+        rows = rows[:1]
+        results = match_fields([target("其他")], rows)
+        applied, notes = apply_ai_suggestions(results, [
+            {"target_id": "期末!D10", "source_codes": ["660201"], "reason": "唯一候选", "amount": "999999"}], rows)
         self.assertEqual((applied, notes), (1, []))
         self.assertEqual(results[0].status, "matched")
         self.assertEqual(results[0].amount, Decimal(12))

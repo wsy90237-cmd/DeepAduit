@@ -78,11 +78,12 @@ class App(tk.Tk):
         self.whale_mark = tk.PhotoImage(master=self, file=str(assets / "pixel-whale-48.png"))
         self.whale_icon = tk.PhotoImage(master=self, file=str(assets / "pixel-whale-256.png"))
         self.iconphoto(True, self.whale_icon, self.whale_small)
-        # 适配小屏：窗口不超出可用桌面，避免底部操作区被裁掉。
-        width = min(1440, max(1040, self.winfo_screenwidth() - 70))
-        height = min(900, max(700, self.winfo_screenheight() - 90))
+        # 适配小屏：按可用桌面留出标题栏与任务栏，底部操作区不再被裁掉。
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        width = min(1480, max(1000, screen_w - 90))
+        height = min(920, max(620, screen_h - 130))
         self.geometry(f"{width}x{height}")
-        self.minsize(1040, 680)
+        self.minsize(1000, 600)
         self.queue = queue.Queue()
         self.busy = False
         self.projects = []
@@ -196,6 +197,14 @@ class App(tk.Tk):
         self.chat_visible = False
         workspace.build_shell(self)
         self._build_header()
+        # 表单区独立滚动：宽屏时 ①② 并排，窄屏时上下堆叠，余量全部留给结果表。
+        self.form_scroll = workspace.ScrollArea(self.workspace, bg=BG, height=280)
+        self.form_scroll.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
+        self.form_wide = self.winfo_screenwidth() >= 1280
+        self.form_row = self.form_scroll.body
+        if self.form_wide:
+            self.form_row.columnconfigure(0, weight=3)
+            self.form_row.columnconfigure(1, weight=2)
         self._build_source()
         self._build_template()
         self._build_result()
@@ -204,19 +213,31 @@ class App(tk.Tk):
         workspace.build_pages(self)
         self._build_chat()
         workspace.navigate(self, "overview")
+        self.workspace.bind("<Configure>", self._on_workspace_resize, add="+")
         if self._pending_error:
             self._log("设置读取失败：" + self._pending_error, error=True)
 
-    def _card(self, row, title, pady=(12, 0)):
+    def _on_workspace_resize(self, event):
+        self.form_scroll.fit(event.height)
+
+    def _card(self, row, title, pady=(10, 0), parent=None, column=0, padx=16):
         """白底卡片：1px 边框 + 标题，替代有年代感的 LabelFrame。"""
-        outer = tk.Frame(self.workspace, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
-        outer.grid(row=row, column=0, sticky="ew", padx=16, pady=pady)
+        outer = tk.Frame(parent or self.workspace, bg=CARD, highlightbackground=BORDER,
+                         highlightthickness=1, bd=0)
+        outer.grid(row=row, column=column, sticky="nsew", padx=padx, pady=pady)
         head = tk.Frame(outer, bg=CARD)
-        head.pack(fill="x", padx=14, pady=(8, 0))
+        head.pack(fill="x", padx=14, pady=(6, 0))
         tk.Label(head, text=title, bg=CARD, fg=SEC, font=(FONT, 9, "bold")).pack(side="left")
         body = tk.Frame(outer, bg=CARD)
-        body.pack(fill="both", expand=True, padx=14, pady=(6, 10))
+        body.pack(fill="both", expand=True, padx=14, pady=(4, 8))
         return outer, body, head
+
+    def _form_card(self, title, index):
+        """表单卡片：宽屏并排两列，窄屏堆叠单列，两种布局都保持完整可见。"""
+        if self.form_wide:
+            padx = (16, 8) if index == 0 else (8, 16)
+            return self._card(0, title, parent=self.form_row, column=index, padx=padx)
+        return self._card(index, title, parent=self.form_row, column=0)
 
     def _build_header(self):
         bar = tk.Frame(self.content, bg=CARD)
@@ -228,10 +249,10 @@ class App(tk.Tk):
         ttk.Button(inner, text="对话", style="Ghost.TButton", command=self._toggle_chat).pack(side="right")
         ttk.Button(inner, text="AI 设置", command=self._open_ai_settings).pack(side="right", padx=(0, 6))
         self.ai_state = tk.StringVar(value="AI 未配置")
-        tk.Label(inner, textvariable=self.ai_state, bg=CARD, fg=SEC, font=(FONT, 9)).pack(side="right", padx=6)
+        tk.Label(inner, textvariable=self.ai_state, bg=CARD, fg=SEC, font=(FONT, 9), anchor="e").pack(side="right", padx=6)
 
     def _build_source(self):
-        _outer, body, _head = self._card(1, "① 数据源")
+        _outer, body, _head = self._form_card("① 数据源", 0)
         body.columnconfigure(1, weight=1)
 
         ttk.Label(body, text="安装目录", style="Card.TLabel").grid(row=0, column=0, sticky="w")
@@ -251,12 +272,12 @@ class App(tk.Tk):
         line.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         ttk.Label(line, text="主体单位", style="Card.TLabel").pack(side="left")
         self.subject_var = tk.StringVar()
-        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=29)
+        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=20)
         self.subject_box.pack(side="left", padx=8)
         self.subject_box.bind("<<ComboboxSelected>>", self._on_subject)
         ttk.Label(line, text="年度", style="Card.TLabel").pack(side="left")
         self.year_var = tk.StringVar()
-        ttk.Combobox(line, textvariable=self.year_var, width=7,
+        ttk.Combobox(line, textvariable=self.year_var, width=6,
                      values=[str(year) for year in range(2000, 2101)]).pack(side="left", padx=(8, 12))
         ttk.Label(line, text="截止月", style="Card.TLabel").pack(side="left")
         self.month_var = tk.StringVar()
@@ -269,7 +290,7 @@ class App(tk.Tk):
                  font=(FONT, 8)).pack(side="left", padx=10)
 
     def _build_template(self):
-        _outer, body, _head = self._card(2, "② 模板与期间")
+        _outer, body, _head = self._form_card("② 模板与期间", 1)
         body.columnconfigure(1, weight=1)
 
         ttk.Label(body, text="模板文件", style="Card.TLabel").grid(row=0, column=0, sticky="w")
@@ -284,18 +305,31 @@ class App(tk.Tk):
         for text, value in (("仅期初", "opening"), ("仅期末", "ending"), ("期初+期末", "both")):
             ttk.Radiobutton(line, text=text, value=value, variable=self.period_var,
                             style="Card.TRadiobutton").pack(side="left", padx=(10, 0))
-        ttk.Label(line, text="金额单位", style="Card.TLabel").pack(side="left", padx=(18, 0))
         self.unit_var = tk.StringVar(value="自动")
-        ttk.Combobox(line, textvariable=self.unit_var, state="readonly", width=6,
+        unit_row = tk.Frame(body, bg=CARD) if self.form_wide else line
+        if self.form_wide:
+            unit_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+            ttk.Label(unit_row, text="金额单位", style="Card.TLabel").pack(side="left")
+        else:
+            ttk.Label(line, text="金额单位", style="Card.TLabel").pack(side="left", padx=(18, 0))
+        ttk.Combobox(unit_row, textvariable=self.unit_var, state="readonly", width=6,
                      values=("自动", "元", "千元", "万元", "亿元")).pack(side="left", padx=8)
-        ttk.Button(line, text="识别并匹配", style="Accent.TButton",
-                   command=self._recognize).pack(side="left", padx=(14, 0))
         self.scan_state = tk.StringVar(value="")
-        tk.Label(line, textvariable=self.scan_state, bg=CARD, fg=MUTED,
-                 font=(FONT, 8)).pack(side="left", padx=10)
+        if self.form_wide:
+            action = tk.Frame(body, bg=CARD)
+            action.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+            ttk.Button(action, text="识别并匹配", style="Accent.TButton",
+                       command=self._recognize).pack(side="left")
+            tk.Label(action, textvariable=self.scan_state, bg=CARD, fg=MUTED,
+                     font=(FONT, 8)).pack(side="left", padx=10)
+        else:
+            ttk.Button(line, text="识别并匹配", style="Accent.TButton",
+                       command=self._recognize).pack(side="left", padx=(14, 0))
+            tk.Label(line, textvariable=self.scan_state, bg=CARD, fg=MUTED,
+                     font=(FONT, 8)).pack(side="left", padx=10)
 
     def _build_result(self):
-        outer, body, _head = self._card(3, "③ 识别结果")
+        outer, body, _head = self._card(1, "③ 识别结果")
         outer.grid_configure(sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
@@ -323,8 +357,8 @@ class App(tk.Tk):
         headings = {"sel": "✓", "status": "状态", "cell": "单元格", "label": "报表项目", "period": "期间",
                     "amount": "应填值", "actual": "现有值", "diff": "差额", "sources": "来源科目",
                     "reason": "方法 / 原因"}
-        widths = {"sel": 34, "status": 76, "cell": 142, "label": 176, "period": 50, "amount": 104,
-                  "actual": 104, "diff": 96, "sources": 166, "reason": 280}
+        widths = {"sel": 28, "status": 62, "cell": 108, "label": 150, "period": 44, "amount": 88,
+                  "actual": 88, "diff": 76, "sources": 132, "reason": 180}
         anchors = {"sel": "center", "status": "center", "cell": "center", "period": "center",
                    "amount": "e", "actual": "e", "diff": "e"}
         self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
@@ -350,7 +384,7 @@ class App(tk.Tk):
 
     def _build_actions(self):
         bar = tk.Frame(self.workspace, bg=BG)
-        bar.grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 0))
+        bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(10, 0))
         self.report_btn = ttk.Button(bar, text="导出报告", command=self._export_report, state="disabled")
         self.report_btn.pack(side="left")
         self.write_btn = ttk.Button(bar, text="另存 Excel", style="Accent.TButton",
@@ -363,9 +397,9 @@ class App(tk.Tk):
 
     def _build_log(self):
         outer = tk.Frame(self.workspace, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
-        outer.grid(row=5, column=0, sticky="ew", padx=16, pady=(8, 12))
+        outer.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 12))
         outer.columnconfigure(0, weight=1)
-        self.log = tk.Text(outer, height=3, wrap="none", state="disabled", font=("Consolas", 8),
+        self.log = tk.Text(outer, height=2, wrap="none", state="disabled", font=("Consolas", 8),
                            background=CARD, foreground=SEC, relief="flat", borderwidth=0, padx=10, pady=8)
         self.log.grid(row=0, column=0, sticky="ew")
         scroll = ttk.Scrollbar(outer, orient="vertical", command=self.log.yview)
@@ -532,7 +566,8 @@ class App(tk.Tk):
 
         def work():
             try:
-                return client.converse(text, history, context)
+                # 先检索内置的会计与 IPO 知识库，命中条目以 K 编号注入后再回答。
+                return client.converse_with_skills(text, history, context)
             except ai_module.AIError as exc:
                 return {"intent": "error", "answer": str(exc), "proposals": []}
 
@@ -545,6 +580,10 @@ class App(tk.Tk):
             return
         self._chat_append("ai", answer["answer"])
         self.chat_history.append({"role": "assistant", "content": answer["answer"]})
+        hits = answer.get("knowledge_refs") or []
+        if hits:
+            self._chat_append("sys", "依据内置知识库：" + " · ".join(
+                f"[{item['citation_id']}] {item['title'][:26]}" for item in hits[:5]))
         for value in (answer.get("warnings") or [])[:5]:
             self._chat_append("sys", f"⚠ 事实中无此金额：{value}")
         for code in (answer.get("unknown_codes") or [])[:5]:
@@ -866,6 +905,7 @@ class App(tk.Tk):
 
         def work():
             scan = fields.scan_template(path, periods, unit)
+            workbook.validate_source_context(scan, [], rows)
             scan.source_digest = ledger_digest(rows)
             return scan, matching.match_fields(scan.fields, list(rows))
 
@@ -1087,11 +1127,12 @@ class App(tk.Tk):
         has_key = self.store.has_key
         enabled = bool(self.store.data.get("ai_enabled"))
         model = self.store.data.get("model", "—")
+        model = model if len(model) <= 18 else model[:17] + "…"
         if has_key and enabled:
-            self.ai_state.set(f"AI：已启用（{model}）")
+            self.ai_state.set(f"AI 已启用 · {model}")
             self.ai_btn.configure(state="normal")
         elif has_key:
-            self.ai_state.set("AI：已配置但未启用")
+            self.ai_state.set("AI 已配置 · 未启用")
             self.ai_btn.configure(state="disabled")
         else:
             self.ai_state.set("AI：未配置（可离线使用）")

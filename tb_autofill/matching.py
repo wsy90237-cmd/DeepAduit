@@ -308,7 +308,31 @@ def _welfare_detail(target):
             and _canonical(re.sub(r"^应付", "", normalize(target.label))) == "福利费")
 
 
+def _opening_profit(target):
+    return (target.measure == "opening_balance" and target.period == "ending" and target.basis == "book"
+            and target.statement == "profit_loss" and _canonical(target.label) == "年初未分配利润"
+            and target.occurrence_scope == "year_to_date" and not target.presentation_direction
+            and not target.balance_side and not target.component)
+
+
+def _opening_profit_source(row):
+    if row.is_profit_loss or _canonical(row.name) != "未分配利润":
+        return False
+    path = [_canonical(part) for part in str(row.path or row.name).split("/")]
+    return ((row.level == 1 and path == ["未分配利润"])
+            or (row.level == 2 and path == ["利润分配", "未分配利润"]))
+
+
 def _candidate_rows(target, index):
+    if target.measure == "opening_balance":
+        if not _opening_profit(target):
+            return [], "opening_balance"
+        parents = [row for row in index.rows if not row.is_profit_loss and row.level == 1
+                   and _canonical(row.name) == _canonical(row.path or row.name) == "利润分配"]
+        candidates = [row for row in index.rows if _opening_profit_source(row)
+                      and (row.level == 1 or (len(parents) == 1 and row.code != parents[0].code
+                           and _in_root(row, parents[0].code)))]
+        return candidates, "ambiguous_parent" if len(parents) > 1 else "opening_balance"
     if target.component:
         candidates = [row for row in index.rows if _component_matches(target, row)]
         if target.component == "cost" and any(row.level == 1 and not row.is_profit_loss
@@ -435,6 +459,11 @@ def _row_amount(target, row):
         raise ValueError("模板列示方向未识别")
     if target.component not in {"", "cost", "fair_value_change"}:
         raise ValueError("模板金额分项未识别")
+    if measure == "opening_balance":
+        if not _opening_profit(target) or not _opening_profit_source(row):
+            return None
+        amount = money(row.opening)
+        return amount * -_direction(row) if amount is not None else None
     if target.component and not _component_matches(target, row):
         return None
     contra = _asset_contra(target)
@@ -540,6 +569,9 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         if any(_overlap(row, other) for other in sources[index + 1:]):
             result.status, result.reason = "duplicate", "来源同时包含同一科目或其上下级，不能重复计入"
             return result
+    if target.measure == "opening_balance" and not _opening_profit(target):
+        result.status, result.reason = "missing", "年初余额口径仅适用于期末利润分配表的明确年初未分配利润字段"
+        return result
     try:
         amounts = [_row_amount(target, row) for row in sources]
     except ValueError as exc:
@@ -572,7 +604,11 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         else:
             result.reason = "缺少上期发生额依据，不能使用本年发生额" if target.period == "opening" and target.measure != "balance" else "来源金额缺失；真实零值和缺失值分开处理"
         return result
-    if target.statement in {"balance_sheet", "profit_loss"}:
+    if method in {"ai", "code"} and not target.statement and rows is None and _index is None:
+        result.status, result.reason = "missing", "缺少完整账套上下文，无法核对来源唯一性"
+        return result
+    generic = method in {"ai", "code"} and not target.statement
+    if target.statement in {"balance_sheet", "profit_loss"} or method in {"ai", "code"}:
         if _index is None:
             if (rows is None and target.parent and not (target.component or _asset_contra(target)
                     or _allowance_subject(target) or _tax_subject(target) or _loan_component(target) or _account_total(target))
@@ -588,6 +624,9 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
                 return result
             _index = _Index([row for row in context if not row.is_profit_loss]
                             if target.statement == "balance_sheet" else context)
+        if generic and target.parent and not _root_codes(target.parent, _index):
+            result.status, result.reason = "missing", "无法确认字段父科目，不能自动选择来源"
+            return result
         # 标准TB以文字和路径为准，索引编码不能绕过语义校验。
         candidates, candidate_method = _candidate_rows(replace(target, index_code=""), _index)
         if target.statement == "balance_sheet" and _canonical(target.label) == "投资性房地产" and not target.component:
@@ -597,7 +636,7 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         if any(source not in candidates for source in sources):
             result.status, result.reason = "missing", "来源科目名称、类别或父路径与字段不符，或缺少完整账套上下文"
             return result
-        if method != "manual" and (candidate_method == "ambiguous_parent" or len(candidates) != 1):
+        if (method != "manual" or target.measure == "opening_balance") and (candidate_method == "ambiguous_parent" or len(candidates) != 1):
             result.status, result.reason = "ambiguous", "来源存在歧义，自动匹配或AI不能确定或选中"
             return result
     try:
@@ -611,7 +650,9 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
     result.status = "matched"
     result.selected = target.value is None or (isinstance(target.value, str) and not target.value.strip())
     result.reason = "按已确认来源本地计算；科目余额按自然方向保留符号"
-    if target.measure == "balance" and target.presentation_direction and not target.balance_side:
+    if target.measure == "opening_balance":
+        result.reason = "按明确未分配利润科目的年初余额取数；按贷方方向列示，保留亏损或冲回符号"
+    elif target.measure == "balance" and target.presentation_direction and not target.balance_side:
         result.reason = f"按已确认来源本地计算；按模板{target.presentation_direction}方方向列示，冲回保留反向符号"
     elif target.measure == "balance" and _canonical(target.label) == "未确认融资费用" and not target.balance_side:
         result.reason = "按已确认来源本地计算；未确认融资费用按借方方向列示，冲回保留反向符号"

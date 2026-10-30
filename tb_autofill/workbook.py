@@ -19,6 +19,10 @@ from .models import ledger_digest, money
 def validate_source_context(scan, results, rows):
     if scan.source_digest and (rows is None or ledger_digest(rows) != scan.source_digest):
         raise ValueError("账套或主体期间已变化，请重新读取并识别模板。")
+    if scan.ending_periods:
+        actual = {(row.year, row.month) for row in rows} if rows else set()
+        if any(actual != {(year, month)} for _, year, month in scan.ending_periods):
+            raise ValueError("账套期间与模板截止日期不一致或缺失，请核对主体与期间后重新识别。")
     if rows is not None:
         available = set(rows)
         if any(source not in available for result in results for source in result.sources):

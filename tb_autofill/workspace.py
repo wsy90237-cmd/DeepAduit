@@ -29,6 +29,77 @@ def panel(parent, row, *, column=0, padx=22, pady=10):
     return frame
 
 
+class ScrollArea(tk.Frame):
+    """竖向滚动容器：内容高于可视区时可滚动，避免小屏把下文裁掉。"""
+
+    def __init__(self, parent, *, bg=BG, height=260):
+        super().__init__(parent, bg=bg)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, height=height)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.scroll = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.scroll.grid(row=0, column=1, sticky="ns")
+        self.scroll.grid_remove()
+        self.canvas.configure(yscrollcommand=self._sync_scroll)
+        self.body = tk.Frame(self.canvas, bg=bg)
+        self.body.columnconfigure(0, weight=1)
+        self._window = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind("<Configure>", self._on_body)
+        self.canvas.bind("<Configure>", self._on_canvas)
+        self.canvas.bind("<Enter>", self._wheel_on, add="+")
+        self.canvas.bind("<Leave>", self._wheel_off, add="+")
+
+    def set_height(self, height):
+        self.canvas.configure(height=max(80, int(height)))
+
+    def fit(self, available, *, ratio=0.46, low=176, high=326):
+        """按内容与可用高度分配表单区高度：放得下就完整显示，否则滚动，把余量留给结果表。"""
+        needed = self.body.winfo_reqheight()
+        self.set_height(min(high, max(low, min(needed, available * ratio))))
+
+    def _sync_scroll(self, first, last):
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self.scroll.grid_remove()
+        else:
+            self.scroll.grid()
+        self.scroll.set(first, last)
+
+    def _fit_width(self, width=None):
+        width = width or self.canvas.winfo_width()
+        if width > 1:
+            self.canvas.itemconfigure(self._window, width=width)
+
+    def _on_body(self, _event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self._fit_width()
+
+    def _on_canvas(self, event):
+        self._fit_width(event.width)
+
+    def _wheel_on(self, _event=None):
+        self.canvas.bind_all("<MouseWheel>", self._wheel)
+
+    def _wheel_off(self, _event=None):
+        self.canvas.unbind_all("<MouseWheel>")
+
+    def _wheel(self, event):
+        if self.body.winfo_reqheight() <= self.canvas.winfo_height():
+            return
+        self.canvas.yview_scroll(-1 * int(event.delta / 120 or -1), "units")
+
+
+def scroll_page(app, key):
+    """静态页面统一放进滚动容器，返回可直接放置卡片的 body。"""
+    holder = app.pages[key]
+    holder.rowconfigure(0, weight=1)
+    holder.columnconfigure(0, weight=1)
+    area = ScrollArea(holder, bg=BG, height=520)
+    area.grid(row=0, column=0, sticky="nsew")
+    app.page_scrolls[key] = area
+    return area.body
+
+
 def build_shell(app):
     app.columnconfigure(1, weight=1)
     app.rowconfigure(0, weight=1)
@@ -37,12 +108,12 @@ def build_shell(app):
     sidebar.pack_propagate(False)
     tk.Frame(sidebar, bg=BORDER, width=1).pack(side="right", fill="y")
     brand = tk.Frame(sidebar, bg=NAV)
-    brand.pack(fill="x", padx=22, pady=(20, 15))
+    brand.pack(fill="x", padx=16, pady=(18, 12))
     mark = tk.Frame(brand, bg=NAV)
     mark.pack(anchor="w")
     tk.Label(mark, image=app.whale_mark, bg=NAV, bd=0).pack(side="left")
-    label(mark, "DeepAudit", size=14, color=ACCENT, bold=True).pack(side="left", padx=(5, 0))
-    label(sidebar, "工作空间", size=8, color=MUTED).pack(anchor="w", padx=24, pady=(3, 12))
+    label(mark, "DeepAudit", size=13, color=ACCENT, bold=True).pack(side="left", padx=(4, 0))
+    label(sidebar, "工作空间", size=8, color=MUTED).pack(anchor="w", padx=20, pady=(3, 10))
     app.nav_buttons = {}
     app.nav_stripes = {}
     app.active_page = "overview"
@@ -61,7 +132,7 @@ def build_shell(app):
         app.nav_buttons[key] = button
         app.nav_stripes[key] = stripe
     footer = tk.Frame(sidebar, bg=NAV)
-    footer.pack(side="bottom", fill="x", padx=23, pady=22)
+    footer.pack(side="bottom", fill="x", padx=18, pady=18)
     label(footer, "●  本机处理", size=9, color=ACCENT).pack(anchor="w")
     label(footer, "金额由本地规则计算", size=8, color=MUTED).pack(anchor="w", pady=6)
     label(footer, f"DeepAudit  /  {__version__}", size=8, color=MUTED).pack(anchor="w", pady=(8, 0))
@@ -80,7 +151,10 @@ def build_shell(app):
         page.grid(row=0, column=0, sticky="nsew")
         page.columnconfigure(0, weight=1)
     app.workspace = app.pages["tb"]
-    app.workspace.rowconfigure(3, weight=1)
+    app.workspace.columnconfigure(0, weight=1)
+    # 结果表格占剩余高度并保留最小可读高度，表单区自身滚动，底部操作区不被挤出。
+    app.workspace.rowconfigure(1, weight=1, minsize=210)
+    app.page_scrolls = {}
 
 
 def build_pages(app):
@@ -93,7 +167,7 @@ def build_pages(app):
              ("关联已复核 TB", "导入附注模板", "检查勾稽并导出")),
             ("papers", "把科目、程序和审计证据连接起来", "当前支持底稿文字辅助复核；完整程序、证据与复核管理待实现。",
              ("选择科目与底稿索引", "组织程序和审计证据", "编制复核与归档"))):
-        future = app.pages[key]
+        future = scroll_page(app, key)
         card = panel(future, 0, pady=(25, 12))
         label(card, "辅助复核已接入 · 生成待接模板", size=9, color=ACCENT, bold=True).pack(anchor="w", padx=28, pady=(28, 15))
         label(card, title, size=22, bold=True).pack(anchor="w", padx=28)
@@ -123,7 +197,7 @@ def _hover_nav(app, key, active):
 
 def _build_overview(app):
     """工作台：一屏内回答「现在是什么状态、下一步做什么、还能去哪」。"""
-    page = app.pages["overview"]
+    page = scroll_page(app, "overview")
     page.columnconfigure(0, weight=1)
 
     hero = tk.Frame(page, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
@@ -177,7 +251,7 @@ def _build_overview(app):
 
 
 def _build_security(app):
-    page = app.pages["security"]
+    page = scroll_page(app, "security")
     card = panel(page, 0, pady=(25, 12))
     label(card, "数据与访问保护", size=20, bold=True).pack(anchor="w", padx=26, pady=(25, 18))
     for title, text in (

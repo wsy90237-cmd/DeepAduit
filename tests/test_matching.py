@@ -390,7 +390,7 @@ class MatchingTests(unittest.TestCase):
 
     def test_manual_ai_share_money_guards_and_claim_validation(self):
         sources = [row()]
-        a = resolve_match(target(), sources, "ai")
+        a = resolve_match(target(), sources, "ai", rows=sources)
         b = resolve_match(target(cell="D11"), sources, "manual")
         self.assertEqual([x.status for x in validate_claims([a, b])], ["duplicate", "duplicate"])
         b.sources.clear()

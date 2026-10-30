@@ -4,10 +4,11 @@ import socket
 import urllib.error
 import urllib.request
 
-from . import analysis
+from . import analysis, skills
 from .settings import DEFAULT_BASE_URL, MODELS, normalize_base_url, validate_key, valid_model, SettingsError
 
 DEFAULT_MODEL = MODELS[0]
+SKILL_LIMIT = 5
 
 
 class AIError(Exception):
@@ -96,6 +97,28 @@ def _validate_suggestions(items, targets, codes):
             raise ValueError("建议依据格式不正确")
         seen.add(item["target_id"])
     return items
+
+
+def inject_skills(question, context=None, limit=SKILL_LIMIT, finder=None):
+    """先做本地 skill 检索，把命中的条目并入 knowledge_refs，再交给模型。
+
+    返回 ``(context, refs, entries)``。refs 是本次真实注入的条目（K 编号接在已有编号之后），
+    entries 为检索命中的原始条目。本地检索失败或资产缺失时退化为“无命中”，绝不阻断问答。
+    """
+    context = dict(context or {})
+    existing = list(context.get("knowledge_refs") or [])
+    try:
+        entries = list((finder or skills.search)(question, limit=limit))
+    except (OSError, ValueError, EOFError, UnicodeError, RuntimeError):
+        entries = []
+    refs = skills.as_knowledge_refs(entries, limit=limit, start=skills.citation_ceiling(existing) + 1)
+    if refs:
+        context["knowledge_refs"] = existing + refs
+        context["knowledge_note"] = (f"内置知识库命中 {len(refs)} 条，仅可引用给定编号 "
+                                     f"{refs[0]['citation_id']}–{refs[-1]['citation_id']}。")
+    else:
+        context["knowledge_note"] = "内置知识库无匹配条目；不得输出[K数字]引用，也不得臆造准则条号。"
+    return context, refs, entries
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -289,6 +312,22 @@ class DeepSeekClient:
             raise
         except (KeyError, IndexError, TypeError, ValueError):
             raise AIError("AI 返回未通过本地校验，未采纳任何建议。") from None
+
+    def converse_with_skills(self, question, history=None, context=None, *, limit=SKILL_LIMIT, finder=None):
+        """先检索内置 skill，再走字段校验完全一致的 converse。
+
+        与 converse 的唯一差别是调用前多一步本地检索：命中条目以 K 编号注入 knowledge_refs，
+        因此模型能引用、且只被允许引用本次真实注入的编号（越界引用仍由 converse 丢弃提案）。
+        返回值额外带 knowledge_refs/knowledge_note/skill_hits，供界面显示“依据来源”。
+        """
+        if audit_scope(question) == "offtopic":
+            return self.converse(question, history, context)   # 先拒答，不必检索
+        enriched, refs, entries = inject_skills(question, context, limit, finder)
+        result = self.converse(question, history, enriched)
+        result["knowledge_refs"] = refs
+        result["knowledge_note"] = enriched.get("knowledge_note", "")
+        result["skill_hits"] = len(entries)
+        return result
 
 
 def assistance_payload(results, rows):

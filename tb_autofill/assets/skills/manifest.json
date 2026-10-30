@@ -1,0 +1,315 @@
+{
+  "schema": 1,
+  "note": "内置会计知识 skill 资产；由 tools 脚本从本机 skill 目录裁剪复制，随程序打包，不联网。",
+  "skills": [
+    {
+      "name": "chenyiwei-accounting",
+      "origin": "C:\\Users\\29294\\.workbuddy\\skills\\chenyiwei-accounting",
+      "files": [
+        "references/01-judgment-method.md",
+        "references/02-revenue.md",
+        "references/03-consolidation-equity.md",
+        "references/04-financial-instruments-lease.md",
+        "references/05-income-tax.md",
+        "references/06-share-based-gov-grant.md",
+        "references/07-assets-impairment-ppp.md",
+        "references/08-audit-ipo-nonrecurring.md",
+        "references/09-citation-system.md",
+        "SKILL.md"
+      ]
+    },
+    {
+      "name": "ipo-financial-review",
+      "origin": "C:\\Users\\29294\\.workbuddy\\skills\\ipo-financial-review",
+      "files": [
+        "data/checks.md",
+        "data/digests/加特兰微电子科技（上海）股份有限公司_科创板.md",
+        "data/digests/北京卓镭激光技术股份有限公司_科创板.md",
+        "data/digests/博雅新材料股份有限公司_创业板.md",
+        "data/digests/合肥科拜尔新材料股份有限公司_北交所.md",
+        "data/digests/安徽曙光化工集团股份有限公司_主板.md",
+        "data/digests/宸芯科技股份有限公司_创业板.md",
+        "data/digests/山東力諾醫藥包裝股份有限公司_港股.md",
+        "data/digests/广州医药股份有限公司_新三板.md",
+        "data/digests/强一半导体(苏州)股份有限公司_科创板.md",
+        "data/digests/德力佳传动科技(江苏)股份有限公司_主板.md",
+        "data/digests/未來穿戴健康科技股份有限公司_港股.md",
+        "data/digests/杭州玄机科技股份有限公司_新三板.md",
+        "data/digests/柳道實業控股有限公司_港股.md",
+        "data/digests/武汉新芯集成电路股份有限公司_科创板.md",
+        "data/digests/江苏万达特种轴承股份有限公司_北交所.md",
+        "data/digests/江西力源海纳科技股份有限公司_创业板.md",
+        "data/digests/苏州汇川联合动力系统股份有限公司_创业板.md",
+        "data/digests/（於中華人民共和國註冊成立的股份有限公司_港股.md",
+        "data/index.md",
+        "references/01-review-framework.md",
+        "references/02-revenue.md",
+        "references/03-receivables-inventory.md",
+        "references/04-margin-cost.md",
+        "references/05-cashflow-related-party.md",
+        "references/06-inquiry-response.md",
+        "references/07-board-differences.md",
+        "references/08-disclosure-norms.md",
+        "references/09-red-flags.md",
+        "SKILL.md"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/references/01-judgment-method.md",
+      "bytes": 9172,
+      "sha256": "ef579e91c054e01f396934721a91a71fdb2fc892a75ef9b698bbb1b519b03a82"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/references/02-revenue.md",
+      "bytes": 7736,
+      "sha256": "e71da9694ac530f0a60048a3774f03537544ecba5b038d8c56c643cb9c5a4908"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/references/03-consolidation-equity.md",
+      "bytes": 9989,
+      "sha256": "df59f6d55d9230c28f9b14e0f40f6bfc4c03e2a5f8c6da06553363804db9cdb8"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/references/04-financial-instruments-lease.md",
+      "bytes": 8378,
+      "sha256": "a71fb4065546689601e6475aef39bd0e22b96c15b6ec02323468b49185e446f3"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/references/05-income-tax.md",
+      "bytes": 5447,
+      "sha256": "4ecc4bc041b289b6001160a00bc384fe89ddb461d284bbeca6f205b65b7cb710"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/references/06-share-based-gov-grant.md",
+      "bytes": 6942,
+      "sha256": "65a87d9e16c7d092f32e6d7664a2b263ca52f2676a07eb8424d8d47671cff70c"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/references/07-assets-impairment-ppp.md",
+      "bytes": 8273,
+      "sha256": "39453f547f16e9354d8993bb4ed260db1043288f2811cb4317757fd449f7ec16"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/references/08-audit-ipo-nonrecurring.md",
+      "bytes": 6046,
+      "sha256": "b805c57273374c6b0a5115fe13cdf4c8daf447013c067dd80e35090c2e8e3af5"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/references/09-citation-system.md",
+      "bytes": 5926,
+      "sha256": "0fb8d5e630bffd6358e6bf0acc903767b7cce9a2cc2ddc60a9b0a137da69b2b2"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/SKILL.md",
+      "bytes": 7579,
+      "sha256": "a48e99b0500ea65522f37f23af5d24b82c1b63403754fc0fba341ddcc84ceb73"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/checks.md",
+      "bytes": 16880,
+      "sha256": "e3917e87bffd9bbe2f5c9b2ac60ea0ab0595e67c43eb9626d733dde93291d991"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/加特兰微电子科技（上海）股份有限公司_科创板.md",
+      "bytes": 19833,
+      "sha256": "fb9cf833cee98589d9fa0ac7733501261095b25fc47ed4473cf7865cafbb6f1c"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/北京卓镭激光技术股份有限公司_科创板.md",
+      "bytes": 18794,
+      "sha256": "998292bd95cd7d73dfd35b37c23d522219d2e5939d64796eb2764afe8f12f5d2"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/博雅新材料股份有限公司_创业板.md",
+      "bytes": 20675,
+      "sha256": "426e655a71f25d850db572514c5812a1ee68a94ac127e08df28f87603ad8cf9b"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/合肥科拜尔新材料股份有限公司_北交所.md",
+      "bytes": 18483,
+      "sha256": "b9733a4001732ba1056ed72d324431194ffd41abe3faaf9a20275b5dcad28551"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/安徽曙光化工集团股份有限公司_主板.md",
+      "bytes": 18467,
+      "sha256": "86e9e1ba58c5fff948772c12130f4c605ca8e2897f4bbb07aeee0626a4865a20"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/宸芯科技股份有限公司_创业板.md",
+      "bytes": 19453,
+      "sha256": "f965b2d53790d06056f76f9d9b93b37e02cea140f59abb8abb07ca9c9f4cc826"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/山東力諾醫藥包裝股份有限公司_港股.md",
+      "bytes": 17212,
+      "sha256": "35e41a55b89c2cc50a5969bfcd0517f7026fe8b18e098a8ba8ef911bf85afeaa"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/广州医药股份有限公司_新三板.md",
+      "bytes": 17382,
+      "sha256": "6f9009c1b5699957fce96a78f338e2a1c0f3ed8aebad5f8c1f78097abef70b4c"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/强一半导体(苏州)股份有限公司_科创板.md",
+      "bytes": 18832,
+      "sha256": "7b72dd972388f8d620a67a5d48f403a68cda3fcfec9df581ff97d5a8f37e5e67"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/德力佳传动科技(江苏)股份有限公司_主板.md",
+      "bytes": 18231,
+      "sha256": "f8e5a754942ef89fd535b4c6ae2511a538f50745066f18aeffa910a6236081a2"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/未來穿戴健康科技股份有限公司_港股.md",
+      "bytes": 16221,
+      "sha256": "87bf2fc9ef934d3f5311c743af51d33cd9ff22662a43978c08e1ab6e44f1497f"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/杭州玄机科技股份有限公司_新三板.md",
+      "bytes": 14424,
+      "sha256": "e815d341861e3d53a0c255c58f320a79a40f70c18742e1273ea0eba9e24c6385"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/柳道實業控股有限公司_港股.md",
+      "bytes": 9550,
+      "sha256": "a0f3b57bc76ae48d899fb8695a1847a8cf0619ed240dbc98ee11ba4a6ae2b76d"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/武汉新芯集成电路股份有限公司_科创板.md",
+      "bytes": 18427,
+      "sha256": "1c6d7c1ed5950a3340ebdcf93e6cb0a80d712e5e8796a1c1af572c1d367c6b40"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/江苏万达特种轴承股份有限公司_北交所.md",
+      "bytes": 18143,
+      "sha256": "43fd7b9e0b32ce52f92d7c00c39d51f3d888e62ebf01b611b78ac44ed775e2f1"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/江西力源海纳科技股份有限公司_创业板.md",
+      "bytes": 17947,
+      "sha256": "a9c25defa84f701f1eb7a5c4650d9e41985b911faea6549d8afa2c69e68abd54"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/苏州汇川联合动力系统股份有限公司_创业板.md",
+      "bytes": 19244,
+      "sha256": "5520c9ef33214503bac303f72e853e01ef07d56b86fb4cf5b8de276d75fc7c3e"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/digests/（於中華人民共和國註冊成立的股份有限公司_港股.md",
+      "bytes": 16301,
+      "sha256": "57ffd2b97820ee9980fdf83b14d78fce2a7d850383319106ac8445e40feb3da7"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/data/index.md",
+      "bytes": 2671,
+      "sha256": "341b5237a49deb56fdf04688f8e1e9340ffb3ccdea44abddb9cd44b8afdd128f"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/references/01-review-framework.md",
+      "bytes": 7576,
+      "sha256": "6351fd9691dc8d9ee2e99398916754f4ca1dbf5f5c0e655d12d7aa7a6743de98"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/references/02-revenue.md",
+      "bytes": 7665,
+      "sha256": "7b539a29bb665bdc1841fb1ada47be31c5c48678e8798b07a3484a5f3af5c89d"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/references/03-receivables-inventory.md",
+      "bytes": 5405,
+      "sha256": "f476ceb3e8b06511db49ce1300af95ad97893e6929500868bace67955d1b2dde"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/references/04-margin-cost.md",
+      "bytes": 4999,
+      "sha256": "80501243554271890844f6628f36c75692e5beb5e3a6fe3685fed6dcca5d9d1f"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/references/05-cashflow-related-party.md",
+      "bytes": 5620,
+      "sha256": "df7fe3057bd4c272c7678be680c7f0007fb76a15fd3aad43f1bdab202782d70a"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/references/06-inquiry-response.md",
+      "bytes": 7644,
+      "sha256": "984cfb5c50cecd3691767bfb6fb433ab05ab07acc9bb43c10831815fb4ef1dfa"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/references/07-board-differences.md",
+      "bytes": 6143,
+      "sha256": "96362db8e99875bb4d913eef98d4e7090b4171f83fe8c77cea8f052a9a57fed0"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/references/08-disclosure-norms.md",
+      "bytes": 6247,
+      "sha256": "925df3195b81205a8223cfc719a307af5697e30c9b3393da4e4ea3593473be5c"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/references/09-red-flags.md",
+      "bytes": 5889,
+      "sha256": "c8d3eeb97a87aca50127bbf2cb476913ae2cacf17b169aedaeaaa54b13b3eba5"
+    },
+    {
+      "skill": "ipo-financial-review",
+      "path": "ipo-financial-review/SKILL.md",
+      "bytes": 8629,
+      "sha256": "b793f783ca73c969394dc3d6977ce76fea5afb935e40c6c38104226e3b032509"
+    },
+    {
+      "skill": "chenyiwei-accounting",
+      "path": "chenyiwei-accounting/data/qa.jsonl.gz",
+      "bytes": 1069692,
+      "sha256": "0a1334a001479080bd54ecf0ecc4053a13a15760de0faf6a793f5c707737f2f2",
+      "encoding": "gzip",
+      "records": 2240,
+      "source_bytes": 3382633
+    }
+  ],
+  "total_bytes": 1548167,
+  "generated": "2026-10-30",
+  "entry_limits": {
+    "max_body_chars": 1200,
+    "max_snippet_chars": 1200
+  }
+}

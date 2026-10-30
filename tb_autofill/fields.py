@@ -4,12 +4,15 @@ import re
 import tempfile
 import unicodedata
 import zipfile
+from calendar import monthrange
 from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from xml.etree import ElementTree
 
 from openpyxl import load_workbook
+from openpyxl.formula.tokenizer import Tokenizer, TokenizerError
 
 from .models import TargetField
 
@@ -34,27 +37,72 @@ class TemplateScan:
     warnings: list[str]
     unit: str = "元"
     source_digest: str = ""
+    ending_periods: tuple[tuple[str, int, int], ...] = ()
 
 
 UNITS = {"元": Decimal("1"), "千元": Decimal("1000"), "万元": Decimal("10000"), "亿元": Decimal("100000000")}
 
 
+@dataclass(frozen=True)
+class _UnresolvedText:
+    hint: str = ""
+
+
 def _unit_text(workbook, sheet, value, seen=()):
+    if isinstance(value, (datetime, date)):
+        return value.strftime("%Y-%m-%d")
     if not isinstance(value, str) or not value.startswith("="):
-        return str(value or "")
+        return "" if value is None else str(value)
     if len(seen) >= 5:
-        return ""
-    expression = value[1:]
-    reference = re.fullmatch(r"(?:(?:'([^']+)'|([^'!]+))!)?(\$?[A-Z]{1,3}\$?\d+)", expression)
-    if reference:
-        name = reference[1] or reference[2] or sheet.title
-        address = reference[3].replace("$", "")
-        identity = (name, address)
-        if name in workbook.sheetnames and identity not in seen:
-            return _unit_text(workbook, workbook[name], workbook[name][address].value, (*seen, identity))
-    concat = re.fullmatch(r'"((?:[^"]|"")*)"&((?:\$?[A-Z]{1,3}\$?\d+))', expression)
-    if concat:
-        return concat[1].replace('""', '"') + _unit_text(workbook, sheet, "=" + concat[2], seen)
+        return _UnresolvedText(value)
+    try:
+        tokens = [token for token in Tokenizer(value).items if token.type != "WHITE-SPACE"]
+    except TokenizerError:
+        return _UnresolvedText(value)
+    valid = bool(tokens) and len(tokens) % 2 == 1
+    parts = []
+    for position, token in enumerate(tokens):
+        if position % 2:
+            valid &= token.type == "OPERATOR-INFIX" and token.value == "&"
+        elif token.type != "OPERAND" or token.subtype not in {"TEXT", "RANGE"}:
+            valid = False
+        # Hints identify explicit metadata in unsupported formulas; they are never values.
+        if token.type == "OPERAND" and token.subtype == "TEXT":
+            parts.append(token.value[1:-1].replace('""', '"'))
+        elif token.type == "OPERAND" and token.subtype == "RANGE":
+            reference = re.fullmatch(
+                r"(?:(?:'((?:[^']|'')+)'|([^'!]+))!)?(\$?[A-Za-z]{1,3}\$?\d+)(?::(\$?[A-Za-z]{1,3}\$?\d+))?", token.value)
+            part = _UnresolvedText()
+            if reference:
+                name = (reference[1] or reference[2] or sheet.title).replace("''", "'")
+                address = reference[3].replace("$", "").upper()
+                end = (reference[4] or reference[3]).replace("$", "").upper()
+                identity = (name, address)
+                if (address == end and name in workbook.sheetnames and identity not in seen
+                        and not any(char in name for char in "[]")):
+                    part = _unit_text(workbook, workbook[name], workbook[name][address].value, (*seen, identity))
+            if isinstance(part, _UnresolvedText):
+                valid = False
+                parts.append(part.hint)
+            else:
+                parts.append(part)
+    text = "".join(parts)
+    return text if valid else _UnresolvedText(text)
+
+
+UNIT_LABEL = re.compile(r"(?:金额单位|币种单位)[:：]?|^单位[:：]")
+PERIOD_LABEL = re.compile(r"(?:截止日期|截止日|会计期间)[:：]?(.*)")
+
+
+def _neighbour_text(workbook, sheet, cell, message):
+    """Label may carry its value in the four cells right of it; unresolved formulas never fall back."""
+    for col in range(cell.column + 1, min(cell.column + 5, sheet.max_column) + 1):
+        resolved = _unit_text(workbook, sheet, sheet.cell(cell.row, col).value)
+        if isinstance(resolved, _UnresolvedText):
+            raise ValueError(message)
+        value = text_key(resolved)
+        if value:
+            return value
     return ""
 
 
@@ -63,20 +111,21 @@ def _find_units(workbook, sheets=None):
     for sheet in workbook.worksheets if sheets is None else sheets:
         if _scan_bounds(sheet)[2]:
             continue
+        message = f"{sheet.title}：金额单位公式无法解析，请将单位改为明确文字后重试。"
         # Snapshot existing cells so distant units do not materialize empty sheet regions.
         for cell in tuple(sheet._cells.values()):
             if cell.value is None:
                 continue
-            text = text_key(_unit_text(workbook, sheet, cell.value))
-            label = re.search(r"(?:金额单位|币种单位)[:：]?|^单位[:：]", text)
+            resolved = _unit_text(workbook, sheet, cell.value)
+            if isinstance(resolved, _UnresolvedText):
+                if UNIT_LABEL.search(text_key(resolved.hint)):
+                    raise ValueError(message)
+                continue
+            text = text_key(resolved)
+            label = UNIT_LABEL.search(text)
             if not label:
                 continue
-            value = text[label.end():]
-            if not value:
-                for col in range(cell.column + 1, min(cell.column + 5, sheet.max_column) + 1):
-                    value = text_key(_unit_text(workbook, sheet, sheet.cell(cell.row, col).value))
-                    if value:
-                        break
+            value = text[label.end():] or _neighbour_text(workbook, sheet, cell, message)
             found = re.fullmatch(r"(?:人民币)?[（(]?(亿元|万元|千元|元)[）)]?", value)
             if found:
                 units.add(found[1])
@@ -339,6 +388,47 @@ def _tb_sheet_period(sheet):
     return next(iter(periods)) if len(periods) == 1 and "" not in periods else ""
 
 
+def _declared_ending_period(workbook, sheet):
+    """Only explicit metadata above the account header can bind a source period."""
+    header_row = min((c.row for c in sheet._cells.values()
+                      if c.data_type != "f" and text_key(c.value) in LABEL_HEADERS), default=1)
+    message = f"{sheet.title}：截止日期公式无法解析，请将日期改为明确值后重试。"
+    found = set()
+    for cell in tuple(sheet._cells.values()):
+        if cell.row >= header_row:
+            continue
+        resolved = _unit_text(workbook, sheet, cell.value)
+        if isinstance(resolved, _UnresolvedText):
+            if PERIOD_LABEL.search(text_key(resolved.hint)):
+                raise ValueError(message)
+            continue
+        label = PERIOD_LABEL.fullmatch(text_key(resolved))
+        if not label:
+            continue
+        value = label[1] or _neighbour_text(workbook, sheet, cell, message)
+        if not value:
+            continue
+        full = re.fullmatch(r"(\d{4})[年./-](\d{1,2})[月./-](\d{1,2})日?", value)
+        ytd = re.fullmatch(r"(\d{4})年1[-至—](\d{1,2})月", value)
+        try:
+            if full:
+                year, month, day = map(int, full.groups())
+                date(year, month, day)
+                if day != monthrange(year, month)[1]:
+                    raise ValueError("不是月末")
+            elif ytd:
+                year, month = map(int, ytd.groups())
+                date(year, month, 1)
+            else:
+                raise ValueError("日期格式不明确")
+        except ValueError as exc:
+            raise ValueError(f"{sheet.title}：截止日期无法对应月末账套，请核对模板期间。") from exc
+        found.add((year, month))
+    if len(found) > 1:
+        raise ValueError(f"{sheet.title}：截止日期存在冲突，请核对模板期间。")
+    return next(iter(found), None)
+
+
 def scan_template(path, periods=("ending",), unit="自动"):
     path = Path(path).resolve()
     if path.suffix.lower() not in (".xlsx", ".xlsm"):
@@ -350,7 +440,7 @@ def scan_template(path, periods=("ending",), unit="自动"):
     drops = _heavy_auxiliary_parts(path)
     scan_copy = _projected_scan_copy(path, drops) if drops else None
     workbook = load_workbook(scan_copy or path, read_only=False, data_only=False, keep_links=True)
-    fields, warnings = [], []
+    fields, warnings, ending_periods = [], [], []
     try:
         tb_periods = {sheet: period for sheet in workbook.worksheets
                       if (period := _tb_sheet_period(sheet)) is not None}
@@ -372,8 +462,8 @@ def scan_template(path, periods=("ending",), unit="自动"):
         if re.search(r"合并|抵消", text_key(path.stem)):
             warnings.append("合并或抵消底稿不能使用单体账套自动填列，已跳过。")
             sheets = []
-        found_units = _find_units(workbook, sheets)
         if unit == "自动":
+            found_units = _find_units(workbook, sheets)
             if len(found_units) > 1:
                 raise ValueError("模板内识别到多种金额单位，请在界面明确选择输出单位，或统一模板单位后重试。")
             unit = next(iter(found_units), "元")
@@ -392,11 +482,18 @@ def scan_template(path, periods=("ending",), unit="自动"):
             if strict_tb and not tb_periods[sheet]:
                 warnings.append(f"{sheet.title}：合并、抵消或期间标题存在冲突，无法确认单体目标，已跳过。")
                 continue
+            if strict_tb and tb_periods[sheet] == "ending" and "ending" in periods:
+                declared = _declared_ending_period(workbook, sheet)
+                if declared:
+                    ending_periods.append((sheet.title, *declared))
+                else:
+                    warnings.append(f"{sheet.title}：未声明可核对的截止日期，请人工确认主体与期间。")
             merged_ranges = list(sheet.merged_cells.ranges)
             def resolved_label(cell):
                 value = cell.value
                 if cell.data_type == "f":
-                    return _unit_text(workbook, sheet, value) if isinstance(value, str) else ""
+                    resolved = _unit_text(workbook, sheet, value) if isinstance(value, str) else ""
+                    return resolved if isinstance(resolved, str) else ""
                 return value
             def header_value(row, col):
                 return _merged_value(sheet, merged_ranges, row, col)
@@ -493,6 +590,10 @@ def scan_template(path, periods=("ending",), unit="自动"):
                         continue
                     actual_measure = "profit_loss" if section_profit and measure == "balance" else measure
                     statement = ("profit_loss" if section_profit else "balance_sheet") if strict_tb else ""
+                    if (statement == "profit_loss" and period == "ending" and basis == "book"
+                            and measure == "balance" and re.fullmatch(
+                                r"(?:加:)?(?:\([一二三四五六七八九十]+\))?年初未分配利润", text_key(label))):
+                        actual_measure = "opening_balance"
                     direction = balance_direction if statement == "balance_sheet" else ""
                     if direction and (text_key(primary).startswith("减:") or text_key(label).startswith("减:")):
                         direction = "贷" if direction == "借" else "借"
@@ -520,4 +621,4 @@ def scan_template(path, periods=("ending",), unit="自动"):
             scan_copy.unlink(missing_ok=True)
     if file_digest(path) != before:
         raise ValueError("识别期间模板发生变化，请重新导入。")
-    return TemplateScan(path, before, fields, warnings, unit)
+    return TemplateScan(path, before, fields, warnings, unit, ending_periods=tuple(ending_periods))
