@@ -69,6 +69,110 @@ def has_value(value):
     return value is not None and str(value).strip() != ""
 
 
+class SubjectPicker(tk.Toplevel):
+    """主体选择弹窗：列出完整名称与期间，支持关键字过滤，避免下拉框截断。"""
+
+    def __init__(self, parent, labels, current=0):
+        super().__init__(parent)
+        self.title("选择主体")
+        self.transient(parent)
+        self.resizable(True, True)
+        self.geometry("760x460")
+        self.result = None
+        self._labels = list(labels)
+
+        box = tk.Frame(self, bg=CARD)
+        box.pack(fill="both", expand=True, padx=14, pady=12)
+        query = tk.StringVar()
+        entry = ttk.Entry(box, textvariable=query)
+        entry.pack(fill="x")
+        entry.focus_set()
+
+        holder = tk.Frame(box, bg=CARD)
+        holder.pack(fill="both", expand=True, pady=(10, 0))
+        holder.columnconfigure(0, weight=1)
+        holder.rowconfigure(0, weight=1)
+        tree = ttk.Treeview(holder, columns=("name", "extra"), show="headings", selectmode="browse")
+        tree.heading("name", text="主体名称")
+        tree.heading("extra", text="年度 / 期间")
+        tree.column("name", width=470, anchor="w", stretch=True)
+        tree.column("extra", width=200, anchor="w")
+        tree.grid(row=0, column=0, sticky="nsew")
+        bar = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
+        bar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=bar.set)
+
+        def split(label):
+            text = str(label)
+            for mark in ("/", "｜", "|", " · "):
+                if mark in text:
+                    head, _, tail = text.partition(mark)
+                    return head.strip(), tail.replace(mark, " ").strip()
+            return text, ""
+
+        def refresh(*_args):
+            keyword = query.get().strip().lower()
+            tree.delete(*tree.get_children())
+            for index, label in enumerate(self._labels):
+                name, extra = split(label)
+                if keyword and keyword not in str(label).lower():
+                    continue
+                tree.insert("", "end", iid=str(index), values=(name, extra))
+            children = tree.get_children()
+            if children:
+                tree.selection_set(children[min(current, len(children) - 1)])
+                tree.focus(children[0])
+
+        query.trace_add("write", refresh)
+        refresh()
+
+        actions = tk.Frame(self, bg=CARD)
+        actions.pack(fill="x", padx=14, pady=(0, 12))
+
+        def accept(_event=None):
+            selected = tree.selection()
+            if selected:
+                self.result = int(selected[0])
+                self.destroy()
+
+        ttk.Button(actions, text="确定", style="Accent.TButton", command=accept).pack(side="right")
+        ttk.Button(actions, text="取消", command=self.destroy).pack(side="right", padx=8)
+        tree.bind("<Double-1>", accept)
+        tree.bind("<Return>", accept)
+        entry.bind("<Return>", lambda _event: accept())
+        entry.bind("<Down>", lambda _event: (tree.focus_set(), tree.selection_set(tree.get_children()[0]) if tree.get_children() else None))
+        self.grab_set()
+        self.wait_window(self)
+
+
+class HoverTip:
+    """控件悬浮提示：长主体名、长路径被控件宽度截断时，仍能看到完整内容。"""
+
+    def __init__(self, widget, variable):
+        self.widget, self.variable = widget, variable
+        self.window = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, _event=None):
+        text = str(self.variable.get() or "").strip()
+        if not text or self.window is not None:
+            return
+        x = self.widget.winfo_rootx() + 8
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        window = tk.Toplevel(self.widget)
+        window.wm_overrideredirect(True)
+        window.wm_geometry(f"+{x}+{y}")
+        tk.Label(window, text=text, bg="#1f2937", fg="#ffffff", font=(FONT, 9),
+                 padx=8, pady=4, justify="left", wraplength=520).pack()
+        self.window = window
+
+    def _hide(self, _event=None):
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -234,6 +338,21 @@ class App(tk.Tk):
         body.pack(fill="both", expand=True, padx=14, pady=(4, 8))
         return outer, body, head
 
+    def _fit_popdown(self, box, values):
+        """下拉弹层按最长条目加宽：ttk 默认与控件同宽，长主体名会被截断。
+
+        中文按两倍字宽估算，宽度上限 120 字符，避免弹层超出屏幕。
+        """
+        widest = max((len(str(value)) for value in values), default=0)
+        if not widest:
+            return
+        width = min(120, max(28, widest * 2 + 4))
+        try:
+            popdown = self.tk.call("ttk::combobox::PopdownWindow", box)
+            self.tk.call(f"{popdown}.f.l", "configure", "-width", width)
+        except tk.TclError:
+            return
+
     def _form_card(self, title, index):
         """表单卡片：宽屏并排两列，窄屏堆叠单列，两种布局都保持完整可见。"""
         if self.form_wide:
@@ -268,6 +387,7 @@ class App(tk.Tk):
         self.project_box = ttk.Combobox(body, textvariable=self.project_var, state="readonly")
         self.project_box.grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
         self.project_box.bind("<<ComboboxSelected>>", lambda _event: self._load_subjects())
+        HoverTip(self.project_box, self.project_var)
         ttk.Button(body, text="扫描项目", command=self._scan_projects).grid(row=1, column=2, pady=(8, 0))
 
         line = tk.Frame(body, bg=CARD)
@@ -277,6 +397,9 @@ class App(tk.Tk):
         self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=20)
         self.subject_box.pack(side="left", padx=8)
         self.subject_box.bind("<<ComboboxSelected>>", self._on_subject)
+        self.subject_full = tk.StringVar()
+        HoverTip(self.subject_box, self.subject_full)
+        ttk.Button(line, text="选择主体", command=self._pick_subject).pack(side="left", padx=(0, 8))
         ttk.Label(line, text="年度", style="Card.TLabel").pack(side="left")
         self.year_var = tk.StringVar()
         ttk.Combobox(line, textvariable=self.year_var, width=6,
@@ -796,7 +919,9 @@ class App(tk.Tk):
 
     def _on_projects(self, projects):
         self.projects = list(projects)
-        self.project_box.configure(values=[str(item) for item in self.projects])
+        project_values = [str(item) for item in self.projects]
+        self.project_box.configure(values=project_values)
+        self._fit_popdown(self.project_box, project_values)
         if not self.projects:
             self._log("未找到含科目余额数据库的项目目录。")
             return
@@ -811,10 +936,18 @@ class App(tk.Tk):
         project = self.projects[index]
         self._async("正在读取项目底稿信息…", lambda: dxn.list_subjects(str(project)), self._on_subjects)
 
+    @staticmethod
+    def _short_label(label, limit=20):
+        """下拉框只放短名：公司主体部分，超长截断；完整名称在弹窗与悬浮提示中看。"""
+        text = str(label).strip()
+        head = text.split("/")[0].strip() or text
+        return head if len(head) <= limit else head[:limit - 1] + "…"
+
     def _on_subjects(self, subjects):
         self.subjects = list(subjects)
-        labels = [item.label for item in self.subjects]
+        labels = [self._short_label(item.label) for item in self.subjects]
         self.subject_box.configure(values=labels)
+        self._fit_popdown(self.subject_box, labels)
         if not labels:
             self._log("该项目未识别到可用主体。")
             return
@@ -827,8 +960,21 @@ class App(tk.Tk):
         if index < 0 or index >= len(self.subjects):
             return
         self.current_subject = self.subjects[index]
+        self.subject_full.set(getattr(self.current_subject, "label", self.current_subject.name))
         self.year_var.set(str(self.current_subject.year))
         self.month_var.set(str(self.current_subject.month))
+
+    def _pick_subject(self):
+        """完整名称选择：下拉框放不下的长主体名在这里完整展示并可搜索。"""
+        if not self.subjects:
+            messagebox.showinfo("尚未识别主体", "请先扫描项目并读取项目底稿信息。")
+            return
+        labels = [item.label for item in self.subjects]
+        dialog = SubjectPicker(self, labels, max(0, self.subject_box.current()))
+        if dialog.result is None:
+            return
+        self.subject_box.current(dialog.result)
+        self._on_subject()
 
     def _read_ledger(self):
         if self.busy:
