@@ -360,11 +360,50 @@ class DeepSeekClient:
         return result
 
 
+def narrow_candidates(results, rows, limit=300):
+    """按与所选字段的相关度自动收敛候选科目，避免让用户手工限定范围。
+
+    优先级：已作为来源 → 名称与目标互相包含 → 同父级 → 余额规模。
+    返回 (候选, 是否截断, 原始条数)，顺序稳定，便于复核。
+    """
+    if len(rows) <= limit:
+        return list(rows), False, len(rows)
+    chosen_sources = {code for result in results for code in (getattr(result, "source_ids", ()) or ())}
+    labels = [(result.target.label, result.target.parent) for result in results]
+
+    def score(row):
+        points = 0
+        if row.code in chosen_sources:
+            points += 4
+        name = str(row.name or "")
+        for label, parent in labels:
+            label = str(label or "")
+            if not name or not label:
+                continue
+            if name == label:
+                points += 3
+            elif name in label or label in name:
+                points += 2
+            if parent and parent == name:
+                points += 2
+        return points
+
+    ranked = sorted(rows, key=lambda row: (-score(row), -(abs(row.ending or 0)), row.code))
+    picked, seen = [], set()
+    for row in ranked:
+        if row.code in seen:
+            continue
+        seen.add(row.code)
+        picked.append(row)
+        if len(picked) >= limit:
+            break
+    return picked, True, len(rows)
+
+
 def assistance_payload(results, rows):
     if len(results) > 30:
         raise AIError("一次最多辅助核验30个字段，请缩小选中范围。")
-    if len(rows) > 300:
-        raise AIError("候选科目超过300项，请在预览中限定父科目或候选科目。")
+    rows, truncated, total = narrow_candidates(results, rows)
     return {
         "targets": [{"target_id": r.target.id, "label": r.target.label, "parent": r.target.parent,
             "period": r.target.period, "basis": r.target.basis, "status": r.status,
@@ -374,4 +413,6 @@ def assistance_payload(results, rows):
             "local_reason": r.reason} for r in results],
         "candidates": [{"code": x.code, "name": x.name, "path": x.path, "direction": x.direction,
             "basis": x.basis} for x in rows],
+        "candidate_scope": {"sent": len(rows), "available": total, "auto_narrowed": truncated,
+                            "note": "候选超过上限时按与所选字段的相关度自动收敛，无需手工限定。"},
     }

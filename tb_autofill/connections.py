@@ -16,150 +16,184 @@ FONT = ("Microsoft YaHei UI", 10)
 
 
 class ModelDialog(tk.Toplevel):
+    """一步连接模型服务：粘贴 Key → 自动验模型 → 自动验证对话 → 保存。
+
+    地址与模型默认折叠；只要 Key 能用，就不需要用户理解 /models 或 JSON 能力。
+    """
+
     def __init__(self, master, store):
         super().__init__(master)
-        self.title("DeepAudit · 模型与 API 连接")
+        self.title("模型服务")
         self.transient(master)
         self.grab_set()
         self.resizable(False, False)
         self.configure(bg=BG)
         self.store, self.queue = store, queue.Queue()
-        self.testing, self.closed, self.tested = False, False, None
-        self.poll_job = None
+        self.busy, self.closed, self.tested = False, False, None
+        self.poll_job, self.advanced_open = None, False
         self.protocol("WM_DELETE_WINDOW", self._close)
-        body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", padx=22, pady=20)
-        body.columnconfigure(1, weight=1)
-        tk.Label(body, text="连接审计 Agent 的模型服务", bg=BG, fg=FG, font=(FONT[0], 15, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 16))
-        self.endpoint = tk.StringVar(value=store.data.get("base_url", settings.DEFAULT_BASE_URL))
-        self.key = tk.StringVar()
-        self.model = tk.StringVar(value=store.data.get("model", settings.MODELS[0]))
-        self.enabled = tk.BooleanVar(value=bool(store.data.get("ai_enabled")))
-        self.state = tk.StringVar(value="已加密保存 Key；留空可保留原服务凭证。" if store.has_key else "尚未配置；请在本窗口输入 Key。")
-        for row, title in ((1, "API 地址"), (2, "API Key"), (3, "模型 ID")):
-            tk.Label(body, text=title, bg=BG, fg=FG, font=FONT).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=8)
-        ttk.Combobox(body, textvariable=self.endpoint, values=(settings.DEFAULT_BASE_URL,), width=57).grid(row=1, column=1, sticky="ew")
-        ttk.Entry(body, textvariable=self.key, show="•", width=57).grid(row=2, column=1, sticky="ew")
-        self.model_box = ttk.Combobox(body, textvariable=self.model, values=settings.MODELS, width=40)
-        self.model_box.grid(row=3, column=1, sticky="w")
-        ttk.Checkbutton(body, text="启用审计 Agent（不会自动上传账套）", variable=self.enabled).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(12, 7))
-        tk.Label(body, text="默认接入 DeepSeek；也可填支持 /models 与 JSON Chat Completions 的 HTTPS 兼容接口。\n"
-                 "Key 只发送到上方 API 地址。切换地址必须重新输入对应 Key，原 Key 不会跨服务复用。",
-                 bg=BG, fg="#68778d", font=(FONT[0], 9), justify="left", wraplength=590).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=8)
-        tk.Label(body, textvariable=self.state, bg=BG, fg="#2563eb", font=(FONT[0], 9),
-                 wraplength=590, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=10)
-        controls = tk.Frame(body, bg=BG)
-        controls.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        self.auth_button = ttk.Button(controls, text="验证凭证 / 获取模型", command=lambda: self._test("models"))
-        self.auth_button.pack(side="left")
-        self.chat_button = ttk.Button(controls, text="验证对话能力", command=lambda: self._test("chat"))
-        self.chat_button.pack(side="left", padx=8)
-        self.save_button = ttk.Button(controls, text="加密保存", style="Accent.TButton", command=self._save)
-        self.save_button.pack(side="right")
-        footer = tk.Frame(body, bg=BG)
-        footer.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(14, 0))
-        ttk.Button(footer, text="获取 DeepSeek Key", command=lambda: webbrowser.open("https://platform.deepseek.com/api_keys")).pack(side="left")
-        ttk.Button(footer, text="删除本机模型 Key", command=self._delete).pack(side="left", padx=8)
-        ttk.Button(footer, text="关闭", command=self._close).pack(side="right")
-        for variable in (self.endpoint, self.key, self.model):
-            variable.trace_add("write", self._changed)
 
-    def _changed(self, *_args):
-        self.tested = None
-        self.state.set("配置已更改，尚未验证。更换地址不会转发原服务 Key。")
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", padx=24, pady=20)
+        body.columnconfigure(1, weight=1)
+
+        tk.Label(body, text="模型服务", bg=BG, fg=FG, font=(FONT[0], 16, "bold")).grid(
+            row=0, column=0, columnspan=3, sticky="w")
+        tk.Label(body, text="粘贴 API Key 后点一次「连接并保存」，其余自动完成。", bg=BG,
+                 fg="#68778d", font=(FONT[0], 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 16))
+
+        self.key = tk.StringVar()
+        self.endpoint = tk.StringVar(value=store.data.get("base_url", settings.DEFAULT_BASE_URL))
+        self.model = tk.StringVar(value=store.data.get("model", settings.MODELS[0]))
+        self.state = tk.StringVar(
+            value="已保存 Key；留空则沿用原 Key 重新连接。" if store.has_key else "尚未配置。")
+
+        tk.Label(body, text="API Key", bg=BG, fg=FG, font=FONT).grid(row=2, column=0, sticky="w", padx=(0, 12))
+        self.key_entry = ttk.Entry(body, textvariable=self.key, show="•", width=44)
+        self.key_entry.grid(row=2, column=1, sticky="ew")
+        self.connect_button = ttk.Button(body, text="连接并保存", style="Accent.TButton", command=self._connect)
+        self.connect_button.grid(row=2, column=2, padx=(10, 0))
+        tk.Label(body, text="Key 用 Windows DPAPI 加密保存在本机；只发送到下面的服务地址。",
+                 bg=BG, fg="#9aa1ac", font=(FONT[0], 8)).grid(row=3, column=1, columnspan=2, sticky="w", pady=(4, 0))
+
+        self.status = tk.Label(body, textvariable=self.state, bg=BG, fg="#2563eb", font=(FONT[0], 9),
+                               wraplength=520, justify="left")
+        self.status.grid(row=4, column=0, columnspan=3, sticky="w", pady=(14, 6))
+
+        self.advanced_toggle = ttk.Button(body, text="高级设置 ▸", style="Ghost.TButton",
+                                          command=self._toggle_advanced)
+        self.advanced_toggle.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.advanced = tk.Frame(body, bg=BG)
+        self.advanced.columnconfigure(1, weight=1)
+        ttk.Label(self.advanced, text="服务地址", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Combobox(self.advanced, textvariable=self.endpoint, values=(settings.DEFAULT_BASE_URL,),
+                     width=42).grid(row=0, column=1, sticky="ew")
+        ttk.Label(self.advanced, text="模型", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0), padx=(0, 10))
+        self.model_box = ttk.Combobox(self.advanced, textvariable=self.model, values=settings.MODELS, width=26)
+        self.model_box.grid(row=1, column=1, sticky="w", pady=(8, 0))
+        ttk.Button(self.advanced, text="刷新模型列表", command=lambda: self._connect(refresh_only=True)).grid(
+            row=1, column=2, padx=(8, 0), pady=(8, 0))
+        tk.Label(self.advanced, text="兼容接口需支持 /models 与 JSON Chat Completions；换地址必须重新输入对应 Key。",
+                 bg=BG, fg="#9aa1ac", font=(FONT[0], 8)).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+        footer = tk.Frame(body, bg=BG)
+        footer.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(18, 0))
+        ttk.Button(footer, text="获取 DeepSeek Key", style="Ghost.TButton",
+                   command=lambda: webbrowser.open("https://platform.deepseek.com/api_keys")).pack(side="left")
+        self.delete_button = ttk.Button(footer, text="删除本机 Key", style="Ghost.TButton", command=self._delete)
+        self.delete_button.pack(side="left", padx=8)
+        ttk.Button(footer, text="关闭", command=self._close).pack(side="right")
+        if not store.has_key:
+            self.delete_button.configure(state="disabled")
+        self.key_entry.focus_set()
+        self.key_entry.bind("<Return>", lambda _event: self._connect())
+
+    # ---- 交互 ----
+
+    def _toggle_advanced(self):
+        self.advanced_open = not self.advanced_open
+        if self.advanced_open:
+            self.advanced.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+            self.advanced_toggle.configure(text="收起高级设置 ▾")
+        else:
+            self.advanced.grid_remove()
+            self.advanced_toggle.configure(text="高级设置 ▸")
 
     def _profile(self):
         endpoint = settings.normalize_base_url(self.endpoint.get())
         key = self.key.get().strip() or self.store.get_key(endpoint)
         key = settings.validate_key(key)
-        model = self.model.get().strip()
+        model = self.model.get().strip() or settings.MODELS[0]
         signature = (endpoint, model, hashlib.sha256(key.encode()).hexdigest())
         return ai.DeepSeekClient(key, model, base_url=endpoint), signature
 
-    def _test(self, mode):
-        if self.testing:
+    def _connect(self, refresh_only=False):
+        """一次点击完成：验模型列表 → 选模型 → 验对话 → 保存。任一步失败都说明原因。"""
+        if self.busy:
             return
         try:
             client, signature = self._profile()
         except (settings.SettingsError, ai.AIError) as exc:
-            self.state.set(str(exc))
+            self._say(str(exc), error=True)
             return
-        if mode == "chat" and not messagebox.askyesno("验证对话能力", "将向所选模型发送固定测试问题，不包含账套或资料，但会使用少量 API token。是否测试？", parent=self):
-            return
-        self.testing = True
-        for button in (self.auth_button, self.chat_button, self.save_button):
-            button.configure(state="disabled")
-        self.state.set(f"正在验证 {urlsplit(client.base_url).netloc} …")
+        self.busy = True
+        self.connect_button.configure(state="disabled")
+        self._say("正在连接 %s …" % urlsplit(client.base_url).netloc)
 
         def work():
+            report = {"signature": signature, "models": [], "chat": "未知"}
             try:
-                value = client.list_models() if mode == "models" else client.probe_chat()
-                self.queue.put((True, mode, signature, value))
-            except Exception as exc:
-                self.queue.put((False, mode, signature, str(exc)))
-        threading.Thread(target=work, daemon=True).start()
-        self.poll_job = self.after(120, self._poll)
+                models = client.list_models()
+                report["models"] = models
+                if self.model.get().strip() not in models and models:
+                    report["model"] = models[0]
+                try:
+                    client.probe_chat()
+                    report["chat"] = "通过"
+                except ai.AIError as exc:
+                    report["chat"] = str(exc)
+                report["ok"] = True
+            except Exception as exc:          # 网络或鉴权失败
+                report["ok"], report["error"] = False, str(exc)
+            self.queue.put(report)
 
-    def _poll(self):
+        threading.Thread(target=work, daemon=True).start()
+        self.after(120, self._poll, refresh_only)
+
+    def _poll(self, refresh_only=False):
         if self.closed:
             return
         try:
-            ok, mode, signature, value = self.queue.get_nowait()
+            report = self.queue.get_nowait()
         except queue.Empty:
-            self.poll_job = self.after(120, self._poll)
+            self.after(120, self._poll, refresh_only)
             return
-        self.testing = False
-        for button in (self.auth_button, self.chat_button, self.save_button):
-            button.configure(state="normal")
+        self.busy = False
+        self.connect_button.configure(state="normal")
+        if not report.get("ok"):
+            self._say("连接失败：" + str(report.get("error")), error=True)
+            return
+        models = report.get("models", [])
+        if models:
+            self.model_box.configure(values=models)
+        if report.get("model"):
+            self.model.set(report["model"])
+        if refresh_only:
+            self._say("已获取 %d 个可用模型。" % len(models))
+            return
+        chat = report.get("chat", "未知")
         try:
-            current = self._profile()[1]
-        except (settings.SettingsError, ai.AIError):
-            current = None
-        if current != signature:
-            self.state.set("测试期间配置发生变化，旧结果已丢弃，请重新测试。")
-            return
-        if not ok:
-            self.state.set("验证失败：" + value)
-            return
-        if mode == "models":
-            self.model_box.configure(values=value)
-            if self.model.get() not in value:
-                self.model.set(value[0])
-            self.state.set(f"鉴权与模型列表通过（{len(value)} 个模型）。对话能力需单独验证。")
-        else:
-            self.state.set("对话与 JSON 返回能力验证通过；未上传账套。")
-        self.tested = (self._profile()[1], datetime.now().astimezone().isoformat(timespec="seconds"))
-
-    def _save(self):
-        if self.testing:
-            return
-        try:
-            if not self.key.get().strip() and not self.store.has_key and not self.enabled.get():
-                self.store.save_ai(None, enabled=False, model=self.model.get().strip(), base_url=self.endpoint.get())
-                self._close()
-                return
-            _client, signature = self._profile()
-            verified = self.tested[1] if self.tested and self.tested[0] == signature else ""
-            self.store.save_ai(self.key.get().strip() or None, enabled=self.enabled.get(),
-                               model=self.model.get().strip(), base_url=self.endpoint.get(), verified_at=verified)
+            endpoint = settings.normalize_base_url(self.endpoint.get())
+            verified = datetime.now().astimezone().isoformat(timespec="seconds") if chat == "通过" else ""
+            self.store.save_ai(self.key.get().strip() or None, enabled=True,
+                               model=self.model.get().strip() or settings.MODELS[0],
+                               base_url=endpoint, verified_at=verified)
         except (settings.SettingsError, ai.AIError) as exc:
-            self.state.set(str(exc))
+            self._say(str(exc), error=True)
             return
-        self._close()
+        self.key.set("")
+        self.delete_button.configure(state="normal")
+        if chat == "通过":
+            self._say("已连接并保存：%s，对话可用。" % self.model.get(), error=False)
+        else:
+            self._say("已保存：%s。%s" % (self.model.get(), chat), error=False, warn=True)
+        self.tested = (report["signature"], datetime.now().astimezone().isoformat(timespec="seconds"))
+
+    def _say(self, text, *, error=False, warn=False):
+        self.state.set(text)
+        self.status.configure(fg="#b42318" if error else "#7a4d00" if warn else "#0f766e")
 
     def _delete(self):
-        if self.testing:
+        if self.busy:
             return
         if messagebox.askyesno("删除本机 Key", "删除加密保存的模型 Key 并停用 Agent？", parent=self):
             try:
                 self.store.delete_key()
             except settings.SettingsError as exc:
-                self.state.set(str(exc))
+                self._say(str(exc), error=True)
                 return
-            self._close()
+            self._say("已删除本机 Key，Agent 已停用。")
+            self.delete_button.configure(state="disabled")
 
     def _close(self):
         self.closed = True

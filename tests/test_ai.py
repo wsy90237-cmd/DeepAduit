@@ -116,8 +116,11 @@ class AssistValidationTests(unittest.TestCase):
         client, _ = make_client(completion({"summary": "", "suggestions": []}))
         with self.assertRaises(AIError):
             assistance_payload([type("R", (), {"target": target(cell=f"D{i}")})() for i in range(31)], [])
-        with self.assertRaises(AIError):
-            assistance_payload([], [row(code=str(1000 + i)) for i in range(301)])
+        # 候选超过上限时按相关度自动收敛，不再要求用户手工限定范围。
+        payload = assistance_payload([], [row(code=str(1000 + i)) for i in range(301)])
+        self.assertEqual(len(payload["candidates"]), 300)
+        self.assertEqual(payload["candidate_scope"]["available"], 301)
+        self.assertTrue(payload["candidate_scope"]["auto_narrowed"])
 
 
 class ApplySuggestionTests(unittest.TestCase):

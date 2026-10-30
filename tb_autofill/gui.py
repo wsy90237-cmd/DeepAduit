@@ -817,9 +817,9 @@ class App(tk.Tk):
             self._chat_append("sys", "本通道用于审计任务，未发送离题问题。")
             return
         try:
-            candidates = list(self.rows[:300])
+            # 候选由 ai.narrow_candidates 按相关度自动收敛，界面不再要求手工限定范围。
             context = ai_module.assistance_payload(
-                [result for result in self.results if result.status != "protected"][:30], candidates)
+                [result for result in self.results if result.status != "protected"][:30], list(self.rows))
             context["scope"] = {"total_targets": len(self.results), "total_accounts": len(self.rows),
                                 "target_limit": 30, "candidate_limit": 300,
                                 "note": "限本次发送范围，不代表完整账套、全表或全部审计程序已完成。"}
