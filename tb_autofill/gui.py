@@ -361,14 +361,27 @@ class ReviewDialog(tk.Toplevel):
         except (ai_module.AIError, settings.SettingsError) as exc:
             self.state.set(str(exc))
             return
+        self.context_revision = app._context_revision
+        results, rows = deepcopy(app.results), tuple(app.rows)
+        payload = ai_module.review_payload(results, rows, limit=25)
+        if not payload["targets"]:
+            self.state.set("没有需要复核的疑点。")
+            return
+        dialog = PayloadDialog(self, payload, client.model, client.base_url)
+        self.wait_window(dialog)
+        if not dialog.confirmed:
+            self.state.set("已取消发送，未请求模型。")
+            return
+        if app._context_revision != self.context_revision:
+            self.state.set("主体、期间或模板已变化，请重新复核。")
+            return
         self.running = True
-        payload = ai_module.review_payload(app.results, app.rows, limit=25)
         self.targets = {item["target_id"]: item for item in payload["targets"]}
-        self.rows_by_code = {row.code: row for row in app.rows}
+        self.rows_by_code = {row.code: row for row in rows}
 
         def work():
             try:
-                self.queue.put(("ok", ai_module.review(client, app.results, app.rows, limit=25)))
+                self.queue.put(("ok", ai_module.review(client, results, rows, limit=25)))
             except Exception as exc:            # 网络、解析失败都回到界面
                 self.queue.put(("error", str(exc)))
 
@@ -377,6 +390,10 @@ class ReviewDialog(tk.Toplevel):
 
     def _poll(self):
         if not self.running:
+            return
+        if self.app._context_revision != self.context_revision:
+            self.running = False
+            self.state.set("主体、期间或模板已变化，请重新复核。")
             return
         try:
             status, value = self.queue.get_nowait()
@@ -398,7 +415,7 @@ class ReviewDialog(tk.Toplevel):
             result = next((item for item in self.app.results if item.target.id == decision["target_id"]), None)
             if result is not None and codes:
                 check = matching.resolve_match(result.target, [self.rows_by_code[c] for c in codes],
-                                               method="manual", rows=self.app.rows)
+                                               method="ai", rows=self.app.rows)
                 amount = "" if check.amount is None else f"{check.amount:,}"
             self.tree.insert("", "end", iid=decision["target_id"],
                              values=("☐", decision["action"], target.get("label", ""),
@@ -422,6 +439,9 @@ class ReviewDialog(tk.Toplevel):
             self.tree.item(iid, values=values)
 
     def _apply(self):
+        if self.app._context_revision != self.context_revision:
+            self.state.set("主体、期间或模板已变化，未采纳旧建议。")
+            return
         applied = Counter()
         for decision in self.decisions:
             iid = decision["target_id"]
@@ -435,16 +455,16 @@ class ReviewDialog(tk.Toplevel):
             if decision["action"] == "fill" and decision["source_codes"]:
                 codes = [code for code in decision["source_codes"] if code in self.rows_by_code]
                 check = matching.resolve_match(result.target, [self.rows_by_code[c] for c in codes],
-                                               method="manual", rows=self.app.rows)
+                                               method="ai", rows=self.app.rows)
                 result.sources, result.amount = check.sources, check.amount
-                result.status, result.method = check.status, "ai-review"
+                result.status, result.method = check.status, check.method
                 blank = result.target.value is None or str(result.target.value).strip() == ""
                 zero_blank = check.amount == 0 and blank
                 result.reason = check.reason + "｜AI 复核：" + decision["reason"][:40]
-                result.selected = check.status == "matched" and not zero_blank
+                result.selected = check.selected
                 if zero_blank:
                     result.reason += "（余额为 0，未写入空白格）"
-                applied["fill"] += 1
+                applied["fill" if check.status == "matched" else "hold"] += 1
             elif decision["action"] == "drop":
                 result.selected = False
                 result.reason = "AI 复核建议放弃：" + decision["reason"][:60]

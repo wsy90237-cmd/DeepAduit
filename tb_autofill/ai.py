@@ -552,6 +552,7 @@ def _candidate_labels(results, rows, limit):
 
 def review(client, results, rows, *, limit=25):
     """AI 复核：返回经本地校验的判断清单，金额不在此处计算。"""
+    from .matching import resolve_match
     payload = review_payload(results, rows, limit=limit)
     if not payload["targets"]:
         return []
@@ -567,6 +568,7 @@ def review(client, results, rows, *, limit=25):
     except (KeyError, IndexError, TypeError, ValueError):
         raise AIError("AI 复核返回未通过解析，未采纳任何判断。") from None
     by_target = {item["target_id"]: item for item in payload["targets"]}
+    local_targets = {item.target.id: item.target for item in results}
     rows_by_code = {row.code: row for row in rows}
     checked = []
     for item in decisions:
@@ -579,10 +581,11 @@ def review(client, results, rows, *, limit=25):
             continue
         # 只接受该疑点证据里的候选，避免跨疑点串用科目
         allowed_codes = {entry["code"] for entry in target.get("account_evidence", {}).get("candidates", [])}
-        chosen = [str(code) for code in (item.get("source_codes") or []) if str(code) in allowed_codes]
+        proposed = item.get("source_codes") or []
+        chosen = [str(code) for code in proposed] if isinstance(proposed, list) else []
         reason = str(item.get("reason", ""))[:160]
-        if action == "fill" and not chosen:
-            action, reason = "hold", reason or "AI 未给出该疑点候选中的来源，转人工"
+        if action == "fill" and (not chosen or len(chosen) > 3 or any(code not in allowed_codes for code in chosen)):
+            action, reason = "hold", "AI 来源清单缺失、超限或包含候选外科目，未截断或部分采纳，转人工"
         if action == "fill":
             picked = [rows_by_code[code] for code in chosen if code in rows_by_code]
             # 算术守卫：父子科目不得同时选，否则金额重复叠加。
@@ -591,8 +594,12 @@ def review(client, results, rows, *, limit=25):
                        for right in picked[index + 1:]):
                     action, reason = "hold", "父子科目混选会重复叠加，退回人工确认"
                     break
+            if action == "fill":
+                check = resolve_match(local_targets[target_id], picked, method="ai", rows=rows)
+                if check.status != "matched":
+                    action, reason = "hold", check.reason
         checked.append({"target_id": target_id, "action": action,
-                        "source_codes": chosen[:3] if action == "fill" else [],
+                        "source_codes": chosen if action == "fill" else [],
                         "reason": reason})
     return checked
 

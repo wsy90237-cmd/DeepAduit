@@ -550,6 +550,8 @@ def _overlap(left, right):
 
 def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "manual", *, rows=None, _index=None) -> MatchResult:
     """人工/AI 均只选来源；金额和所有写入前置条件统一在此核验。"""
+    if method == "ai-review":
+        method = "ai"
     result = MatchResult(target=target, sources=list(sources), method=method)
     if target.is_formula or (isinstance(target.value, str) and target.value.lstrip().startswith("=")):
         result.status, result.reason = "protected", "目标单元格为公式，保留不改"
@@ -572,6 +574,15 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
     if target.measure == "opening_balance" and not _opening_profit(target):
         result.status, result.reason = "missing", "年初余额口径仅适用于期末利润分配表的明确年初未分配利润字段"
         return result
+    if _opening_profit(target):
+        context = _index.rows if _index is not None else rows
+        if context is None:
+            result.status, result.reason = "missing", "缺少完整账套上下文，无法核查年初利润结转范围"
+            return result
+        if any(row.level == 1 and _canonical(row.name) == _canonical(row.path or row.name) == "本年利润"
+               and money(row.opening) != 0 for row in context):
+            result.status, result.reason = "ambiguous", "本年利润年初余额非零或缺失，年初利润结转范围不明；需核对结转及调整依据，不能只取未分配利润或自行相加"
+            return result
     try:
         amounts = [_row_amount(target, row) for row in sources]
     except ValueError as exc:

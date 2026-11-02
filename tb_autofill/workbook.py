@@ -136,7 +136,7 @@ def _fingerprint(cell, targets=()):
 
 
 def verify_output(source, output, writes):
-    expected = {field.id: amount for field, amount in writes}
+    expected = {field.id: (amount, field.unit_factor) for field, amount in writes}
     before = load_workbook(source, read_only=False, data_only=False, keep_links=True)
     after = load_workbook(output, read_only=False, data_only=False, keep_links=True)
     try:
@@ -155,7 +155,8 @@ def verify_output(source, output, writes):
                 actual = other[cell.coordinate]
                 if key in expected:
                     value = money(actual.value)
-                    if value is None or abs(value - expected[key]) > Decimal("0.005"):
+                    amount, factor = expected[key]
+                    if value is None or abs(value - amount) * factor > Decimal("0.005"):
                         raise ValueError(f"{key} 保存后的金额与计划不一致。")
                 elif _fingerprint(cell, before_links) != _fingerprint(actual, after_links):
                     raise ValueError(f"{key} 是保护区域但内容发生变化，输出未通过验证。")
@@ -177,7 +178,7 @@ def write_results(scan, results, output, *, rows=None):
     handle, draft_name = tempfile.mkstemp(prefix=".zszh-", suffix=output.suffix, dir=output.parent)
     os.close(handle)
     draft = Path(draft_name)
-    excel = book = None
+    excel = book = cell = None
     initialized = False
     try:
         try:
@@ -210,10 +211,13 @@ def write_results(scan, results, output, *, rows=None):
         except (ImportError, ModuleNotFoundError) as exc:
             raise ValueError("保存与重算需要 Windows Microsoft Excel 和 pywin32；请先安装。") from exc
         finally:
+            cell = None
             if book is not None:
                 book.Close(SaveChanges=False)
+                book = None
             if excel is not None:
                 excel.Quit()
+                excel = None
             if initialized:
                 pythoncom.CoUninitialize()
         verify_output(scan.path, draft, writes)
@@ -228,7 +232,7 @@ def write_results(scan, results, output, *, rows=None):
 
 
 def _safe_text(value):
-    text = str(value or "")
+    text = "" if value is None else str(value)
     return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
 
 

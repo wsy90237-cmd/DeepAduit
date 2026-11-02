@@ -60,12 +60,16 @@ def _unit_text(workbook, sheet, value, seen=()):
     except TokenizerError:
         return _UnresolvedText(value)
     valid = bool(tokens) and len(tokens) % 2 == 1
+    valid = valid and all(
+        token.type == "OPERATOR-INFIX" and token.value == "&" if position % 2 else
+        token.type == "OPERAND" and token.subtype in {"TEXT", "RANGE"}
+        for position, token in enumerate(tokens))
+    if not valid:
+        # Unsupported financial formulas are not text metadata; do not traverse their dependency trees.
+        return _UnresolvedText("".join(token.value[1:-1].replace('""', '"') for token in tokens
+                                       if token.type == "OPERAND" and token.subtype == "TEXT"))
     parts = []
     for position, token in enumerate(tokens):
-        if position % 2:
-            valid &= token.type == "OPERATOR-INFIX" and token.value == "&"
-        elif token.type != "OPERAND" or token.subtype not in {"TEXT", "RANGE"}:
-            valid = False
         # Hints identify explicit metadata in unsupported formulas; they are never values.
         if token.type == "OPERAND" and token.subtype == "TEXT":
             parts.append(token.value[1:-1].replace('""', '"'))

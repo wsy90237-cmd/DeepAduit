@@ -27,6 +27,19 @@ def heavy_page(book, title):
 
 
 class ScanBoundsTests(unittest.TestCase):
+    def test_unsupported_metadata_formula_does_not_traverse_financial_references(self):
+        from types import SimpleNamespace
+        class NoReferences:
+            @property
+            def sheetnames(self):
+                raise AssertionError("Unsupported formulas must not inspect dependency sheets")
+        sheet = SimpleNamespace(title="Synthetic")
+        for formula in ('=IF(A1>0,"金额单位：万元",A2)', '=ROUND(A1,2)', '=SUM(A1,B1)'):
+            with self.subTest(formula=formula):
+                result = fields._unit_text(NoReferences(), sheet, formula)
+                self.assertIsInstance(result, fields._UnresolvedText)
+        self.assertIn("金额单位", fields._unit_text(NoReferences(), sheet, '=IF(A1>0,"金额单位：万元",A2)').hint)
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)

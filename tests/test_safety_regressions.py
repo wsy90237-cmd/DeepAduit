@@ -124,6 +124,34 @@ class WorkbookSafetyTests(unittest.TestCase):
         writes = workbook.planned_writes(scan, matching.match_fields(scan.fields, rows()))
         workbook.verify_output(scan.path, output, writes)
 
+    def test_saved_amount_tolerance_is_in_yuan_for_every_unit(self):
+        scan = self.scan()
+        output = self.path.with_stem("unit-output")
+        for factor in (1, 1000, 10000, 100000000):
+            target = replace(scan.fields[0], unit_factor=Decimal(factor))
+            for yuan_error, accepted in (("0.004", True), ("0.04", False)):
+                with self.subTest(factor=factor, yuan_error=yuan_error):
+                    book = load_workbook(scan.path)
+                    book["Synthetic"][target.cell] = float(Decimal(1) + Decimal(yuan_error) / factor)
+                    book.save(output)
+                    book.close()
+                    if accepted:
+                        workbook.verify_output(scan.path, output, [(target, Decimal(1))])
+                    else:
+                        with self.assertRaisesRegex(ValueError, "金额"):
+                            workbook.verify_output(scan.path, output, [(target, Decimal(1))])
+
+    def test_review_csv_keeps_numeric_zero_distinct_from_blank(self):
+        import csv
+        scan = self.scan()
+        results = [matching.resolve_match(replace(scan.fields[0], value=value), rows())
+                   for value in (None, 0, Decimal(0))]
+        output = self.path.with_suffix(".csv")
+        workbook.export_report(output, results)
+        with output.open(encoding="utf-8-sig", newline="") as stream:
+            records = list(csv.DictReader(stream))
+        self.assertEqual([row["现有值"] for row in records], ["", "0", "0"])
+
 
 def fake_app():
     interpreter = tk.Tcl()

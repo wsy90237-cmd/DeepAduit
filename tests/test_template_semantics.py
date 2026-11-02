@@ -54,6 +54,25 @@ class OpeningProfitTests(unittest.TestCase):
         self.assertEqual(workbook.planned_writes(scan, [result], rows=rows), [(target, Decimal(11))])
         self.assertEqual(matching.resolve_match(target, [rows[1]], rows=rows).amount, Decimal(11))
 
+    def test_unclear_opening_profit_transfer_is_held_for_every_entry_point(self):
+        scan, target = self.scan()
+        parent, detail = self.sources()
+        for opening in (None, Decimal(0), Decimal(10), Decimal(-10)):
+            with self.subTest(opening=opening):
+                current = LedgerRow("4103", "本年利润", path="本年利润", direction="贷", opening=opening)
+                rows = [parent, detail, current]
+                results = [matching.match_fields([target], rows)[0]] + [
+                    matching.resolve_match(target, [detail], method=method, rows=rows)
+                    for method in ("manual", "ai", "ai-review", "exact")]
+                if opening == 0:
+                    self.assertTrue(all(r.status == "matched" and r.amount == 11 for r in results))
+                    self.assertEqual(workbook.planned_writes(scan, [results[0]], rows=rows), [(target, Decimal(11))])
+                else:
+                    self.assertTrue(all(r.status == "ambiguous" and not r.selected and r.amount is None for r in results))
+                    forged = MatchResult(target, [detail], Decimal(11), status="matched", method="exact", selected=True)
+                    with self.assertRaisesRegex(ValueError, "结转"):
+                        workbook.planned_writes(scan, [forged], rows=rows)
+
     def test_unique_standalone_account_and_negative_opening(self):
         _, target = self.scan()
         row = replace(self.sources("-11")[1], code="4104", path="未分配利润", level=1)
