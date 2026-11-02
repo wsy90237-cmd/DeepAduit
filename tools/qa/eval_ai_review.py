@@ -51,7 +51,6 @@ def preview_reviews(client, batches, rows, preview_path, approved_sha256=None):
     digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
     preview_path.parent.mkdir(parents=True, exist_ok=True)
     preview_path.write_text(text, encoding='utf-8', newline='\n')
-    print(f'发送预览：{preview_path}；服务：{client.base_url}；SHA256：{digest}')
     if approved_sha256 is None:
         return None
     if approved_sha256 != digest:
@@ -97,7 +96,10 @@ def main():
 
     client = ai.DeepSeekClient.from_store(settings.SettingsStore())
     batches = [pending[start:start + 20] for start in range(0, len(pending), 20)]
-    decisions_by_batch = preview_reviews(client, batches, rows, BASE / f'ai-review-preview-{index}.json', args.approve_preview)
+    preview_path = BASE / f'ai-review-preview-{index}.json'
+    decisions_by_batch = preview_reviews(client, batches, rows, preview_path, args.approve_preview)
+    digest = hashlib.sha256(preview_path.read_bytes()).hexdigest()
+    print(f'发送预览：{preview_path}；服务：{client.base_url}；SHA256：{digest}')
     if decisions_by_batch is None:
         print('仅保存预览，未发送请求。核对后用 --approve-preview SHA256 再执行。')
         return
@@ -148,4 +150,6 @@ def main():
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
     main()

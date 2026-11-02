@@ -2,6 +2,7 @@
 from dataclasses import asdict, replace
 from decimal import Decimal
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -56,6 +57,11 @@ class QAGuardTests(unittest.TestCase):
         path.write_text(json.dumps([{'code': '1002', 'name': '银行存款'}]), encoding='utf-8')
         with self.assertRaises(ValueError):
             eval_ai_review.load_rows(path)
+
+    def test_preview_library_is_usable_with_a_non_unicode_console(self):
+        client = SimpleNamespace(model='synthetic', base_url='https://example.invalid')
+        with io.TextIOWrapper(io.BytesIO(), encoding='cp1252') as stream, patch('sys.stdout', stream):
+            self.assertIsNone(eval_ai_review.preview_reviews(client, [[self.item]], [self.row], self.base / '中文预览.json'))
 
     def test_comparison_hides_originals_and_counts_formula_once(self):
         original = replace(self.target, value=Decimal(1))

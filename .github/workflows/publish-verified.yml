@@ -3,7 +3,7 @@ name: DeepAudit Publish Verified
 on:
   push:
     branches: [main]
-    paths: ["packaging/publish.json", ".github/workflows/publish-verified.yml"]
+    paths: ["packaging/publish.json"]
   workflow_dispatch:
 
 permissions:
