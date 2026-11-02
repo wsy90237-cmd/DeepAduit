@@ -144,6 +144,11 @@ def _root_codes(parent, index):
     key = _canonical(parent)
     if not key:
         return []
+    # 完整父路径优先；其他类别下的同名明细不能扩张该父科目的范围。
+    paths = [row.code for row in index.by_name_path.get(key, [])
+             if _canonical(row.path or row.name) == key]
+    if paths:
+        return paths
     roots = [row.code for row in index.by_name_path.get(key, [])]
     if roots:
         return roots
