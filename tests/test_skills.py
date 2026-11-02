@@ -43,7 +43,7 @@ class AssetTests(unittest.TestCase):
     def test_assets_present_and_within_size_budget(self):
         manifest = skills.manifest()
         self.assertEqual({item["name"] for item in manifest["skills"]},
-                         {"chenyiwei-accounting", "ipo-financial-review"})
+                         {"chenyiwei-accounting", "ipo-financial-review", "china-audit"})
         self.assertLessEqual(manifest["total_bytes"], 6 * 1024 * 1024)
         for skill in manifest["skills"]:
             self.assertTrue(skill["origin"].endswith(skill["name"]))

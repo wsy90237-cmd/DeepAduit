@@ -53,6 +53,35 @@
         "references/09-red-flags.md",
         "SKILL.md"
       ]
+    },
+    {
+      "name": "china-audit",
+      "origin": "D:/微信/xwechat_files/wxid_2xdzgtufaeta22_b770/msg/attach/e0df67e01fd5250f0b8cd4061603111f/2026-11/Rec/10d665a90a5f29a6/F/3/china-audit/china-audit",
+      "files": [
+        "SKILL.md",
+        "references/audit-evidence.md",
+        "references/cash-audit.md",
+        "references/cashflow-statement-audit.md",
+        "references/consolidation-audit.md",
+        "references/financial-instruments-audit.md",
+        "references/financing-investment-audit.md",
+        "references/fraud-detection.md",
+        "references/going-concern.md",
+        "references/government-subsidy-audit.md",
+        "references/leases-audit.md",
+        "references/payroll-audit.md",
+        "references/procurement-payment-audit.md",
+        "references/related-party-audit.md",
+        "references/revenue-audit.md",
+        "references/risk-assessment.md",
+        "references/subsequent-events.md",
+        "references/tax-compliance.md",
+        "references/working-papers.md",
+        "templates/audit-report-template.md",
+        "templates/bank-confirmation-template.md",
+        "templates/management-letter-template.md",
+        "templates/working-paper-template.md"
+      ]
     }
   ],
   "files": [
@@ -304,10 +333,148 @@
       "encoding": "gzip",
       "records": 2240,
       "source_bytes": 3382633
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/SKILL.md",
+      "bytes": 5660,
+      "sha256": "2b3c6cc60c6312690027a243b16eb69f3e2e48f43c04803b3ed9eba98f8979cc"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/audit-evidence.md",
+      "bytes": 2571,
+      "sha256": "d5262f582e5e16e59b392d07a96e425c8ea351b5702b1f7e5739b8c13171afc6"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/cash-audit.md",
+      "bytes": 2971,
+      "sha256": "5804c57c76d51396bc76044362c7050a426152ffa9897562df18d835f6c9fe66"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/cashflow-statement-audit.md",
+      "bytes": 3725,
+      "sha256": "326687ece9a851613dda76a88caae88fd9a0b6bfdee270f8bbc5e9f3d1e7bd2b"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/consolidation-audit.md",
+      "bytes": 3268,
+      "sha256": "bcd5051bf1e95ede1680c2f4a41c561dcfcafbd0b96ede8b84b9830fe8c41b2c"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/financial-instruments-audit.md",
+      "bytes": 3490,
+      "sha256": "9bd026edf1c690c8939f0b1f52c15ae1b439eb7bed5611612fc87086e14485c7"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/financing-investment-audit.md",
+      "bytes": 2575,
+      "sha256": "fdaf23d86c4f9f50c3de50d2f36969bfad4ca83a4db0631e8c0a76de5210fc5c"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/fraud-detection.md",
+      "bytes": 2929,
+      "sha256": "bd12a80083ce07f662feff682fbcb66c3d40bba900d14d83a4bdc89de0fc9973"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/going-concern.md",
+      "bytes": 2785,
+      "sha256": "bc33809d15945d771e16ee17b70bd03be791acda0c72b910acffc05640ff899e"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/government-subsidy-audit.md",
+      "bytes": 3413,
+      "sha256": "49057ba7db8e69f222e04048ca5c7590e476382500151713ab59cb1c5cfec8e2"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/leases-audit.md",
+      "bytes": 3445,
+      "sha256": "ba1d756e33056a1286873439a7f01d94b645d1e05586045a2247b9f65111975e"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/payroll-audit.md",
+      "bytes": 2543,
+      "sha256": "cbb86234425d7b4c541db452f863a52f3503f04f79b6d10bea07d900950a5eaa"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/procurement-payment-audit.md",
+      "bytes": 3276,
+      "sha256": "65e0baefcf904c91183a11775ec970ae8e55b69365c264f0952f27160fca9fc8"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/related-party-audit.md",
+      "bytes": 2871,
+      "sha256": "50ab03a99da57d1e2c6cc6d64b9ddc4272160bfac12c69e76e9dba98220c1725"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/revenue-audit.md",
+      "bytes": 2539,
+      "sha256": "ddb56c49e441726bbcea188208383630b5173ace7548193f886f82470f73108f"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/risk-assessment.md",
+      "bytes": 2681,
+      "sha256": "01168253ad543c73b4892784187fe41c4810f806c89cc54a9a69157e52bac92c"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/subsequent-events.md",
+      "bytes": 2927,
+      "sha256": "9cb1c20e6a58f61410bf1bdc7712662ad4772a02f07fa095e05b40238436d4fa"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/tax-compliance.md",
+      "bytes": 2826,
+      "sha256": "c3e930c58fff760dfa92c85d36d3ae3d03883033915f75ea7699823467d17a6a"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/references/working-papers.md",
+      "bytes": 1717,
+      "sha256": "144637aa88ddcfe2b4401fbe4c7b1ad565962b47233de7e51e68fada9b348cb5"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/templates/audit-report-template.md",
+      "bytes": 1470,
+      "sha256": "1734e5f4cc68696c0e0d7e180091ff45d1a9bbd3c90e9fd4d21bcc555dde4650"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/templates/bank-confirmation-template.md",
+      "bytes": 1375,
+      "sha256": "6f57659fdfe9bcdf91d0e95e0cc7e13886cfdcb0e9ed29deed1360efe21a4e91"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/templates/management-letter-template.md",
+      "bytes": 1634,
+      "sha256": "666cb6d12cc384fdb6fd5a37371d7549271f803e94d327894d92e097022ea820"
+    },
+    {
+      "skill": "china-audit",
+      "path": "china-audit/templates/working-paper-template.md",
+      "bytes": 614,
+      "sha256": "1de8604d8446008345a9305a8409a8e34417500954e67ba6637b142267773f97"
     }
   ],
-  "total_bytes": 1548167,
-  "generated": "2026-10-30",
+  "total_bytes": 1611472,
+  "generated": "2026-11-02",
   "entry_limits": {
     "max_body_chars": 1200,
     "max_snippet_chars": 1200

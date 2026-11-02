@@ -23,6 +23,7 @@ MIN_COVERAGE = 0.5       # 查询词权重覆盖率下限：低于一半即算�
 SKILL_LABELS = {
     "chenyiwei-accounting": "陈版主会计判断",
     "ipo-financial-review": "IPO 财务核查",
+    "china-audit": "国内审计助手",
 }
 # 纯导航小节对检索只有干扰，拆条目时跳过。
 NAVIGATION = {"章节目录", "目录", "contents", "index", "toc", "table of contents"}

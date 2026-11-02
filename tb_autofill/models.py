@@ -38,6 +38,28 @@ class LedgerRow:
 
 
 @dataclass(frozen=True)
+class JournalRow:
+    """鼎信诺序时账（凭证分录）一行；金额取原库，不做方向翻转。"""
+    month: int
+    date: str
+    voucher: str
+    line: str
+    summary: str
+    code: str
+    debit: Decimal | None = None
+    credit: Decimal | None = None
+    contra: str = ""
+
+    @property
+    def amount(self):
+        """本条分录的金额：借贷一方有值，另一方为 0。"""
+        for value in (self.debit, self.credit):
+            if value:
+                return abs(value)
+        return Decimal("0")
+
+
+@dataclass(frozen=True)
 class Subject:
     id: str
     name: str

@@ -124,40 +124,78 @@ def summarize(facts: dict, limit: int = 6) -> str:
 
 
 def fact_amounts(facts: dict) -> set:
-    """事实中出现过的全部金额与计数，用于核对 AI 引用的数字。"""
+    """事实中出现过的全部金额与计数，用于核对 AI 引用的数字。
+
+    底稿事实比 TB 事实多出科目本级、下级与序时账摘要，这些金额同样来自本机数据，
+    必须算作“已知”，否则模型照抄也会被误报为编造。
+    """
     values = set()
-    for item in facts["movements"]:
+
+    def add(value):
+        if value is None or value == "":
+            return
+        try:
+            amount = money(value)
+        except (ValueError, TypeError):
+            return
+        if amount is not None:
+            values.add(amount.copy_abs())
+
+    for item in facts.get("movements") or []:
         for key in ("opening", "ending", "change", "debit", "credit"):
-            if item.get(key):
-                try:
-                    values.add(money(item[key]).copy_abs())
-                except ValueError:
-                    continue
+            add(item.get(key))
     for key in ("debit", "credit"):
-        value = facts.get("totals", {}).get(key)
-        if value:
-            try:
-                values.add(money(value).copy_abs())
-            except ValueError:
-                continue
-    for value in facts.get("counts", {}).values():
-        values.add(Decimal(str(value)))
+        add((facts.get("totals") or {}).get(key))
+    for value in (facts.get("counts") or {}).values():
+        add(value)
+    subject = facts.get("subject") or {}
+    for key in ("opening", "debit", "credit", "ending"):
+        add(subject.get(key))
+    for item in facts.get("children") or []:
+        for key in ("opening", "debit", "credit", "ending"):
+            add(item.get(key))
+    journal = facts.get("journal") or {}
+    for key in ("debit", "credit", "count"):
+        add(journal.get(key))
+    for group in ("monthly", "top_contra", "samples"):
+        for item in journal.get(group) or []:
+            for key in ("debit", "credit", "amount", "count"):
+                add(item.get(key))
+    tie = journal.get("tie") or {}
+    for key in ("ledger_debit", "ledger_credit"):
+        add(tie.get(key))
     return values
 
 
 def fact_codes(facts: dict) -> set:
-    return {str(code) for code in facts.get("all_codes", [])} or {
-        str(item["code"]) for item in facts.get("movements", [])}
+    codes = {str(code) for code in facts.get("all_codes", [])}
+    codes |= {str(item["code"]) for item in facts.get("movements") or [] if item.get("code")}
+    codes |= {str(item["code"]) for item in facts.get("children") or [] if item.get("code")}
+    if (facts.get("subject") or {}).get("code"):
+        codes.add(str(facts["subject"]["code"]))
+    journal = facts.get("journal") or {}
+    codes |= {str(item["code"]) for item in journal.get("samples") or [] if item.get("code")}
+    return codes
 
 
 def fact_tokens(facts: dict) -> set:
     """科目名称/路径里内嵌的数字（如“农业银行43128”的账号尾号），不算编造金额。"""
     tokens = set()
-    for item in facts.get("movements", []):
+
+    def harvest(text):
+        for piece in re.split(r"[^0-9]+", str(text or "")):
+            if len(piece) >= 3:
+                tokens.add(piece)
+
+    for item in facts.get("movements") or []:
         for key in ("name", "path"):
-            for piece in re.split(r"[^0-9]+", str(item.get(key) or "")):
-                if len(piece) >= 3:
-                    tokens.add(piece)
+            harvest(item.get(key))
+    for item in facts.get("similarly_named") or []:
+        harvest(item.get("name"))
+    journal = facts.get("journal") or {}
+    for item in journal.get("samples") or []:
+        for key in ("summary", "contra", "voucher"):
+            harvest(item.get(key))
     return tokens
 
 

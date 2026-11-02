@@ -14,11 +14,16 @@ import tempfile
 import time
 from decimal import Decimal
 
-from .models import LedgerRow, Subject, money
+from .models import JournalRow, LedgerRow, Subject, money
 
 _DRAFT = "财务报表底稿.xls"
 _ITEM_ID = re.compile(r"^I\d+D(\d+)N(\d+)Z", re.I)
 _TABLES = ("c_kmyek", "c_cwkmk")
+# 序时账＝凭证分录表；同一库内按 kmbh 前缀取明细，不另建汇总。
+_JOURNAL_TABLE = "c_cwpz"
+_JOURNAL_COLUMNS = "kjmonth,jzsj,pzzl,pzbh,bh,sm,kmbh,jffse,dffse,dfkmbh,dfkmmc"
+_CODE = re.compile(r"^\d{1,20}$")
+JOURNAL_LIMIT = 2000
 _PROFIT_LOSS_NAMES = {
     "主营业务收入", "产品销售收入", "其他业务收入", "其他收益", "营业收入",
     "主营业务成本", "产品销售成本", "其他业务成本", "其他业务支出", "营业成本",
@@ -137,6 +142,14 @@ def _draft_files(project: Path):
             yield Path(root) / _DRAFT
 
 
+def _journal_code(code) -> str:
+    """序时账科目编码只接受纯数字：既防 LIKE 通配，也防注入。"""
+    value = str(code or "").strip()
+    if not _CODE.match(value):
+        raise ValueError("科目编码不合法，无法读取序时账")
+    return value
+
+
 def _integer(value, label: str) -> int:
     try:
         numeric = Decimal(str(value).strip())
@@ -199,12 +212,15 @@ def list_subjects(project_path: str) -> list[Subject]:
     return sorted(subjects.values(), key=lambda s: (s.name, s.year, s.month, s.id))
 
 
-def _source_files(data: Path) -> list[Path]:
+def _source_files(data: Path, tables=_TABLES) -> list[Path]:
     schema = data / "powersj"
     files = sorted(p for p in schema.iterdir() if p.is_file() and
-                   any(p.name.lower().startswith(table + suffix) for table in _TABLES for suffix in (".", "#")))
-    if not any(p.name.lower().startswith("c_kmyek") and p.suffix.lower() == ".myd" for p in files):
-        raise ValueError("此项目不是已支持的 MyISAM 科目余额格式，未尝试修改或修复原数据库")
+                   any(p.name.lower().startswith(table + suffix) for table in tables for suffix in (".", "#")))
+    required = "c_kmyek" if tuple(tables) == _TABLES else _JOURNAL_TABLE
+    if not any(p.name.lower().startswith(required) and p.suffix.lower() == ".myd" for p in files):
+        if required == "c_kmyek":
+            raise ValueError("此项目不是已支持的 MyISAM 科目余额格式，未尝试修改或修复原数据库")
+        raise ValueError(f"此项目没有可读取的序时账数据（{required}），未尝试修改或修复原数据库")
     if any(p.is_symlink() for p in files):
         raise ValueError("科目数据文件不能使用符号链接")
     return files
@@ -231,8 +247,8 @@ def _open_source(path: Path):
         raise
 
 
-def _snapshot(data: Path, destination: Path) -> None:
-    files = _source_files(data)
+def _snapshot(data: Path, destination: Path, tables=_TABLES) -> None:
+    files = _source_files(data, tables)
     with contextlib.ExitStack() as stack:
         opened = [(path, stack.enter_context(_open_source(path))) for path in files]
         before = {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in files}
@@ -248,7 +264,7 @@ def _snapshot(data: Path, destination: Path) -> None:
                 if hashlib.file_digest(copied, "sha256").digest() != source_hash.digest():
                     raise RuntimeError("数据库副本校验失败，已停止取数")
         after = {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in files}
-        if before != after or set(_source_files(data)) != set(files):
+        if before != after or set(_source_files(data, tables)) != set(files):
             raise RuntimeError("复制期间源数据库发生变化；请退出当前项目后重试")
 
 
@@ -261,8 +277,10 @@ def _free_port() -> int:
 class DxnLedgerDB:
     """同一项目批量读取时可共用一个副本。只持有并关闭本工具启动的进程。"""
 
-    def __init__(self, project_path: str, install_path: str = "", status_callback=None):
+    def __init__(self, project_path: str, install_path: str = "", status_callback=None,
+                 tables=_TABLES):
         self.data = _data_dir(project_path)
+        self.tables = tuple(tables)
         services = [_service_dir(install_path)] if install_path else discover_installations()
         self.service = next(filter(None, services), None)
         if self.service is None:
@@ -292,7 +310,7 @@ class DxnLedgerDB:
         self.temp = tempfile.TemporaryDirectory(prefix="zszh_ledger_")
         root = Path(self.temp.name)
         copy_data = root / "data"
-        _snapshot(self.data, copy_data)
+        _snapshot(self.data, copy_data, self.tables)
         port = _free_port()
         config = root / "reader.ini"
         config.write_text(
@@ -351,6 +369,50 @@ class DxnLedgerDB:
             raise ValueError("科目余额库没有所选主体和截止月份的数据，不自动改用其他月份")
         from dataclasses import replace
         return _aggregate(rows, replace(subject, ledger_id=ledger_id))
+
+    def journal(self, subject: Subject, code: str, limit: int = JOURNAL_LIMIT) -> list[JournalRow]:
+        """按科目编码前缀取序时账（凭证分录）；一级科目返回其全部下级分录。
+
+        只读副本，不改原库；分录金额取自 jffse / dffse 原值，不做方向翻转。
+        """
+        if _data_dir(subject.project_path) != self.data:
+            raise ValueError("不能在同一数据库会话混用不同项目")
+        code = _journal_code(code)
+        if not subject.id.isdigit() or not 1900 <= subject.year <= 2200 or not 1 <= subject.month <= 12:
+            raise ValueError("主体编号、年度或月份不合法")
+        limit = max(1, min(int(limit), JOURNAL_LIMIT))
+        ledger_id = subject.ledger_id
+        if ledger_id and not ledger_id.isdigit():
+            raise ValueError("账套编号不合法")
+        with self.connection.cursor() as cursor:
+            if not ledger_id:
+                cursor.execute("SELECT DISTINCT ndid FROM c_cwpz WHERE dwid=%s AND kjyear=%s AND kjmonth<=%s",
+                               (int(subject.id), subject.year, subject.month))
+                identities = cursor.fetchall()
+                if len(identities) != 1 or not str(identities[0]["ndid"]).isdigit():
+                    raise ValueError("所选主体期间缺少唯一账套编号，请重新选择对应的鼎信诺底稿")
+                ledger_id = str(identities[0]["ndid"])
+            cursor.execute(
+                f"SELECT {_JOURNAL_COLUMNS} FROM {_JOURNAL_TABLE} "
+                "WHERE dwid=%s AND ndid=%s AND kjyear=%s AND kjmonth BETWEEN 1 AND %s AND kmbh LIKE %s "
+                "ORDER BY kjmonth,pzbh,bh LIMIT %s",
+                (int(subject.id), int(ledger_id), subject.year, subject.month, f"{code}%", limit))
+            rows = cursor.fetchall()
+        output = []
+        for row in rows:
+            month = _integer(row["kjmonth"], "月份")
+            if not 1 <= month <= subject.month:
+                raise ValueError("序时账存在超出所选期间的记录，已停止读取")
+            output.append(JournalRow(
+                month=month, date=str(row.get("jzsj") or "")[:10],
+                voucher=f"{str(row.get('pzzl') or '').strip()}-{row.get('pzbh') or ''}".strip("-"),
+                line=str(row.get("bh") or "").strip(),
+                summary=re.sub(r"\s+", " ", str(row.get("sm") or "")).strip(),
+                code=str(row.get("kmbh") or "").strip(),
+                debit=money(row.get("jffse")), credit=money(row.get("dffse")),
+                contra=re.sub(r"[;\s]+", "、", str(row.get("dfkmmc") or "")).strip("、"),
+            ))
+        return output
 
     def close(self):
         errors = []
@@ -432,3 +494,11 @@ def _aggregate(rows: list[dict], subject: Subject) -> list[LedgerRow]:
 def read_ledger(subject: Subject, install_path: str = "", status_callback=None) -> list[LedgerRow]:
     with DxnLedgerDB(subject.project_path, install_path, status_callback) as database:
         return database.read(subject)
+
+
+def read_journal(subject: Subject, code: str, install_path: str = "", status_callback=None,
+                 limit: int = JOURNAL_LIMIT) -> list[JournalRow]:
+    """单独会话读取序时账：只复制凭证分录表，不触发科目余额的完整拷贝。"""
+    with DxnLedgerDB(subject.project_path, install_path, status_callback,
+                     tables=(_JOURNAL_TABLE,)) as database:
+        return database.journal(subject, code, limit=limit)

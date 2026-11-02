@@ -170,11 +170,24 @@ class PaperDialog(tk.Toplevel):
         shell.rowconfigure(3, weight=1)
 
         tk.Label(shell, text="科目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w")
-        self.choices = papers.account_choices(app.rows) if app.rows else []
+        self.state = tk.StringVar(value="选择科目后生成；金额取自本机账套。")
+        pick = tk.Frame(shell, bg=CARD)
+        pick.grid(row=0, column=1, sticky="ew", padx=8)
+        self.level_options = (papers.level_options(app.rows) if app.rows
+                              else [(papers.LEVEL_ALL, papers.level_label(papers.LEVEL_ALL))])
+        self.level_var = tk.StringVar()
+        self.level_box = ttk.Combobox(pick, textvariable=self.level_var, state="readonly", width=9,
+                                      values=[label for _level, label in self.level_options])
+        self.level_box.pack(side="left")
+        self.level_box.bind("<<ComboboxSelected>>", lambda _event: self._reload_choices())
+        self.choices = []
         self.code_var = tk.StringVar()
-        self.code_box = ttk.Combobox(shell, textvariable=self.code_var, state="readonly",
-                                     values=[label for _code, label in self.choices])
-        self.code_box.grid(row=0, column=1, sticky="ew", padx=8)
+        self.code_box = ttk.Combobox(pick, textvariable=self.code_var, state="readonly")
+        self.code_box.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        # 默认一级科目：审定表按一级科目出，需要看明细时再切级次。
+        self.level_box.current(next((index for index, (level, _label) in enumerate(self.level_options)
+                                     if level == papers.PRIMARY_LEVEL), 0))
+        self._reload_choices()
 
         tk.Label(shell, text="底稿类型", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=1, column=0, sticky="w", pady=(8, 0))
         kind_row = tk.Frame(shell, bg=CARD)
@@ -182,6 +195,10 @@ class PaperDialog(tk.Toplevel):
         self.kind_var = tk.StringVar(value=papers.KIND_LABELS[papers.DEFAULT_KIND])
         ttk.Combobox(kind_row, textvariable=self.kind_var, state="readonly", width=22,
                      values=list(papers.KIND_LABELS.values())).pack(side="left")
+        self.with_journal = tk.BooleanVar(value=True)
+        self.journal_check = ttk.Checkbutton(kind_row, text="含序时账明细",
+                                             variable=self.with_journal)
+        self.journal_check.pack(side="left", padx=(10, 0))
         tk.Label(kind_row, text="仅生成草稿，需注册会计师复核", bg=CARD, fg=MUTED,
                  font=(FONT, 8)).pack(side="left", padx=10)
 
@@ -204,17 +221,43 @@ class PaperDialog(tk.Toplevel):
         self.export_btn = ttk.Button(actions, text="导出 HTML", command=self._export, state="disabled")
         self.export_btn.pack(side="left", padx=8)
         ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
-        self.state = tk.StringVar(value="选择科目后生成；金额取自本机账套。")
         tk.Label(actions, textvariable=self.state, bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=12)
 
-        if self.choices:
-            self.code_box.current(0)
         if scope != "paper":
             # 附注与报告不按单个科目起草，隐藏科目与类型两行，避免误导。
             for row in (0, 1):
                 for child in shell.grid_slaves(row=row):
                     child.grid_remove()
         self.protocol("WM_DELETE_WINDOW", self._close)
+
+    def _current_level(self):
+        index = self.level_box.current()
+        return self.level_options[index][0] if index >= 0 else papers.LEVEL_ALL
+
+    def _reload_choices(self):
+        """按级次重算科目候选；该级次为空时退回全部级次并说明，不留空下拉。"""
+        rows = self.app.rows or []
+        level = self._current_level()
+        self.choices = papers.account_choices(rows, level=level) if rows else []
+        note = ""
+        if not self.choices and level:
+            self.choices = papers.account_choices(rows, level=papers.LEVEL_ALL) if rows else []
+            if self.choices:
+                self.level_box.current(0)
+                note = f"{papers.level_label(level)}无可做底稿的科目，已改为全部级次。"
+        self.code_box.configure(values=[label for _code, label in self.choices])
+        if self.choices:
+            self.code_box.current(0)
+            self.state.set(note or f"共 {len(self.choices)} 个可选科目，已默认选中最前一个。")
+        else:
+            self.code_var.set("")
+            self.state.set("未识别到可做底稿的科目，请先在「账套与 TB」读取科目余额。")
+
+    def _read_journal(self, code):
+        subject = getattr(self.app, "loaded_subject", None)
+        if subject is None:
+            raise ValueError("请先在「账套与 TB」读取科目余额，确定主体与期间后再取序时账。")
+        return dxn.read_journal(subject, code, self.app.install_var.get().strip())
 
     def _close(self):
         self.running = False
@@ -236,16 +279,19 @@ class PaperDialog(tk.Toplevel):
             return
         code = self.choices[index][0] if self.scope == "paper" and index >= 0 else ""
         focus = self.focus_text.get("1.0", "end").strip()
+        want_journal = self.scope == "paper" and bool(self.with_journal.get())
         self.running = True
         self.run_btn.configure(state="disabled")
-        self.state.set("正在生成草稿（模型 + 内置知识库）…")
+        self.state.set("正在读取序时账并生成草稿…" if want_journal else "正在生成草稿（模型 + 内置知识库）…")
 
         def work():
             try:
+                journal = self._read_journal(code) if want_journal else None
                 client = ai_module.DeepSeekClient.from_store(self.app.store)
                 if self.scope == "paper":
                     result = papers.draft(client, rows=self.app.rows, code=code, kind=self._kind_key(),
-                                          subject_label=self.app._subject_label(), focus=focus)
+                                          subject_label=self.app._subject_label(), focus=focus,
+                                          journal=journal)
                 else:
                     result = papers.draft_document(client, rows=self.app.rows, results=self.app.results,
                                                    kind=self.scope, subject_label=self.app._subject_label(),
@@ -281,7 +327,11 @@ class PaperDialog(tk.Toplevel):
                 self.view.insert("end", f"[{item['citation_id']}] {item['title']}\n")
         self.view.configure(state="disabled")
         self.export_btn.configure(state="normal")
-        self.state.set("草稿已生成；请复核后使用，金额未由模型改写。")
+        journal = value.get("journal") or {}
+        if value.get("has_journal"):
+            self.state.set(f"草稿已生成，含序时账 {journal.get('count', 0)} 笔；请复核后使用。")
+        else:
+            self.state.set("草稿已生成；请复核后使用，金额未由模型改写。")
 
     def _export(self):
         if not self.draft:
