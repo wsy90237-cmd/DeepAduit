@@ -83,7 +83,9 @@ Excel导出以只读方式打开原模板，再原生另存副本，以保留相
 
 需要 Windows 10/11 x64、Python 3.12+；推荐 3.13。Excel 另存依赖已安装的 Microsoft Excel 与 pywin32，WPS 未验证。
 
-本机快速试用：双击项目根目录的 `DeepAudit-trial.cmd`。它启动当前源码界面，使用已安装的依赖；也可执行 `python -B tools/run_trial.py`。这是源码试用入口，正式发布页 EXE 尚未随本轮修复更新。启动失败时命令窗口会保留错误信息；首次安装依赖仍按下方命令操作。
+本机源码试用：双击项目根目录的 `DeepAudit-trial.cmd`，或执行 `python -B tools/run_trial.py`，使用当前源码与已安装的依赖。启动失败时命令窗口会保留错误信息；首次安装依赖仍按下方命令操作。
+
+正式程序从 [GitHub Releases](https://github.com/wsy90237-cmd/DeepAduit/releases/latest) 下载，核对 `SHA256SUMS.txt` 后运行 `DeepAudit.exe`。本地离线副本统一保存在 `dist/DeepAudit-<版本>/`，只保留最新一版；源码试用入口不写固定版本号。
 
 ```powershell
 python -m venv .venv
