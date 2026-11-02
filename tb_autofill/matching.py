@@ -197,9 +197,11 @@ def _component_matches(target, row):
 
 
 def _account_total(target):
+    label,parent = _canonical(target.label),_canonical(target.parent)
+    if target.statement == "profit_loss":
+        return label == "其他收益" and not parent
     if target.statement != "balance_sheet":
         return False
-    label,parent = _canonical(target.label),_canonical(target.parent)
     return ((label in {"库存现金", "银行存款"} and parent in {"", "货币资金"})
             or (label in {"原材料", "库存商品", "发出商品", "委托加工物资", "材料采购", "周转材料"}
                 and parent in {"", "存货"})
