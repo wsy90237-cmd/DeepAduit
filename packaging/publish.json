@@ -1,7 +1,7 @@
 {
-  "version": "0.5.5",
-  "revision": "8e46e3cece93b70bd4b929f38c15f6dd272a5bcc",
-  "run_id": 41399296891,
-  "sha256": "781ebb368be5bbae60e0afc8091e8148e82a50f3085d9cbb8644365a2d0aa7a0",
+  "version": "0.5.6",
+  "revision": "d300ab4551ab86997e7bab67c718952375191f22",
+  "run_id": 41423890879,
+  "sha256": "f830965b0a94f5ed552cb433e8abc7add917492b6797ab18679993a980c23e7f",
   "notes_commit": "head"
 }
