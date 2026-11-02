@@ -73,7 +73,7 @@ jobs:
           $native = @($info.native_modules.PSObject.Properties)
           if ($hash -ne $env:RELEASE_SHA256 -or $info.sha256 -ne $hash -or $info.product -ne 'DeepAudit' -or
               $info.version -ne $env:RELEASE_VERSION -or $info.source_revision -ne $env:RELEASE_REVISION -or
-              $info.source_dirty -ne $false -or $info.compiler -ne 'msvc' -or $native.Count -ne 15 -or
+              $info.source_dirty -ne $false -or $info.compiler -ne 'msvc' -or $native.Count -ne 17 -or
               @($native | Where-Object Value -ne $true).Count -ne 0 -or $info.selftest -notcontains 'brand_assets') { throw 'Package validation failed' }
           if ((Get-Content candidate/SHA256SUMS.txt -Raw).Trim() -ne "$hash  DeepAudit.exe") { throw 'Checksum file mismatch' }
           $report = Join-Path $env:RUNNER_TEMP 'deepaudit-publish-selftest.json'
@@ -81,7 +81,7 @@ jobs:
           if ($process.ExitCode -ne 0 -or !(Test-Path -LiteralPath $report)) { throw 'Executable selftest failed' }
           $check = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
           $runtimeModules = @($check.native_modules.PSObject.Properties)
-          if ($check.version -ne $env:RELEASE_VERSION -or $check.product -ne 'DeepAudit' -or $runtimeModules.Count -ne 15 -or
+          if ($check.version -ne $env:RELEASE_VERSION -or $check.product -ne 'DeepAudit' -or $runtimeModules.Count -ne 17 -or
               @($runtimeModules | Where-Object Value -ne $true).Count -ne 0 -or $check.checks -notcontains 'brand_assets') { throw 'Runtime validation failed' }
           $tag = "v$env:RELEASE_VERSION"
           $notesRef = if ($env:RELEASE_NOTES_COMMIT -eq 'head') { 'HEAD' } else { $env:RELEASE_NOTES_COMMIT }

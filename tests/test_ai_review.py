@@ -33,6 +33,18 @@ def client(decisions):
 
 
 class ReviewGuardTests(unittest.TestCase):
+    def test_duplicate_target_decisions_are_rejected_before_display_or_apply(self):
+        result = pending()
+        decision = {'target_id': result.target.id, 'action': 'fill', 'source_codes': ['1002']}
+        with self.assertRaisesRegex(ai.AIError, '重复'):
+            ai.review(client([decision, decision]), [result], ledger())
+
+    def test_review_requires_a_decision_list(self):
+        result = pending()
+        for decisions in ({'unexpected': True}, 'invalid', None):
+            with self.subTest(decisions=decisions), self.assertRaises(ai.AIError):
+                ai.review(client(decisions), [result], ledger())
+
     def test_ambiguous_sources_cannot_be_resolved_by_ai_review(self):
         target = TargetField("S", "B2", "其他", "ending", parent="管理费用")
         rows = [LedgerRow("6602", "管理费用", path="管理费用"),

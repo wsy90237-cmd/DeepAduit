@@ -13,6 +13,10 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tb_autofill import APP_NAME, __version__
+
+NATIVE_MODULES = {f"tb_autofill.{name}" for name in (
+    'ai', 'analysis', 'auditlog', 'connections', 'dxn', 'fields', 'gui', 'knowledge',
+    'knowledge_ui', 'matching', 'models', 'papers', 'settings', 'skills', 'workbook', 'workflow', 'workspace')}
 try:
     from .inspect_release import inspect
 except ImportError:
@@ -51,7 +55,8 @@ def verify_native(executable):
         result = json.loads(report.read_text(encoding="utf-8"))
         if result["version"] != __version__ or result["product"] != APP_NAME:
             raise RuntimeError("打包版本不匹配")
-        if not result["native_modules"] or not all(result["native_modules"].values()):
+        native = result.get('native_modules')
+        if not isinstance(native, dict) or set(native) != NATIVE_MODULES or any(value is not True for value in native.values()):
             raise RuntimeError("拒绝发布：业务模块并非全部原生编译")
         return result
 
@@ -72,15 +77,19 @@ def main():
     tag = os.environ.get("GITHUB_REF", "")
     if tag.startswith("refs/tags/v") and tag.removeprefix("refs/tags/v") != __version__:
         raise SystemExit("发布标签与包版本不一致，停止构建")
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip():
+        raise SystemExit("正式构建要求工作区干净，请先完成提交")
     (ROOT / "build").mkdir(exist_ok=True)
     subprocess.run(build_arguments(args.compiler, args.jobs), cwd=ROOT, check=True)
     executable = ROOT / "dist" / "DeepAudit.exe"
     result = verify_native(executable)
     with executable.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip())
-    manifest = {"product": APP_NAME, "version": __version__, "source_revision": revision, "source_dirty": dirty,
+    if (subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip() != revision or
+            subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).strip()):
+        raise RuntimeError("构建期间源码版本或工作区发生变化，拒绝生成发布清单")
+    manifest = {"product": APP_NAME, "version": __version__, "source_revision": revision, "source_dirty": False,
                 "python": platform.python_version(), "compiler": args.compiler,
                 "sha256": digest, "native_modules": result["native_modules"],
                 "selftest": result["checks"], "pe": inspect(executable), "signed": False}

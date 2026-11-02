@@ -1,31 +1,33 @@
-"""按训练文件里的已填 TB 作为答案，逐格比对本地填列结果。
+"""与训练文件已填 TB 逐格比较；原填数是待核对样本，不是正确答案。
 
 答案分两类：
 - 叶子单元格（数值）：直接比对金额；
 - 公式单元格：引擎标记 protected 不写入，比对时只核对公式是否被保留，
   其值由 Excel 计算，不由我们填写。
 
-输出四类结论：一致 / 有差额 / 漏填（答案有值我们没填）/ 误填（我们填了答案为空）。
+分别记录可比一致、差额、未可靠取数和原填空白待核对，差额单位为元。
 每个不一致项都附来源科目与取值，便于回溯数字来源。
 """
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+import site
 import sys
 from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 
-ROOT = Path(r"P:/exetoBe/软件开发/ZSZH-tb自动填写系统")
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / ".venv/Lib/site-packages"))
+site.addsitedir(str(ROOT / ".venv/Lib/site-packages"))
 
 from openpyxl import load_workbook
 
 from tb_autofill import fields, matching
 from tb_autofill.models import LedgerRow, money
 
-BASE = Path(__file__).resolve().parent
+BASE = ROOT / 'local-data/qa'
 PLAN = ROOT / "local-data/tb-finish-20261030-1352"
 TOLERANCE = Decimal("0.005")
 
@@ -72,7 +74,7 @@ def describe(result, by_code):
     factor = result.target.unit_factor or Decimal(1)
     for code in result.source_ids or ():
         row = by_code.get(code)
-        value = None if row is None else (row.opening if result.target.period == "opening" else row.ending)
+        value = None if row is None else matching._row_amount(result.target, row)
         if value is None:
             parts.append(f"{code}:无值")
             continue
@@ -86,7 +88,8 @@ def compare(case_index, template, ledger_file):
     rows = load_rows(ledger_file)
     by_code = {row.code: row for row in rows}
     scan = fields.scan_template(template, ("opening", "ending"), unit="自动")
-    results = matching.match_fields(scan.fields, rows)
+    hidden = [replace(field, value=None) if not field.is_formula else field for field in scan.fields]
+    results = matching.match_fields(hidden, rows)
     answers, formulas = answer_values(template)
 
     items, counts = [], Counter()
@@ -102,29 +105,27 @@ def compare(case_index, template, ledger_file):
                  "ours": None if result.amount is None else str(result.amount),
                  "sources": list(result.source_ids or ()), "reason": result.reason}
         if is_formula:
-            counts["公式保护"] += 1
             entry["verdict"] = "公式保护"
         elif result.selected and result.amount is not None:
             if answer_missing:
-                entry["verdict"] = "误填"
+                entry["verdict"] = "原填空白，待核对"
             else:
                 try:
-                    delta = Decimal(str(answer)) - Decimal(str(result.amount))
+                    delta = (money(answer) - result.amount) * result.target.unit_factor
                 except Exception:
                     entry["verdict"] = "答案非数值"
                 else:
                     entry["delta"] = str(delta)
                     entry["verdict"] = "一致" if abs(delta) <= TOLERANCE else "有差额"
         elif result.status == "protected":
-            counts["公式保护"] += 1
             entry["verdict"] = "公式保护"
         elif answer_missing:
             entry["verdict"] = "双方皆空"
         elif result.status == "matched":
             entry["verdict"] = "匹配未勾选"
         else:
-            entry["verdict"] = "漏填"
-        if entry["verdict"] in {"有差额", "漏填", "误填"}:
+            entry["verdict"] = "未可靠取数，待复核"
+        if entry["verdict"] in {"有差额", "未可靠取数，待复核", "原填空白，待核对"}:
             entry.update(describe(result, by_code))
         counts[entry["verdict"]] += 1
         items.append(entry)
@@ -134,6 +135,7 @@ def compare(case_index, template, ledger_file):
 
 
 def main():
+    BASE.mkdir(parents=True, exist_ok=True)
     plan = json.loads((PLAN / "trial-plan.json").read_text(encoding="utf-8"))
     plan = plan["cases"] if isinstance(plan, dict) and "cases" in plan else plan
     report = []
@@ -158,7 +160,7 @@ def main():
     print("合计:", dict(totals))
 
     for result in report:
-        bad = [item for item in result["items"] if item["verdict"] in {"有差额", "漏填", "误填"}]
+        bad = [item for item in result["items"] if item["verdict"] in {"有差额", "未可靠取数，待复核", "原填空白，待核对"}]
         for item in bad[:6]:
             print(f"  [{item['verdict']}] {item['label'][:16]:16} 答案={item['answer']} 我们={item['ours']} "
                   f"来源={item.get('sources')} 重算={item.get('recomputed')}")

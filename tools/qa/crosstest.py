@@ -8,22 +8,23 @@
 from __future__ import annotations
 
 import json
+import site
 import sys
 import time
 from collections import defaultdict
 from decimal import Decimal
 from pathlib import Path
 
-ROOT = Path(r"P:/exetoBe/软件开发/ZSZH-tb自动填写系统")
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / ".venv/Lib/site-packages"))
+site.addsitedir(str(ROOT / ".venv/Lib/site-packages"))
 
 from openpyxl import load_workbook
 
 from tb_autofill import fields, matching, workbook
 from tb_autofill.models import LedgerRow, money
 
-BASE = Path(__file__).resolve().parent
+BASE = ROOT / 'local-data/qa'
 PLAN = ROOT / "local-data/tb-finish-20261030-1352"
 
 
@@ -43,7 +44,7 @@ def load_rows(path):
 
 
 def trace(result, by_code):
-    """金额溯源：来源科目 + 期间取值 → 独立重算，与本地结果比对。"""
+    """复算所选来源的引擎金额；这是内部一致性检查，不是独立审计复核。"""
     factor = result.target.unit_factor or Decimal(1)
     total, items, missing = Decimal(0), [], []
     for code in result.source_ids or ():
@@ -51,7 +52,7 @@ def trace(result, by_code):
         if row is None:
             missing.append(code)
             continue
-        value = row.opening if result.target.period == "opening" else row.ending
+        value = matching._row_amount(result.target, row)
         if value is None:
             missing.append(code)
             continue
@@ -59,7 +60,7 @@ def trace(result, by_code):
         items.append({"code": code, "name": row.name, "value": str(value)})
     recomputed = total / factor if factor else total
     amount = result.amount
-    ok = amount is not None and abs(recomputed - amount) <= Decimal("0.005")
+    ok = not missing and amount is not None and abs(recomputed - amount) * factor <= Decimal("0.005")
     return {"sources": items, "missing_sources": missing, "recomputed": str(recomputed),
             "amount": None if amount is None else str(amount), "factor": str(factor),
             "matches": ok}
@@ -78,6 +79,9 @@ def run_template(template, rows, tag):
                   "sources": list(result.source_ids or ()), "reason": result.reason,
                   "amount": None if result.amount is None else str(result.amount),
                   "existing": None if result.target.value is None else str(result.target.value)}
+        record.update({name: getattr(result.target, name) for name in
+                       ('parent', 'measure', 'balance_side', 'occurrence_scope', 'statement',
+                        'presentation_direction', 'component')})
         if result.status == "matched":
             record.update(trace(result, by_code))
             if record.get("missing_sources"):
@@ -121,13 +125,33 @@ def run_template(template, rows, tag):
             "records": records, "problems": problems}
 
 
+def cross_template_conflicts(runs):
+    buckets = defaultdict(list)
+    for run in runs:
+        for record in run["records"]:
+            if record["status"] != "matched" or record["amount"] is None:
+                continue
+            key = tuple(record.get(name, '') for name in ('label', 'parent', 'period', 'basis', 'measure',
+                        'balance_side', 'occurrence_scope', 'statement', 'presentation_direction', 'component'))
+            key += (tuple(sorted(record['sources'])),)
+            buckets[key].append({"template": run["template"], "unit": run["unit"],
+                                 "amount": record["amount"], "sources": record["sources"],
+                                 'amount_yuan': str(money(record['amount']) * money(record['unit']))})
+    conflicts = []
+    for key, items in buckets.items():
+        values = {money(item['amount_yuan']) for item in items}
+        if len(values) > 1:
+            conflicts.append({"label": key[0], "period": key[2], "basis": key[3], "entries": items})
+    return conflicts
+
+
 def main():
+    BASE.mkdir(parents=True, exist_ok=True)
     plan = json.loads((PLAN / "trial-plan.json").read_text(encoding="utf-8"))
     plan = plan["cases"] if isinstance(plan, dict) and "cases" in plan else plan
     ledger = PLAN / "fresh-ledger-1.json"
     rows = load_rows(ledger)
     print(f"账套：{ledger.name} 行数 {len(rows)}")
-
     runs = []
     for index, case in enumerate(plan, 1):
         template = Path(case["path"])
@@ -138,21 +162,7 @@ def main():
         runs.append(run)
         print(f"[{index}] {run['template'][:34]:34} 字段{run['fields']:5} 匹配{run['matched']:5} "
               f"写入{run['written']:4} 问题{len(run['problems'])} {run['seconds']}s")
-
-    # 跨模板一致性：同项目 + 同期间，金额应一致
-    buckets = defaultdict(list)
-    for run in runs:
-        for record in run["records"]:
-            if record["status"] != "matched" or record["amount"] is None:
-                continue
-            key = (record["label"], record["period"], record["basis"])
-            buckets[key].append({"template": run["template"], "unit": run["unit"],
-                                 "amount": record["amount"], "sources": record["sources"]})
-    conflicts = []
-    for (label, period, basis), items in buckets.items():
-        values = {item["amount"] for item in items}
-        if len(values) > 1:
-            conflicts.append({"label": label, "period": period, "basis": basis, "entries": items})
+    conflicts = cross_template_conflicts(runs)
 
     report = {"ledger": str(ledger), "rows": len(rows), "runs": runs,
               "cross_template_conflicts": conflicts,

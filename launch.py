@@ -9,11 +9,11 @@ from tb_autofill import APP_NAME, __version__
 
 def _selftest(report=None):
     """Offline packaged checks use synthetic data and never read user settings."""
-    from tb_autofill import ai, analysis, auditlog, connections, dxn, fields, gui, knowledge, knowledge_ui, matching, models, settings, workbook, workflow, workspace
+    from tb_autofill import ai, analysis, auditlog, connections, dxn, fields, gui, knowledge, knowledge_ui, matching, models, papers, settings, skills, workbook, workflow, workspace
     from openpyxl import Workbook
     from pypdf import PdfReader, PdfWriter
     import tkinter as tk
-    modules = (ai, analysis, auditlog, connections, dxn, fields, gui, knowledge, knowledge_ui, matching, models, settings, workbook, workflow, workspace)
+    modules = (ai, analysis, auditlog, connections, dxn, fields, gui, knowledge, knowledge_ui, matching, models, papers, settings, skills, workbook, workflow, workspace)
     result = matching.resolve_match(models.TargetField("Synthetic", "B2", "库存现金", "ending"),
                                     [models.LedgerRow("1001", "库存现金", ending=Decimal("100"))])
     if result.amount != 100 or not result.selected:

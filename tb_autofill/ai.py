@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from decimal import Decimal
 import re
 import socket
@@ -407,6 +408,7 @@ REVIEW_SYSTEM = (
     "只能从该疑点的 candidates 里选择科目编码，禁止编造编码、金额或凭证。"
     "父子科目范围由你判断：整体科目与成本/分项明细并存时，按报表项目含义选择完整范围，"
     "不能用单个分项替代整体，也不能父子重复叠加。"
+    "父子摘要只列直接子级，余额按共同借方方向核对；null 表示证据不足，不能当作相等或不等。"
     "只返回 JSON 对象：{\"decisions\":[{\"target_id\":\"给定ID\",\"action\":\"fill|hold|drop\","
     "\"source_codes\":[\"候选中的编码\"],\"reason\":\"不超过120字\"}]}。"
 )
@@ -414,11 +416,15 @@ REVIEW_SYSTEM = (
 
 
 def _relevant_value(item, row):
-    return row.opening if item.target.period == "opening" else row.ending
+    from .matching import _row_amount
+    try:
+        return _row_amount(item.target, row)
+    except ValueError:
+        return None
 
 
-def _has_balance(item, rows):
-    """该疑点是否值得复核：候选里至少有一个非零余额。"""
+def _has_relevant_value(item, rows):
+    """候选在目标对应的余额或发生额度量中至少有一个已知非零值。"""
     label, parent = str(item.target.label or ""), str(item.target.parent or "")
     for row in rows:
         value = _relevant_value(item, row)
@@ -434,8 +440,7 @@ def review_payload(results, rows, *, limit=25, candidate_limit=8):
     """把疑点与候选交给模型：漏匹配、歧义、匹配未勾选、覆盖风险。"""
     pending = [item for item in results
                if item.status != "protected" and (item.status != "matched" or not item.selected)]
-    # 余额全为 0 的疑点没有可判断的内容，不占用模型与人工注意力。
-    pending = [item for item in pending if _has_balance(item, rows)]
+    pending = [item for item in pending if _has_relevant_value(item, rows)]
     pending = pending[:limit]
     if not pending:
         return {"targets": [], "candidates": [], "note": "没有需要复核的疑点。"}
@@ -452,11 +457,13 @@ def review_payload(results, rows, *, limit=25, candidate_limit=8):
         row = next((item for item in rows if item.code == code), None)
         if row is None:
             continue
-        value = row.opening if any(item.target.period == "opening" for item in pending) else row.ending
         candidates.append({"code": row.code, "name": row.name, "path": row.path,
                            "direction": row.direction,
                            "opening": None if row.opening is None else str(row.opening),
-                           "ending": None if row.ending is None else str(row.ending)})
+                           "ending": None if row.ending is None else str(row.ending),
+                           "debit": None if row.debit is None else str(row.debit),
+                           "credit": None if row.credit is None else str(row.credit),
+                           "basis": row.basis, "is_profit_loss": row.is_profit_loss})
     return {"targets": wanted, "candidates": candidates,
             "note": "金额由本地按来源科目计算，模型只判断来源范围。"}
 
@@ -468,8 +475,8 @@ def account_evidence(item, rows, *, limit=8):
     合计是否相符算清楚，模型据此判断"整体还是分项"，而不是凭名称猜。
     """
     label, parent = str(item.target.label or ""), str(item.target.parent or "")
-    value_of = (lambda row: row.opening) if item.target.period == "opening" else (lambda row: row.ending)
-    paths = {row.path or row.code: row for row in rows}
+    value_of = lambda row: _relevant_value(item, row)
+    comparison = replace(item, target=replace(item.target, presentation_direction="借"))
     scored = []
     for row in rows:
         name = str(row.name or "")
@@ -496,22 +503,37 @@ def account_evidence(item, rows, *, limit=8):
             break
     evidence = []
     for row in picked:
-        prefix = f"{row.path}/" if row.path else ""
-        children = [child for child in rows if prefix and (child.path or "").startswith(prefix)]
-        child_total = sum((value_of(child) or 0) for child in children)
-        node_value = value_of(row) or 0
+        children = [child for child in rows if row.path and (child.path or "").rpartition("/")[0] == row.path]
+        node_value = _relevant_value(comparison, row)
+        child_values = [_relevant_value(comparison, child) for child in children]
+        balance = (item.target.measure == "balance" and item.target.statement != "profit_loss"
+                   and not any(node.is_profit_loss for node in [row, *children]))
+        comparable = (bool(children) and not item.target.balance_side and node_value is not None
+                      and all(value is not None for value in child_values)
+                      and len({child.path for child in children}) == len(children)
+                      and all(child.level == row.level + 1 and
+                              (child.subject_id, child.year, child.month, child.basis, child.ledger_id) ==
+                              (row.subject_id, row.year, row.month, row.basis, row.ledger_id)
+                              and (balance or child.direction == row.direction) for child in children))
+        child_total = sum(child_values, Decimal(0)) if comparable else None
         evidence.append({
             "code": row.code, "name": row.name, "path": row.path, "level": row.level,
             "direction": row.direction,
+            "basis": row.basis,
             "value": None if value_of(row) is None else str(value_of(row)),
             "children": [{"code": child.code, "name": child.name,
+                          "direction": child.direction,
                           "value": None if value_of(child) is None else str(value_of(child))}
                          for child in children[:8]],
             "child_count": len(children),
-            "parent_equals_children": (len(children) > 0 and abs(child_total - node_value) <= Decimal("0.005")),
+            "children_truncated": len(children) > 8,
+            "reconciliation_value": None if node_value is None else str(node_value),
+            "child_total": None if child_total is None else str(child_total),
+            "parent_equals_children": abs(child_total - node_value) <= Decimal("0.005") if comparable else None,
         })
     return {"target_id": item.target.id, "label": item.target.label,
             "period": item.target.period, "basis": item.target.basis,
+            "measure": item.target.measure, "value_unit": "元",
             "existing": None if item.target.value is None else str(item.target.value),
             "candidates": evidence}
 
@@ -539,7 +561,7 @@ def _candidate_labels(results, rows, limit):
                 points += 3
             if item.source_ids and row.code in item.source_ids:
                 points += 5
-            points += 1 if (row.ending or 0) not in (0, None) else 0
+            points += 1 if _relevant_value(item, row) not in (0, None) else 0
             if points:
                 scored.append((points, row))
         scored.sort(key=lambda pair: (-pair[0], pair[1].code))
@@ -564,13 +586,16 @@ def review(client, results, rows, *, limit=25):
     try:
         content = response["choices"][0]["message"]["content"]
         data = json.loads(content)
-        decisions = data.get("decisions") or []
+        if not isinstance(data, dict) or not isinstance(data.get("decisions"), list):
+            raise ValueError("Expected a decision list")
+        decisions = data["decisions"]
     except (KeyError, IndexError, TypeError, ValueError):
         raise AIError("AI 复核返回未通过解析，未采纳任何判断。") from None
     by_target = {item["target_id"]: item for item in payload["targets"]}
     local_targets = {item.target.id: item.target for item in results}
     rows_by_code = {row.code: row for row in rows}
     checked = []
+    seen = set()
     for item in decisions:
         if not isinstance(item, dict):
             continue
@@ -579,6 +604,9 @@ def review(client, results, rows, *, limit=25):
         target = by_target.get(target_id)
         if target is None or action not in {"fill", "hold", "drop"}:
             continue
+        if target_id in seen:
+            raise AIError("AI 复核重复返回同一目标，未采纳任何判断。")
+        seen.add(target_id)
         # 只接受该疑点证据里的候选，避免跨疑点串用科目
         allowed_codes = {entry["code"] for entry in target.get("account_evidence", {}).get("candidates", [])}
         proposed = item.get("source_codes") or []

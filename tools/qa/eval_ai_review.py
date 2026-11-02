@@ -1,40 +1,62 @@
 """AI 复核闭环评测：只给疑点与候选，不给答案；AI 定来源，本地算金额，最后对答案。
 
 评测口径：
-- 命中：AI 给出的来源本地重算后与答案一致（允许 0.005 误差）
+- 可比一致：AI 给出的来源本地重算后与原填数一致（允许 0.005 元误差）
 - 有差额：来源可用但金额不同（记录差额，判为需人工复核）
 - 未解决：AI 判 hold/drop 或无可采纳来源
-- 误填：AI 判 fill 但答案为空
+- 原填空白：单列待核对，不直接判定为误填；默认只生成发送预览
 """
 from __future__ import annotations
 
 import json
+import argparse
+from dataclasses import replace
+import hashlib
+import site
 import sys
 from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 
-ROOT = Path(r"P:/exetoBe/软件开发/ZSZH-tb自动填写系统")
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / ".venv/Lib/site-packages"))
+site.addsitedir(str(ROOT / ".venv/Lib/site-packages"))
 
 from openpyxl import load_workbook
 
 from tb_autofill import ai, fields, matching, settings
 from tb_autofill.models import LedgerRow, money
 
-BASE = Path(__file__).resolve().parent
+BASE = ROOT / 'local-data/qa'
 PLAN = ROOT / "local-data/tb-finish-20261030-1352"
 TOLERANCE = Decimal("0.005")
 
 
 def load_rows(path):
-    return [LedgerRow(code=i["code"], name=i["name"], path=i.get("path", ""),
-                      direction=i.get("direction", "借"), opening=money(i.get("opening")),
-                      ending=money(i.get("ending")), debit=money(i.get("debit")),
-                      credit=money(i.get("credit")), year=i.get("year", 0), month=i.get("month", 0),
-                      ledger_id=i.get("ledger_id", ""))
-            for i in json.loads(Path(path).read_text(encoding="utf-8"))]
+    rows = []
+    for item in json.loads(Path(path).read_text(encoding="utf-8")):
+        if not {'level', 'basis', 'is_profit_loss', 'subject_id'} <= item.keys():
+            raise ValueError('账套快照缺少来源上下文，请重新生成完整快照')
+        for key in ('opening', 'ending', 'debit', 'credit'):
+            item[key] = money(item.get(key))
+        rows.append(LedgerRow(**item))
+    return rows
+
+
+def preview_reviews(client, batches, rows, preview_path, approved_sha256=None):
+    envelope = {'purpose': 'TB疑点来源复核评测', 'model': client.model,
+                'destination': client.base_url,
+                'requests': [ai.review_payload(batch, rows, limit=20) for batch in batches]}
+    text = json.dumps(envelope, ensure_ascii=False, sort_keys=True, indent=2)
+    digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_path.write_text(text, encoding='utf-8', newline='\n')
+    print(f'发送预览：{preview_path}；服务：{client.base_url}；SHA256：{digest}')
+    if approved_sha256 is None:
+        return None
+    if approved_sha256 != digest:
+        raise ValueError('预览范围或目的服务已变化，未发送；请重新核对预览')
+    return [ai.review(client, batch, rows, limit=20) for batch in batches]
 
 
 def answers(path):
@@ -51,25 +73,36 @@ def answers(path):
 
 
 def main():
-    plan = json.loads((PLAN / "trial-plan.json").read_text(encoding="utf-8"))
+    parser = argparse.ArgumentParser()
+    parser.add_argument('index', type=int, nargs='?', default=1)
+    parser.add_argument('--plan', type=Path, default=PLAN / 'trial-plan.json')
+    parser.add_argument('--ledger', type=Path)
+    parser.add_argument('--approve-preview', help='人工核对预览范围与目的服务后提供其 SHA256')
+    args = parser.parse_args()
+    plan = json.loads(args.plan.read_text(encoding="utf-8"))
     plan = plan["cases"] if isinstance(plan, dict) and "cases" in plan else plan
-    index = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+    index = args.index
+    if not 1 <= index <= len(plan):
+        parser.error('样本序号超出计划范围')
     case = plan[index - 1]
-    rows = load_rows(PLAN / f"fresh-ledger-{index}.json")
+    rows = load_rows(args.ledger or PLAN / f"fresh-ledger-{index}.json")
     key = answers(Path(case["path"]))
     scan = fields.scan_template(Path(case["path"]), ("opening", "ending"), unit="自动")
-    results = matching.match_fields(scan.fields, rows)
+    hidden = [replace(field, value=None) if not field.is_formula else field for field in scan.fields]
+    results = matching.match_fields(hidden, rows)
     by_code = {row.code: row for row in rows}
 
     pending = [r for r in results if r.status != "protected" and (r.status != "matched" or not r.selected)]
     print(f"模板 {Path(case['path']).name} 字段 {len(scan.fields)} 疑点 {len(pending)}")
 
     client = ai.DeepSeekClient.from_store(settings.SettingsStore())
+    batches = [pending[start:start + 20] for start in range(0, len(pending), 20)]
+    decisions_by_batch = preview_reviews(client, batches, rows, BASE / f'ai-review-preview-{index}.json', args.approve_preview)
+    if decisions_by_batch is None:
+        print('仅保存预览，未发送请求。核对后用 --approve-preview SHA256 再执行。')
+        return
     counts, details = Counter(), []
-    for start in range(0, len(pending), 20):
-        batch = pending[start:start + 20]
-        subset = [r for r in results if r in batch]
-        decisions = ai.review(client, subset, rows, limit=20)
+    for batch, decisions in zip(batches, decisions_by_batch):
         lookup = {r.target.id: r for r in batch}
         for decision in decisions:
             result = lookup.get(decision["target_id"])
@@ -82,23 +115,23 @@ def main():
                       "reason": decision["reason"]}
             if decision["action"] == "fill" and decision["source_codes"]:
                 chosen = [by_code[c] for c in decision["source_codes"] if c in by_code]
-                check = matching.resolve_match(result.target, chosen, method="manual", rows=rows)
+                check = matching.resolve_match(result.target, chosen, method="ai", rows=rows)
                 record["amount"] = None if check.amount is None else str(check.amount)
                 blank = result.target.value is None or str(result.target.value).strip() == ""
-                if check.amount is None:
+                if check.status != 'matched' or check.amount is None:
                     record["verdict"] = "未解决"
                 elif check.amount == 0 and blank:
                     record["verdict"] = "零值不写"      # 与写入侧同一规则，不算误填
                 elif not has_answer:
-                    record["verdict"] = "误填"
+                    record["verdict"] = "原填空白，待核对"
                 else:
                     try:
-                        delta = Decimal(str(answer)) - check.amount
+                        delta = (money(answer) - check.amount) * result.target.unit_factor
                     except Exception:
                         record["verdict"] = "答案非数值"
                     else:
                         record["delta"] = str(delta)
-                        record["verdict"] = "命中" if abs(delta) <= TOLERANCE else "有差额"
+                        record["verdict"] = "可比一致" if abs(delta) <= TOLERANCE else "有差额"
             else:
                 record["verdict"] = "未解决"
             counts[record["verdict"]] += 1
@@ -106,7 +139,7 @@ def main():
 
     print("结果:", dict(counts))
     for item in details:
-        if item["verdict"] in {"命中", "有差额", "误填"}:
+        if item["verdict"] in {"可比一致", "有差额", "原填空白，待核对"}:
             print(f"  {item['verdict']:4} {item['label'][:16]:16} 答案={item['answer']} "
                   f"本地={item.get('amount')} 来源={item['codes']} 理由={item['reason'][:34]}")
     (BASE / f"ai-review-eval-{index}.json").write_text(
