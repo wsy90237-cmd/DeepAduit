@@ -61,7 +61,7 @@ class SettingsStore:
             source = base / "settings.json"
         self.data = {"model": MODELS[0], "ai_enabled": False, "onboarding_done": False,
                      "base_url": DEFAULT_BASE_URL, "key_base_url": DEFAULT_BASE_URL,
-                     "last_connection_check": ""}
+                     "last_connection_check": "", "prepared_by": "", "reviewed_by": ""}
         if source.exists():
             try:
                 saved = json.loads(source.read_text(encoding="utf-8"))
@@ -75,6 +75,9 @@ class SettingsStore:
                 self.data["base_url"] = normalize_base_url(self.data["base_url"])
                 self.data["key_base_url"] = normalize_base_url(self.data["key_base_url"])
                 self.data["ai_enabled"] = self.data["ai_enabled"] is True
+                for name in ("prepared_by", "reviewed_by"):
+                    value = self.data.get(name)
+                    self.data[name] = value.strip()[:40] if isinstance(value, str) else ""
                 if self.data["model"] not in MODELS and not valid_model(self.data["model"]):
                     self.data["model"] = MODELS[0]
             except (OSError, ValueError) as exc:
@@ -157,6 +160,23 @@ class SettingsStore:
         except SettingsError:
             self.data = previous
             raise
+
+    def save_signers(self, prepared_by="", reviewed_by=""):
+        """保存底稿签字人：只存姓名，不做任何校验强度声明。"""
+        cleaned = {}
+        for name, value in (("prepared_by", prepared_by), ("reviewed_by", reviewed_by)):
+            text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+            if any(ord(char) < 32 for char in text):
+                raise SettingsError("编制人 / 复核人不能包含控制字符。")
+            cleaned[name] = text[:40]
+        previous = self.data
+        self.data = dict(previous, **cleaned)
+        try:
+            self._write()
+        except SettingsError:
+            self.data = previous
+            raise
+        return cleaned
 
     def delete_key(self):
         previous = dict(self.data)

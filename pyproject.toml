@@ -16,7 +16,7 @@ version = {attr = "tb_autofill.__version__"}
 include = ["tb_autofill*"]
 
 [tool.setuptools.package-data]
-tb_autofill = ["assets/*.png"]
+tb_autofill = ["assets/*.png", "assets/*.json"]
 
 [project.gui-scripts]
 deepaudit = "tb_autofill.gui:main"

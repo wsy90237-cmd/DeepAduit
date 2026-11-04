@@ -18,7 +18,9 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import APP_NAME, __version__, ai as ai_module
-from . import analysis, auditlog, dxn, fields, knowledge, matching, papers, settings, workbook, workspace
+from . import (analysis, auditlog, audit_index, dxn, dxn_paper, fields, knowledge, matching,
+               paper_pack, paper_sheets, papers, sampling, settings, workbook,
+               workspace)
 from .models import Subject, ledger_digest, money
 from .connections import ModelDialog as AISettingsDialog
 
@@ -162,12 +164,14 @@ class PaperDialog(tk.Toplevel):
         self.app = app
         self.queue = queue.Queue()
         self.draft = None
+        self.journal_rows, self.journal_code = None, ""
+        self._synced_code = ""
         self.running = False
 
         shell = tk.Frame(self, bg=CARD)
         shell.pack(fill="both", expand=True, padx=16, pady=12)
         shell.columnconfigure(1, weight=1)
-        shell.rowconfigure(3, weight=1)
+        shell.rowconfigure(4, weight=1)
 
         tk.Label(shell, text="科目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w")
         self.state = tk.StringVar(value="选择科目后生成；金额取自本机账套。")
@@ -184,48 +188,55 @@ class PaperDialog(tk.Toplevel):
         self.code_var = tk.StringVar()
         self.code_box = ttk.Combobox(pick, textvariable=self.code_var, state="readonly")
         self.code_box.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        self.code_box.bind("<<ComboboxSelected>>", lambda _event: self._sync_paper())
+        self.paper_var = tk.StringVar(value="未选择科目")
+        self.current_paper = None
+        self._names = {}
         # 默认一级科目：审定表按一级科目出，需要看明细时再切级次。
         self.level_box.current(next((index for index, (level, _label) in enumerate(self.level_options)
                                      if level == papers.PRIMARY_LEVEL), 0))
         self._reload_choices()
 
+        tk.Label(shell, text="报表科目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=2, column=0, sticky="w", pady=(8, 0))
+        tk.Label(shell, textvariable=self.paper_var, bg=CARD, fg=TX, font=(FONT, 9),
+                 anchor="w").grid(row=2, column=1, sticky="ew", padx=8, pady=(8, 0))
+
         tk.Label(shell, text="底稿类型", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=1, column=0, sticky="w", pady=(8, 0))
         kind_row = tk.Frame(shell, bg=CARD)
         kind_row.grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
-        self.kind_var = tk.StringVar(value=papers.KIND_LABELS[papers.DEFAULT_KIND])
-        ttk.Combobox(kind_row, textvariable=self.kind_var, state="readonly", width=22,
-                     values=list(papers.KIND_LABELS.values())).pack(side="left")
         self.with_journal = tk.BooleanVar(value=True)
         self.journal_check = ttk.Checkbutton(kind_row, text="含序时账明细",
                                              variable=self.with_journal)
-        self.journal_check.pack(side="left", padx=(10, 0))
-        tk.Label(kind_row, text="仅生成草稿，需注册会计师复核", bg=CARD, fg=MUTED,
-                 font=(FONT, 8)).pack(side="left", padx=10)
+        self.journal_check.pack(side="left")
+        self.suggest_btn = ttk.Button(kind_row, text="AI 建议专项表", command=self._suggest_sheets)
+        self.suggest_btn.pack(side="left", padx=(12, 0))
+        self.sheet_add, self.sheet_drop = [], []
 
-        tk.Label(shell, text="关注点", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=2, column=0, sticky="nw", pady=(8, 0))
+        tk.Label(shell, text="关注点", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=3, column=0, sticky="nw", pady=(8, 0))
         self.focus_text = tk.Text(shell, height=2, wrap="word", font=(FONT, 9), relief="flat",
                                   highlightthickness=1, highlightbackground=BORDER, padx=8, pady=6)
-        self.focus_text.grid(row=2, column=1, sticky="ew", padx=8, pady=(8, 0))
+        self.focus_text.grid(row=3, column=1, sticky="ew", padx=8, pady=(8, 0))
 
         self.view = tk.Text(shell, wrap="word", font=(FONT, 9), relief="flat", state="disabled",
                             highlightthickness=1, highlightbackground=BORDER, padx=12, pady=10)
-        self.view.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        self.view.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
         bar = ttk.Scrollbar(shell, orient="vertical", command=self.view.yview)
-        bar.grid(row=3, column=2, sticky="ns", pady=(10, 0))
+        bar.grid(row=4, column=2, sticky="ns", pady=(10, 0))
         self.view.configure(yscrollcommand=bar.set)
 
         actions = tk.Frame(shell, bg=CARD)
-        actions.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         self.run_btn = ttk.Button(actions, text="生成草稿", style="Accent.TButton", command=self._generate)
         self.run_btn.pack(side="left")
-        self.export_btn = ttk.Button(actions, text="导出 HTML", command=self._export, state="disabled")
+        self.export_btn = ttk.Button(actions, text="导出 Excel 底稿", command=self._export,
+                                     state="normal" if scope == "paper" else "disabled")
         self.export_btn.pack(side="left", padx=8)
         ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
         tk.Label(actions, textvariable=self.state, bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=12)
 
         if scope != "paper":
-            # 附注与报告不按单个科目起草，隐藏科目与类型两行，避免误导。
-            for row in (0, 1):
+            # 附注与报告不按单个科目起草，隐藏科目、类型与报表科目三行，避免误导。
+            for row in (0, 1, 2):
                 for child in shell.grid_slaves(row=row):
                     child.grid_remove()
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -238,20 +249,109 @@ class PaperDialog(tk.Toplevel):
         """按级次重算科目候选；该级次为空时退回全部级次并说明，不留空下拉。"""
         rows = self.app.rows or []
         level = self._current_level()
-        self.choices = papers.account_choices(rows, level=level) if rows else []
+        self._source_snapshot = (self.app._context_revision, self.app.loaded_subject, ledger_digest(rows))
+        self.draft, self.journal_rows, self.journal_code = None, None, ""
+        self.sheet_add, self.sheet_drop = [], []
+        raw = papers.account_choices(rows, level=level) if rows else []
+        seen, unique = set(), []
+        for code, label in raw:            # 同一科目只出现一次
+            if code in seen:
+                continue
+            seen.add(code)
+            unique.append((code, label))
+        self.choices = unique
         note = ""
         if not self.choices and level:
             self.choices = papers.account_choices(rows, level=papers.LEVEL_ALL) if rows else []
             if self.choices:
                 self.level_box.current(0)
                 note = f"{papers.level_label(level)}无可做底稿的科目，已改为全部级次。"
-        self.code_box.configure(values=[label for _code, label in self.choices])
+        self._names = {row.code: row.name for row in rows if getattr(row, "code", "")}
+        labels = []
+        for code, label in self.choices:
+            paper, _basis = self._resolve_paper(code)
+            labels.append(f"{label} → {paper.label}" if paper else f"{label} → 未匹配报表科目")
+        self.code_box.configure(values=labels)
         if self.choices:
             self.code_box.current(0)
+            self._sync_paper()
             self.state.set(note or f"共 {len(self.choices)} 个可选科目，已默认选中最前一个。")
         else:
             self.code_var.set("")
+            self.current_paper = None
+            if hasattr(self, "paper_var"):
+                self.paper_var.set("未选择科目")
             self.state.set("未识别到可做底稿的科目，请先在「账套与 TB」读取科目余额。")
+
+    def _resolve_paper(self, code):
+        """一级科目 → 财务报表审计报表科目；标黄行在内置清单里已被排除。"""
+        if self.scope != "paper" or not code:
+            return None, ""
+        name = self._names.get(code, "")
+        return audit_index.resolve(code, name, getattr(self.app, "paper_library", ()))
+
+    def _sync_paper(self):
+        index = self.code_box.current()
+        if index < 0 or index >= len(self.choices):
+            self.current_paper = None
+            self.paper_var.set("未选择科目")
+            return
+        if getattr(self, "_synced_code", None) != self.choices[index][0]:
+            self._synced_code = self.choices[index][0]
+            self.draft, self.journal_rows, self.journal_code = None, None, ""
+            self.sheet_add, self.sheet_drop = [], []
+        paper, basis = self._resolve_paper(self.choices[index][0])
+        self.current_paper = paper
+        if paper:
+            self.paper_var.set(f"{paper.label}（财务报表审计 · {basis}），导出底稿按此索引号归档")
+        else:
+            self.paper_var.set(f"未匹配到财务报表审计科目：{basis}")
+
+    def _suggest_sheets(self):
+        """让模型判断该科目应增删哪些专项表，采纳前先弹窗确认。"""
+        if self.scope != "paper":
+            return
+        index = self.code_box.current()
+        if index < 0 or index >= len(self.choices):
+            self.state.set("请先选择科目。")
+            return
+        if self.store is None or not self.store.has_key or not self.store.data.get("ai_enabled"):
+            messagebox.showinfo("需要接入模型", "请先在「AI 设置」中配置 API Key 并启用，再使用智能建议。",
+                                parent=self)
+            return
+        code = self.choices[index][0]
+        account = next((row for row in (self.app.rows or []) if row.code == code), None)
+        scoped = [row for row in (self.app.rows or [])
+                  if row.code == code or (account and account.path
+                                          and str(row.path).startswith(f"{account.path}/"))]
+        paper = self.current_paper
+        available = paper_sheets.names()          # 允许模型跨类别补表，如票据贴现表
+        self.state.set("正在让模型判断该科目需要哪些专项表…")
+        self.update_idletasks()
+        try:
+            client = ai_module.DeepSeekClient.from_store(self.store)
+            result = papers.suggest_sheets(
+                client, name=paper.name if paper else (account.name if account else ""),
+                accounts=scoped, available=available, journal=self.journal_rows)
+        except Exception as exc:
+            messagebox.showerror("建议失败", str(exc), parent=self)
+            self.state.set("智能建议失败，可按默认专项表导出。")
+            return
+        lines = []
+        for item in result.get("add") or []:
+            lines.append(f"增加：{item['name']}　—　{item['reason']}")
+        for item in result.get("remove") or []:
+            lines.append(f"删除：{item['name']}　—　{item['reason']}")
+        if not lines:
+            messagebox.showinfo("无需调整", result.get("note") or "模型认为现有专项表已够用。", parent=self)
+            self.state.set("模型未提出增删建议。")
+            return
+        if messagebox.askyesno("AI 建议专项表", "\n".join(lines) + "\n\n是否采纳？", parent=self):
+            self.sheet_add = [item["name"] for item in result.get("add") or []]
+            self.sheet_drop = [item["name"] for item in result.get("remove") or []]
+            self.state.set("已采纳模型建议：" + "；".join(lines))
+        else:
+            self.state.set("未采纳模型建议，按默认专项表导出。")
 
     def _read_journal(self, code):
         subject = getattr(self.app, "loaded_subject", None)
@@ -263,12 +363,19 @@ class PaperDialog(tk.Toplevel):
         self.running = False
         self.destroy()
 
-    def _kind_key(self):
-        label = self.kind_var.get()
-        return next((key for key, value in papers.KIND_LABELS.items() if value == label), papers.DEFAULT_KIND)
+    def _ensure_fresh_choices(self):
+        """账套科目在对话框打开后发生变化时，先刷新候选，避免拿到别的账套的科目。"""
+        current = (self.app._context_revision, self.app.loaded_subject, ledger_digest(self.app.rows or []))
+        if current != getattr(self, "_source_snapshot", None):
+            self._reload_choices()
+            self.state.set("科目余额已更新，已刷新科目列表，请重新确认科目后再生成。")
+            return False
+        return True
 
     def _generate(self):
         if self.running:
+            return
+        if not self._ensure_fresh_choices():
             return
         if not self.app.rows:
             self.state.set("请先在「账套与 TB」读取科目余额。")
@@ -280,23 +387,31 @@ class PaperDialog(tk.Toplevel):
         code = self.choices[index][0] if self.scope == "paper" and index >= 0 else ""
         focus = self.focus_text.get("1.0", "end").strip()
         want_journal = self.scope == "paper" and bool(self.with_journal.get())
+        rows, results = tuple(self.app.rows), deepcopy(self.app.results)
+        paper, subject = self.current_paper, self.app.loaded_subject
+        subject_label, install_path = self.app._subject_label(), self.app.install_var.get().strip()
         self.running = True
         self.run_btn.configure(state="disabled")
         self.state.set("正在读取序时账并生成草稿…" if want_journal else "正在生成草稿（模型 + 内置知识库）…")
 
         def work():
             try:
-                journal = self._read_journal(code) if want_journal else None
+                if want_journal and subject is None:
+                    raise ValueError("请先读取科目余额并确认主体与期间。")
+                journal = dxn.read_journal(subject, code, install_path) if want_journal else None
                 client = ai_module.DeepSeekClient.from_store(self.app.store)
                 if self.scope == "paper":
-                    result = papers.draft(client, rows=self.app.rows, code=code, kind=self._kind_key(),
-                                          subject_label=self.app._subject_label(), focus=focus,
-                                          journal=journal)
+                    texts = [item.text for item in paper_pack.procedures(
+                        paper.index_no if paper else "", paper.name if paper else "")]
+                    result = papers.draft_pack(client, rows=rows, code=code,
+                                               paper=paper, procedures=texts,
+                                               subject_label=subject_label, focus=focus,
+                                               journal=journal)
                 else:
-                    result = papers.draft_document(client, rows=self.app.rows, results=self.app.results,
-                                                   kind=self.scope, subject_label=self.app._subject_label(),
+                    result = papers.draft_document(client, rows=rows, results=results,
+                                                   kind=self.scope, subject_label=subject_label,
                                                    focus=focus)
-                self.queue.put(("ok", result))
+                self.queue.put(("ok", (result, journal, code)))
             except Exception as exc:  # 网络、校验、知识库异常都回到界面
                 self.queue.put(("error", str(exc)))
 
@@ -313,14 +428,27 @@ class PaperDialog(tk.Toplevel):
             return
         self.running = False
         self.run_btn.configure(state="normal")
+        if not self._ensure_fresh_choices():
+            return
         if status == "error":
             self.state.set("生成失败：" + value)
             return
+        value, journal, code = value
+        if self.scope == "paper" and code != self._synced_code:
+            self.state.set("所选科目已变化，已丢弃旧任务结果。")
+            return
+        self.journal_rows, self.journal_code = journal, code
         self.draft = value
         self.draft["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         self.view.configure(state="normal")
         self.view.delete("1.0", "end")
-        self.view.insert("1.0", value["body"])
+        if value.get("kind") == "pack":
+            texts = [item.text for item in paper_pack.procedures(
+                self.current_paper.index_no if self.current_paper else "",
+                self.current_paper.name if self.current_paper else "")]
+            self.view.insert("1.0", papers.pack_preview(value, texts))
+        else:
+            self.view.insert("1.0", value["body"])
         if value.get("refs"):
             self.view.insert("end", "\n\n依据内置知识库：\n")
             for item in value["refs"]:
@@ -334,23 +462,82 @@ class PaperDialog(tk.Toplevel):
             self.state.set("草稿已生成；请复核后使用，金额未由模型改写。")
 
     def _export(self):
+        if not self._ensure_fresh_choices():
+            return
+        if self.scope == "paper":
+            self._export_pack()
+            return
         if not self.draft:
             return
-        tag = self.draft["subject"]["code"] if self.scope == "paper" else self.SCOPE_LABEL.get(self.scope, "草稿")
-        name = f"{self.SCOPE_LABEL.get(self.scope, '草稿')}草稿-{tag}-{self.draft['kind_label']}.html"
-        path = filedialog.asksaveasfilename(title="导出底稿草稿（非正式底稿）", defaultextension=".html",
-                                            filetypes=[("可阅读的底稿草稿", "*.html")], initialfile=name)
+        paper = self.draft.get("paper") or {}
+        tag = self.SCOPE_LABEL.get(self.scope, "草稿")
+        prefix = paper.get("index_no") or ""
+        name = f"{prefix + '-' if prefix else ''}{tag}底稿-{self.draft['subject']['code']}-{self.draft['kind_label']}.xlsx"
+        path = filedialog.asksaveasfilename(title="导出 Excel 底稿（草稿，需复核）", defaultextension=".xlsx",
+                                            filetypes=[("Excel 工作簿", "*.xlsx")], initialfile=name)
         if not path:
             return
         try:
-            output = papers.export(path, self.draft["kind_label"], self.draft,
-                                   subject_label=self.app._subject_label())
-        except OSError as exc:
+            output = papers.export_xlsx(path, self.draft, subject_label=self.app._subject_label(),
+                                        prepared_by=self.app.prepared_by,
+                                        reviewed_by=self.app.reviewed_by,
+                                        export_time=datetime.now().strftime("%Y-%m-%d %H:%M"))
+        except (OSError, ValueError) as exc:
             messagebox.showerror("无法导出", str(exc), parent=self)
             return
         self.app._audit("draft_paper", output=str(output), code=self.draft["subject"]["code"],
-                        kind=self.draft["kind"], reviewed=False)
-        self.state.set(f"已导出：{output}")
+                        kind=self.draft["kind"], reviewed=False,
+                        prepared_by=self.app.prepared_by, reviewed_by=self.app.reviewed_by)
+        self.state.set(f"已导出 Excel 底稿：{output}")
+
+    def _export_pack(self):
+        """导出整册底稿：目录、审定表、明细表、程序表、抽凭表、专项表、披露表、复核清单。"""
+        if not self._ensure_fresh_choices():
+            return
+        index = self.code_box.current()
+        if index < 0 or index >= len(self.choices):
+            self.state.set("请选择科目后再导出。")
+            return
+        code = self.choices[index][0]
+        subject_row = next((row for row in (self.app.rows or []) if row.code == code), None)
+        if subject_row is None:
+            self.state.set("未找到该科目，请重新读取科目余额。")
+            return
+        paper = self.current_paper
+        prefix = paper.index_no if paper else ""
+        name = f"{prefix + '-' if prefix else ''}{subject_row.code} {subject_row.name}-底稿.xlsx"
+        path = filedialog.asksaveasfilename(title="导出整册 Excel 底稿（草稿，需复核）", defaultextension=".xlsx",
+                                            filetypes=[("Excel 工作簿", "*.xlsx")], initialfile=name)
+        if not path:
+            return
+        journal = self.journal_rows if getattr(self, "journal_code", "") == code else None
+        if journal is None and self.with_journal.get():
+            self.state.set("正在读取序时账…")
+            self.update_idletasks()
+            try:
+                journal = self._read_journal(code)
+                self.journal_rows, self.journal_code = journal, code
+            except Exception as exc:      # 序时账缺失不应阻断底稿导出
+                self.app._log(f"序时账读取失败，凭证抽查表留空：{exc}", error=True)
+                journal = None
+        narrative = self.draft if self.draft and self.draft.get("kind") == "pack" else {}
+        try:
+            output = dxn_paper.build(
+                path, paper=paper, subject_label=self.app._subject_label(),
+                rows=self.app.rows or [], resolve=lambda code, name: audit_index.resolve(
+                    code, name, getattr(self.app, "paper_library", ()))[0],
+                prepared_by=self.app.prepared_by, reviewed_by=self.app.reviewed_by,
+                when=datetime.now().strftime("%Y-%m-%d"),
+                procedures=paper_pack.procedures(prefix, paper.name if paper else ""),
+                narrative=narrative, journal=journal,
+                sheet_add=self.sheet_add, sheet_drop=self.sheet_drop)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("无法导出", str(exc), parent=self)
+            return
+        self.app._audit("draft_paper_pack", output=str(output), code=code,
+                        index_no=prefix, kind="pack", reviewed=False, has_narrative=bool(narrative),
+                        prepared_by=self.app.prepared_by, reviewed_by=self.app.reviewed_by)
+        self.state.set(f"已导出整册底稿（{'含' if narrative else '未含'}模型文字）：{output}")
 
 
 class ReviewDialog(tk.Toplevel):
@@ -591,6 +778,10 @@ class App(tk.Tk):
         except Exception:
             self.audit = None
         self._load_settings()
+        self.prepared_by_var = tk.StringVar(value=(self.store.data.get("prepared_by", "") if self.store else ""))
+        self.reviewed_by_var = tk.StringVar(value=(self.store.data.get("reviewed_by", "") if self.store else ""))
+        # 底稿索引清单：缺失时映射为空，界面按“无对应报表科目”处理，不猜索引号。
+        self.paper_library = audit_index.bundled()
         self._init_style()
         self._build()
         self._bind_context_changes()
@@ -1043,6 +1234,7 @@ class App(tk.Tk):
         if ai_module.audit_scope(text) == "offtopic":
             self._chat_append("sys", "本通道用于审计任务，未发送离题问题。")
             return
+        revision = self._context_revision
         try:
             # 候选由 ai.narrow_candidates 按相关度自动收敛，界面不再要求手工限定范围。
             context = ai_module.assistance_payload(
@@ -1063,6 +1255,9 @@ class App(tk.Tk):
         dialog = PayloadDialog(self, {**context, "question": text, "history": history}, client.model, client.base_url)
         self.wait_window(dialog)
         if not dialog.confirmed:
+            return
+        if revision != self._context_revision:
+            self._chat_append("sys", "主体、期间、模板或复核资料已变化，请重新预览后发送。")
             return
         if question is None:
             self.chat_input.delete("1.0", "end")
@@ -1110,16 +1305,9 @@ class App(tk.Tk):
         self._draft_document("report")
 
     def _draft_document(self, scope):
-        """附注与报告草稿：同一套事实约束，产出仍标注为草稿。"""
-        if self.busy:
-            return
-        if self.store is None or not self.store.has_key or not self.store.data.get("ai_enabled"):
-            messagebox.showinfo("需要模型服务", "请先在「AI 设置」配置并启用模型服务。")
-            return
-        if not self.rows:
-            messagebox.showinfo("缺少科目余额", "请先在「账套与 TB」读取科目余额。")
-            return
-        PaperDialog(self, scope)
+        """保留旧入口的明确提示，未完成的生成流程不能发送数据或导出。"""
+        messagebox.showinfo("功能待实现", "当前支持现有文档的文字辅助复核；生成、完整勾稽及模板导出待实现。",
+                            parent=self)
 
     def _open_review(self):
         """AI 复核：把疑点交模型判来源范围，采纳后金额仍本地重算。"""
@@ -1133,17 +1321,46 @@ class App(tk.Tk):
             return
         ReviewDialog(self)
 
-    def _draft_paper(self):
-        """制作底稿：把本机账套事实与内置知识交给模型起草，产出仍标注为草稿。"""
-        if self.busy:
-            return
+    def _build_all_papers(self):
+        self._draft_document("paper")
+
+    def _read_all_journals(self):
+        """一次会话读取全部一级科目的序时账；失败不阻断出表，抽凭表留空待补。"""
+        subject = getattr(self, "loaded_subject", None)
+        if subject is None or not self.rows:
+            return {}
+        codes = [row.code for row in self.rows if (row.level or 1) == 1 and row.code]
+        if not codes:
+            return {}
+        self._log(f"读取序时账：{len(codes)} 个一级科目…")
+        self.update_idletasks()
+        try:
+            return dxn.read_journals(subject, codes, self.install_var.get().strip())
+        except Exception as exc:
+            self._log(f"序时账读取失败，抽凭表留空：{exc}", error=True)
+            return {}
+
+    def _sample_reader(self):
+        """有模型时由模型挑样本；科目多时只对前若干个用模型，其余走规则抽样。"""
         if self.store is None or not self.store.has_key or not self.store.data.get("ai_enabled"):
-            messagebox.showinfo("需要模型服务", "请先在「AI 设置」配置并启用模型服务。")
-            return
-        if not self.rows:
-            messagebox.showinfo("缺少科目余额", "请先在「账套与 TB」读取科目余额，再制作底稿。")
-            return
-        PaperDialog(self, "paper")
+            return None
+        try:
+            client = ai_module.DeepSeekClient.from_store(self.store)
+        except Exception as exc:
+            self._log(f"模型不可用，抽凭改为规则抽样：{exc}", error=True)
+            return None
+        budget = {"left": 20}
+
+        def sampler(name, journal):
+            if budget["left"] <= 0 or not journal:
+                return sampling.pick(journal), "规则抽样"
+            budget["left"] -= 1
+            return sampling.pick_with_ai(client, name, journal)
+
+        return sampler
+
+    def _draft_paper(self):
+        self._draft_document("paper")
 
     def _set_knowledge_refs(self, refs):
         if not 1 <= len(refs) <= 5 or any(not item.get("excerpt") for item in refs):
@@ -1797,6 +2014,31 @@ class App(tk.Tk):
         if self.loaded_subject is None:
             return ""
         return f"{self.loaded_subject.name} / {self.loaded_subject.year}-{self.loaded_subject.month:02d}"
+
+    @property
+    def prepared_by(self):
+        return self.prepared_by_var.get().strip()
+
+    @property
+    def reviewed_by(self):
+        return self.reviewed_by_var.get().strip()
+
+    def _save_signers(self, _event=None):
+        """工作台的编制人 / 复核人写回本机设置，导出底稿时自动带入抬头。"""
+        if self.store is None:
+            return
+        if (self.store.data.get("prepared_by", "") == self.prepared_by
+                and self.store.data.get("reviewed_by", "") == self.reviewed_by):
+            return
+        try:
+            saved = self.store.save_signers(self.prepared_by, self.reviewed_by)
+        except settings.SettingsError as exc:
+            self._log("编制人 / 复核人未保存：" + str(exc), error=True)
+            return
+        if saved["prepared_by"] != self.prepared_by_var.get():
+            self.prepared_by_var.set(saved["prepared_by"])
+        if saved["reviewed_by"] != self.reviewed_by_var.get():
+            self.reviewed_by_var.set(saved["reviewed_by"])
 
     def _write_excel(self):
         if self.busy or not self.results or self.scan is None:

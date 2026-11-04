@@ -9,11 +9,16 @@ from tb_autofill import APP_NAME, __version__
 
 def _selftest(report=None):
     """Offline packaged checks use synthetic data and never read user settings."""
-    from tb_autofill import ai, analysis, auditlog, connections, dxn, fields, gui, knowledge, knowledge_ui, matching, models, papers, settings, skills, workbook, workflow, workspace
+    from tb_autofill import (ai, analysis, audit_index, auditlog, connections, dxn, dxn_paper,
+                             dxn_programs, fields, gui, knowledge, knowledge_ui, matching, models,
+                             paper_materials, paper_pack, paper_sheets, papers, sampling, settings,
+                             skills, workbook, workflow, workspace)
     from openpyxl import Workbook
     from pypdf import PdfReader, PdfWriter
     import tkinter as tk
-    modules = (ai, analysis, auditlog, connections, dxn, fields, gui, knowledge, knowledge_ui, matching, models, papers, settings, skills, workbook, workflow, workspace)
+    modules = (ai, analysis, audit_index, auditlog, connections, dxn, dxn_paper, dxn_programs,
+               fields, gui, knowledge, knowledge_ui, matching, models, paper_materials, paper_pack,
+               paper_sheets, papers, sampling, settings, skills, workbook, workflow, workspace)
     result = matching.resolve_match(models.TargetField("Synthetic", "B2", "库存现金", "ending"),
                                     [models.LedgerRow("1001", "库存现金", ending=Decimal("100"))])
     if result.amount != 100 or not result.selected:
@@ -60,6 +65,8 @@ def _selftest(report=None):
             raise RuntimeError("PDF 运行依赖自检失败")
         if workflow.readiness([], [])["ready_to_issue"]:
             raise RuntimeError("报告准备度保护自检失败")
+        if len(audit_index.bundled()) < 60 or audit_index.resolve("1002", "银行存款")[0] is None:
+            raise RuntimeError("底稿索引映射自检失败")
     icon_root = tk.Tk()
     icon_root.withdraw()
     try:
@@ -71,7 +78,7 @@ def _selftest(report=None):
         icon_root.destroy()
     native = {module.__name__: bool(getattr(module, "__compiled__", False)) for module in modules}
     value = {"product": APP_NAME, "version": __version__, "native_modules": native,
-             "checks": ["decimal_amount", "dpapi_key", "audit_checkpoint", "protected_header", "local_knowledge", "pdf_runtime", "report_readiness", "brand_assets"],
+             "checks": ["decimal_amount", "dpapi_key", "audit_checkpoint", "protected_header", "local_knowledge", "pdf_runtime", "report_readiness", "brand_assets", "paper_index"],
              "data": "synthetic only"}
     if report:
         with Path(report).open("x", encoding="utf-8") as stream:

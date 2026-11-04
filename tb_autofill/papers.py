@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import json
 import re
 
 ZERO = Decimal("0")
@@ -39,6 +40,19 @@ SYSTEM = (
     "结论只能写到“基于目前资料可支持/不支持”的层面，不得声称已完成全部审计程序或已出具报告。"
     "引用内置知识时使用 [K1] 这类给定编号，不得创造编号。"
 )
+
+PACK_SYSTEM = (
+    "你是审计项目经理，正在填写一册企业年度审计实质性底稿（导引表、程序表、披露表）。"
+    "只能依据给定的事实清单、程序清单与内置知识条目作答，禁止编造金额、凭证号、抽样比例、"
+    "监盘日期、回函情况或审计结论；未取得证据的程序一律写“待补（未取得……）”。"
+    "金额必须逐字引用给定值，不得自行计算、四舍五入或改写。"
+    "程序执行情况只能写到“已执行（依据为账套数据核对）”或“不适用（给出账面依据）”或“待补（说明缺什么）”，"
+    "不得声称已完成函证、监盘、凭证检查等尚未取得的程序。"
+    "输出必须是一个 JSON 对象，不要输出解释、标题或代码块以外的文字。"
+)
+
+PACK_ITEM_LIMIT = 40
+UNDISCLOSED_NOTE = "待补"
 
 
 def _amount(value):
@@ -199,14 +213,19 @@ def build_facts(rows, code, journal=None):
     return facts
 
 
-def draft(client, *, rows, code, kind=DEFAULT_KIND, subject_label="", focus="", limit=5, journal=None):
-    """生成底稿草稿；返回正文与本次引用的知识条目。"""
+def draft(client, *, rows, code, kind=DEFAULT_KIND, subject_label="", focus="", limit=5, journal=None,
+          paper=None):
+    """生成底稿草稿；返回正文与本次引用的知识条目。
+
+    ``paper`` 为 ``audit_index.Paper``，用于在底稿抬头标注索引号与报表科目。
+    """
     kind = kind if kind in KINDS else DEFAULT_KIND
     facts = build_facts(rows, code, journal)
     facts["kind"] = KINDS[kind][0]
     facts["kind_guidance"] = KINDS[kind][1]
     facts["subject_label"] = subject_label
     facts["focus"] = str(focus or "")[:500]
+    facts["report_paper"] = {"index_no": paper.index_no, "name": paper.name} if paper else {}
     movements = []
     for item in analysis.movements(rows)[:20] if rows else []:
         movements.append({"code": item.code, "name": item.name, "path": item.path,
@@ -236,9 +255,208 @@ def draft(client, *, rows, code, kind=DEFAULT_KIND, subject_label="", focus="", 
         raise ValueError("模型返回空内容，未生成底稿。")
     body, citation_notes = _strip_unknown_citations(body, refs)
     return {"kind": kind, "kind_label": KINDS[kind][0], "subject": facts["subject"],
-            "body": body, "refs": refs,
+            "body": body, "refs": refs, "paper": facts["report_paper"],
             "has_journal": journal is not None, "journal": facts.get("journal"),
             "warnings": answer.get("warnings", []) + answer.get("citation_warnings", []) + citation_notes}
+
+
+# ---------- 整册底稿（结构化填写） ----------
+
+def _first_json(text):
+    """从模型回复里取出第一个 JSON 对象；容忍 ```json 围栏与前后说明文字。"""
+    raw = str(text or "").strip()
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("模型未按 JSON 返回，未生成整册底稿。")
+    try:
+        value = json.loads(raw[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"模型返回的 JSON 无法解析：{exc.msg}") from None
+    if not isinstance(value, dict):
+        raise ValueError("模型返回的 JSON 不是对象，未生成整册底稿。")
+    return value
+
+
+def _clean_text(value, limit=300, fallback="待补"):
+    text = re.sub(r"\s+", " ", str(value if value is not None else "")).strip()
+    return text[:limit] or fallback
+
+
+def _clean_list(value, limit=PACK_ITEM_LIMIT):
+    if isinstance(value, str):
+        value = [line for line in value.splitlines() if line.strip()]
+    if not isinstance(value, list):
+        return []
+    return [text for text in (_clean_text(item) for item in value if str(item or "").strip())][:limit]
+
+
+def draft_pack(client, *, rows, code, paper, procedures, subject_label="", focus="",
+               journal=None, limit=5):
+    """让模型按整册底稿的结构填写文字栏；金额与索引仍由本地函数写入。
+
+    返回的 ``procedure_notes`` 与传入的 ``procedures`` 一一对应，缺项自动回落为“待补”。
+    """
+    if not procedures:
+        raise ValueError("没有可用的审计程序清单，未生成整册底稿。")
+    facts = build_facts(rows, code, journal)
+    facts["paper"] = {"index_no": getattr(paper, "index_no", "") if paper else "",
+                      "name": getattr(paper, "name", "") if paper else ""}
+    facts["procedures"] = [{"no": number, "text": str(text)[:220]} for number, text in
+                           enumerate(procedures, 1)]
+    facts["focus"] = str(focus or "")[:500]
+    facts["subject_label"] = subject_label
+    movements = []
+    for item in analysis.movements(rows)[:10] if rows else []:
+        movements.append({"code": item.code, "name": item.name,
+                          "opening": _amount(item.opening), "ending": _amount(item.ending),
+                          "change": _amount(item.change)})
+    facts["movements"] = movements
+
+    query = " ".join(part for part in (facts["subject"]["name"], facts["paper"]["name"], "审计程序 认定",
+                                       facts["focus"]) if part)
+    hits = _search_knowledge(query, limit)
+    refs = skills.as_knowledge_refs(hits, limit=limit)
+
+    context = {
+        "facts": facts,
+        "knowledge_refs": refs,
+        "constraints": {
+            "amount_source": "账套" + ("与序时账" if journal else ""),
+            "no_fabrication": True,
+            "status": "草稿，需注册会计师复核",
+            "output": "JSON",
+        },
+    }
+    question = (
+        f"请为科目 {facts['subject']['code']} {facts['subject']['name']} 填写"
+        f"《{facts['paper']['name']}》整册底稿的文字栏，按以下 JSON 结构输出：\n"
+        '{"audit_notes": ["1、...", "2、..."], '
+        '"procedures": [{"no": 1, "status": "已执行（……）或待补（……）"}], '
+        '"disclosure": [{"item": "报表项目名称", "note": "披露说明"}], '
+        '"review": "一级复核自检结论（一句话）"}\n'
+        "audit_notes 要逐条带索引号（如 1-010-1）；procedures 的 no 必须与 facts.procedures 对应；"
+        "没有证据的栏目写“待补”，不得编造。引用知识条目用 [K1] 编号。"
+    )
+    answer = client.converse_with_skills(question, context=context)
+    if answer.get("intent") != "audit":
+        raise ValueError(answer.get("answer") or "模型未按审计任务回答，未生成底稿。")
+    data = _first_json(answer.get("answer"))
+
+    notes = _clean_list(data.get("audit_notes"))
+    raw_procedures = data.get("procedures")
+    by_number = {}
+    if isinstance(raw_procedures, list):
+        for position, item in enumerate(raw_procedures, 1):
+            if isinstance(item, dict):
+                try:
+                    number = int(item.get("no") or position)
+                except (TypeError, ValueError):
+                    number = position
+                by_number[number] = _clean_text(item.get("status"), fallback="待补（模型未给出执行情况）")
+            else:
+                by_number[position] = _clean_text(item, fallback="待补（模型未给出执行情况）")
+    procedure_notes = [by_number.get(number, "待补（模型未给出执行情况）")
+                       for number in range(1, len(procedures) + 1)]
+
+    disclosure = []
+    raw_disclosure = data.get("disclosure")
+    if isinstance(raw_disclosure, dict):
+        disclosure = [{"item": _clean_text(key, limit=60, fallback="—"), "note": _clean_text(value)}
+                      for key, value in raw_disclosure.items()]
+    elif isinstance(raw_disclosure, list):
+        for item in raw_disclosure:
+            if isinstance(item, dict):
+                disclosure.append({"item": _clean_text(item.get("item"), limit=60, fallback="—"),
+                                   "note": _clean_text(item.get("note"), fallback=UNDISCLOSED_NOTE)})
+
+    return {"kind": "pack", "kind_label": "科目底稿包", "subject": facts["subject"],
+            "paper": facts["paper"], "guide_notes": notes, "procedure_notes": procedure_notes,
+            "disclosure_notes": disclosure[:PACK_ITEM_LIMIT],
+            "conclusion": _clean_text(data.get("conclusion"), limit=300, fallback=""),
+            "review_conclusion": _clean_text(data.get("review"), limit=200,
+                                             fallback="待补（模型未给出复核结论）"),
+            "refs": refs, "has_journal": journal is not None, "journal": facts.get("journal"),
+            "warnings": answer.get("warnings", []) + answer.get("citation_warnings", [])}
+
+
+def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12):
+    """让模型判断该科目应增删哪些专项表；只给建议，采纳与否由使用者决定。
+
+    返回 {"add": [{"name","reason"}], "remove": [{"name","reason"}]}；
+    模型不可用或返回不合法时返回空建议，不阻断出表。
+    """
+    if client is None or not available:
+        return {"add": [], "remove": [], "note": "未接入模型，按科目类别出表"}
+    snapshot = []
+    for row in list(accounts)[:limit]:
+        snapshot.append({"code": getattr(row, "code", ""), "name": getattr(row, "name", ""),
+                         "ending": _amount(getattr(row, "ending", None)),
+                         "direction": getattr(row, "direction", "")})
+    context = {
+        "subject": name,
+        "accounts": snapshot,
+        "available_sheets": list(available),
+        "journal_rows": len(journal or []),
+        "constraints": {"output": "JSON", "no_fabrication": True},
+    }
+    question = (
+        f"正在为「{name}」编制审计底稿。账号明细与余额见 facts.accounts，可选工作表见 facts.available_sheets。"
+        "请判断：为了充分记录本科目审计，还需要额外增加哪些表（如票据贴现、保理、政府补助、关联方往来等），"
+        "以及现有清单里哪些表在该科目下没有意义应删除。只输出 JSON："
+        '{"add":[{"name":"表名","reason":"为什么需要"}],"remove":[{"name":"表名","reason":"为什么不需要"}]}；'
+        "表名必须来自 available_sheets，数量不超过 3 个，没有就返回空数组。"
+    )
+    try:
+        answer = client.converse_with_skills(question, context=context)
+        if answer.get("intent") != "audit":
+            raise ValueError("模型未按审计任务回答")
+        data = _first_json(answer.get("answer"))
+    except Exception as exc:                      # 网络、格式问题都不阻断出表
+        return {"add": [], "remove": [], "note": f"模型未给出建议：{exc}"}
+    allowed = {str(item) for item in available}
+    result = {"add": [], "remove": [], "note": ""}
+    for key in ("add", "remove"):
+        for item in data.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("name") or "").strip()
+            if title not in allowed:
+                continue
+            result[key].append({"name": title,
+                                "reason": _clean_text(item.get("reason"), limit=80, fallback="模型建议")})
+    return result
+
+
+def pack_preview(draft, procedures=()):
+    """把整册底稿的结构化草稿拼成可读预览，供界面显示与复核。"""
+    lines = ["【导引表 · 审计说明】"]
+    notes = draft.get("guide_notes") or []
+    lines.extend(notes or ["待补：模型未给出审计说明。"])
+    lines.append("")
+    lines.append("【程序表 · 执行情况】")
+    statuses = draft.get("procedure_notes") or []
+    if statuses:
+        for number, text in enumerate(statuses, 1):
+            label = str(procedures[number - 1])[:40] if number - 1 < len(procedures) else ""
+            lines.append(f"{number}. {label}… → {text}")
+    else:
+        lines.append("待补：模型未给出执行情况。")
+    disclosure = draft.get("disclosure_notes") or []
+    if disclosure:
+        lines.append("")
+        lines.append("【披露表 · 附注说明】")
+        lines.extend(f"{item.get('item', '')}：{item.get('note', '')}" for item in disclosure)
+    if draft.get("conclusion"):
+        lines.append("")
+        lines.append("【审计结论】")
+        lines.append(str(draft["conclusion"]))
+    lines.append("")
+    lines.append("【复核自检 · 结论】")
+    lines.append(draft.get("review_conclusion") or "待补：模型未给出复核结论。")
+    if draft.get("warnings"):
+        lines.append("")
+        lines.append("【提示】" + "；".join(str(item) for item in draft["warnings"]))
+    return "\n".join(lines)
 
 
 # ---------- 附注与报告草稿 ----------
@@ -374,4 +592,230 @@ footer{{margin-top:28px;color:#68778d;font-size:12px;border-top:1px solid #eef2f
 def export(path, title, draft, *, subject_label=""):
     target = Path(path)
     target.write_text(to_html(title, draft, subject_label=subject_label), encoding="utf-8")
+    return target
+
+
+# ---------- Excel 底稿 ----------
+
+XLSX_COLUMNS = (("科目编码", 13), ("科目名称", 26), ("期初余额", 16), ("借方发生额", 16),
+                ("贷方发生额", 16), ("期末余额", 16), ("审定数", 16), ("差异", 14))
+XLSX_TABLE_HEADER = 8          # 金额表表头所在行
+XLSX_NOTICE = "本底稿由模型辅助生成，金额取自本机账套并经本地规则计算；未经注册会计师复核，不得作为正式工作底稿归档或对外提供。"
+MONEY_FORMAT = "#,##0.00;[Red]-#,##0.00"
+
+
+def _number(value):
+    """把“1,234.56”这类展示文本还原为数值；空值或非法值返回 None，不臆造金额。"""
+    text = str(value if value is not None else "").replace(",", "").strip()
+    if not text:
+        return None
+    try:
+        return float(Decimal(text))
+    except (ArithmeticError, ValueError):
+        return None
+
+
+def _body_rows(body):
+    """把草稿正文拆成 (级别, 文本)：级别 1 标题、2 小标题、0 正文、-1 列表项。"""
+    rows = []
+    for line in str(body or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith("#"):
+            rows.append((1, text.lstrip("# ").strip()))
+        elif text.startswith(("- ", "* ")):
+            rows.append((-1, text[2:].strip()))
+        elif re.match(r"^[一二三四五六七八九十]+、", text):
+            rows.append((1, text))
+        elif re.match(r"^（[一二三四五六七八九十]+）", text) or re.match(r"^\d+[.、]", text):
+            rows.append((2, text))
+        else:
+            rows.append((0, text))
+    return rows
+
+
+def to_xlsx_rows(draft, *, subject_label="", prepared_by="", reviewed_by="", export_time=""):
+    """把草稿整理为可直接写入单元格的行数据，便于测试与复用。"""
+    subject = draft.get("subject") or {}
+    paper = draft.get("paper") or {}
+    level = str(subject.get("level_label") or "")
+    return {
+        "title": draft.get("kind_label", "底稿"),
+        "subject_line": subject_label or "—",
+        "index_no": paper.get("index_no", ""),
+        "paper_name": paper.get("name", ""),
+        "code": subject.get("code", ""),
+        "name": subject.get("name", ""),
+        "level": level,
+        "direction": subject.get("direction", ""),
+        "prepared_by": prepared_by,
+        "reviewed_by": reviewed_by,
+        "export_time": export_time,
+        "amounts": [_number(subject.get(key)) for key in ("opening", "debit", "credit", "ending")],
+        "has_amounts": any(_number(subject.get(key)) is not None
+                           for key in ("opening", "debit", "credit", "ending")),
+        "rows": _body_rows(draft.get("body")),
+    }
+
+
+def export_xlsx(path, draft, *, subject_label="", prepared_by="", reviewed_by="", export_time=""):
+    """导出可归档的 Excel 底稿：抬头含索引号、报表科目、编制人与复核人。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    data = to_xlsx_rows(draft, subject_label=subject_label, prepared_by=prepared_by,
+                        reviewed_by=reviewed_by, export_time=export_time)
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "底稿"
+    sheet.sheet_view.showGridLines = False
+    for index, (_title, width) in enumerate(XLSX_COLUMNS, 1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+
+    thin = Side(style="thin", color="BFBFBF")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    centre = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    head_fill = PatternFill("solid", fgColor="F2F6FD")
+    notice_fill = PatternFill("solid", fgColor="FFF8E6")
+
+    def merge(row, first, last, value, *, font, align=None, fill=None, border=False, height=None):
+        sheet.merge_cells(start_row=row, start_column=first, end_row=row, end_column=last)
+        cell = sheet.cell(row=row, column=first, value=value)
+        cell.font, cell.alignment = font, align or centre
+        if fill is not None:
+            for column in range(first, last + 1):
+                target = sheet.cell(row=row, column=column)
+                target.fill = fill
+                if border:
+                    target.border = box
+        if border:
+            cell.border = box
+        if height:
+            sheet.row_dimensions[row].height = height
+        return cell
+
+    merge(1, 1, 8, data["subject_line"], font=Font(name="微软雅黑", size=16, bold=True), height=32)
+    merge(2, 1, 8, data["title"], font=Font(name="微软雅黑", size=13, bold=True), height=26)
+
+    period = data["subject_line"].split("/")[-1].strip() if "/" in data["subject_line"] else "—"
+    labels = (
+        (("索引号", data["index_no"], "底稿名称", data["paper_name"], "编制人", data["prepared_by"]), 3),
+        (("科目编码", data["code"], "科目名称", data["name"], "报表科目",
+          f"{data['index_no']} {data['paper_name']}".strip()), 4),
+        (("期间", period, "级次", data["level"], "复核人", data["reviewed_by"]), 5),
+        (("科目方向", data["direction"] or "—", "金额来源",
+          "本机账套" + ("与序时账" if draft.get("has_journal") else ""), "导出时间", data["export_time"]), 6),
+    )
+    for (left_label, left_value, mid_label, mid_value, right_label, right_value), row in labels:
+        cell = sheet.cell(row=row, column=1, value=left_label)
+        cell.font, cell.alignment, cell.border = Font(name="宋体", size=10, bold=True), centre, box
+        cell.fill = head_fill
+        cell = sheet.cell(row=row, column=2, value=left_value)
+        cell.font, cell.alignment, cell.border = Font(name="宋体", size=10), left, box
+        cell.number_format = "@"          # 索引号、科目编码按文本保存，避免被当成数字报警
+        cell = sheet.cell(row=row, column=3, value=mid_label)
+        cell.font, cell.alignment, cell.border = Font(name="宋体", size=10, bold=True), centre, box
+        cell.fill = head_fill
+        merge(row, 4, 5, mid_value, font=Font(name="宋体", size=10), align=left, border=True)
+        cell = sheet.cell(row=row, column=6, value=right_label)
+        cell.font, cell.alignment, cell.border = Font(name="宋体", size=10, bold=True), centre, box
+        cell.fill = head_fill
+        merge(row, 7, 8, right_value, font=Font(name="宋体", size=10), align=left, border=True)
+        sheet.row_dimensions[row].height = 20
+
+    merge(7, 1, 8, XLSX_NOTICE, font=Font(name="宋体", size=9, color="8A5A00"),
+          align=left, fill=notice_fill, border=True, height=30)
+
+    row = XLSX_TABLE_HEADER
+    for column, (title, _width) in enumerate(XLSX_COLUMNS, 1):
+        cell = sheet.cell(row=row, column=column, value=title)
+        cell.font = Font(name="宋体", size=10, bold=True)
+        cell.alignment, cell.border, cell.fill = centre, box, head_fill
+    sheet.row_dimensions[row].height = 22
+
+    if data["has_amounts"]:
+        row += 1
+        values = [data["code"], data["name"], *data["amounts"], None, None]
+        for column, value in enumerate(values, 1):
+            cell = sheet.cell(row=row, column=column, value=value)
+            cell.font = Font(name="宋体", size=10)
+            cell.border = box
+            cell.alignment = centre if column != 2 else left
+            if isinstance(value, float):
+                cell.number_format = MONEY_FORMAT
+            elif column == 1:
+                cell.number_format = "@"
+        sheet.row_dimensions[row].height = 20
+    else:
+        merge(row + 1, 1, 8, "本次草稿不涉及单一科目金额，金额栏留空待复核。",
+              font=Font(name="宋体", size=9, color="68778D"), align=left, border=True)
+        row += 1
+
+    for child in (draft.get("subject") or {}).get("children") or []:
+        row += 1
+        values = [child.get("code", ""), f"　{child.get('name', '')}"]
+        values += [_number(child.get(key)) for key in ("opening", "debit", "credit", "ending")]
+        values += [None, None]
+        for column, value in enumerate(values, 1):
+            cell = sheet.cell(row=row, column=column, value=value)
+            cell.font = Font(name="宋体", size=9, color="40506B")
+            cell.border = box
+            cell.alignment = centre if column != 2 else left
+            if isinstance(value, float):
+                cell.number_format = MONEY_FORMAT
+            elif column == 1:
+                cell.number_format = "@"
+
+    row += 2
+    for level, text in data["rows"]:
+        row += 1
+        if level == 1:
+            merge(row, 1, 8, text, font=Font(name="宋体", size=11, bold=True), align=left, height=22)
+        elif level == 2:
+            merge(row, 1, 8, text, font=Font(name="宋体", size=10, bold=True), align=left)
+        else:
+            prefix = "· " if level == -1 else ""
+            merge(row, 1, 8, prefix + text, font=Font(name="宋体", size=10), align=left,
+                  height=max(18, 15 * (len(text) // 62 + 1)))
+
+    if draft.get("has_journal"):
+        journal = draft.get("journal") or {}
+        tie = journal.get("tie") or {}
+        if tie.get("checked"):
+            verdict = ("与科目发生额勾稽一致" if tie.get("debit_matches") and tie.get("credit_matches")
+                       else "与科目发生额勾稽不一致，需追查")
+        else:
+            verdict = tie.get("reason") or "未勾稽"
+        row += 2
+        merge(row, 1, 8, f"序时账摘要：{journal.get('count', 0)} 笔 · 借方 {journal.get('debit', '')}"
+                         f" / 贷方 {journal.get('credit', '')} · {verdict}",
+              font=Font(name="宋体", size=9, color="40506B"), align=left, height=20)
+
+    row += 2
+    merge(row, 1, 8, "引用知识条目", font=Font(name="宋体", size=10, bold=True), align=left)
+    for item in draft.get("refs") or []:
+        row += 1
+        merge(row, 1, 8, f"[{item.get('citation_id', '')}] {item.get('title', '')}"
+                         f"　{item.get('source', '')}",
+              font=Font(name="宋体", size=9, color="40506B"), align=left)
+
+    row += 2
+    merge(row, 1, 8, f"编制人：{data['prepared_by'] or '________'}　　日期：____________"
+                     f"　　　　复核人：{data['reviewed_by'] or '________'}　　日期：____________",
+          font=Font(name="宋体", size=10), align=left, height=24)
+
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.fitToWidth = 1
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.print_title_rows = f"{XLSX_TABLE_HEADER}:{XLSX_TABLE_HEADER}"
+    # 此导出仅含事实和文字，模型或账套中的等号开头文本不能成为 Excel 公式。
+    for cells in sheet:
+        for cell in cells:
+            if cell.data_type == "f":
+                cell.data_type = "s"
+    target = Path(path)
+    book.save(target)
     return target

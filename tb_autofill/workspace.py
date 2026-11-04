@@ -163,12 +163,13 @@ def build_pages(app):
     _build_overview(app)
     for key, title, description, steps in (
             ("notes", "让附注与已复核 TB 保持一致", "当前支持文字与知识来源辅助复核；完整生成与模板导出待实现。",
-             ("关联已复核 TB", "导入附注模板", "检查勾稽并导出")),
-            ("papers", "把科目、程序和审计证据连接起来", "当前支持底稿文字辅助复核；完整程序、证据与复核管理待实现。",
-             ("选择科目与底稿索引", "组织程序和审计证据", "编制复核与归档"))):
+             ("关联已复核 TB", "选择现有附注", "按知识依据辅助复核")),
+            ("papers", "把科目、程序和审计证据连接起来", "当前支持现有底稿的文字辅助复核；生成、完整勾稽及模板导出待实现。",
+             ("关联已复核 TB", "选择现有底稿", "按知识依据辅助复核"))):
         future = scroll_page(app, key)
         card = panel(future, 0, pady=(25, 12))
-        label(card, "辅助复核已接入 · 生成待接模板", size=9, color=ACCENT, bold=True).pack(anchor="w", padx=28, pady=(28, 15))
+        label(card, "文字辅助复核已接入 · 生成与模板导出待实现",
+              size=9, color=ACCENT, bold=True).pack(anchor="w", padx=28, pady=(28, 15))
         label(card, title, size=22, bold=True).pack(anchor="w", padx=28)
         label(card, description, color=MUTED).pack(anchor="w", padx=28, pady=14)
         for number, step in enumerate(steps, 1):
@@ -178,12 +179,6 @@ def build_pages(app):
         tk.Label(card, textvariable=app.review_status, bg=CARD, fg=ACCENT, font=(FONT, 9),
                  wraplength=820, justify="left").pack(anchor="w", padx=28, pady=(0, 8))
         role = "附注" if key == "notes" else "底稿"
-        if key == "papers":
-            ttk.Button(card, text="制作底稿（模型 + 内置知识库）", style="Accent.TButton",
-                       command=app._draft_paper).pack(anchor="w", padx=28, pady=(0, 10))
-        if key == "notes":
-            ttk.Button(card, text="生成附注草稿（模型 + 内置知识库）", style="Accent.TButton",
-                       command=app._draft_notes).pack(anchor="w", padx=28, pady=(0, 10))
         ttk.Button(card, text=f"选择待复核{role}", command=lambda role=role: app._attach_review_document(role)).pack(anchor="w", padx=28, pady=(4, 8))
         ttk.Button(card, text=f"按知识依据复核{role}", style="Accent.TButton", command=lambda role=role: app._agent_review(role)).pack(anchor="w", padx=28, pady=(0, 12))
         ttk.Button(card, text="返回 TB 复核", command=lambda: navigate(app, "tb")).pack(
@@ -224,10 +219,21 @@ def _build_overview(app):
                  justify="left", wraplength=wrap).grid(
             row=index, column=1, sticky="ew", pady=(0 if index == 0 else 7, 0))
 
-    actions = tk.Frame(hero, bg=CARD, width=170)
+    actions = tk.Frame(hero, bg=CARD, width=300)
     actions.grid(row=0, column=1, sticky="ne", padx=(0, 26), pady=22)
     ttk.Button(actions, text="进入账套与 TB", style="Accent.TButton", width=15,
                command=lambda: navigate(app, "tb")).pack(fill="x")
+    # 签字人：工作台统一维护，导出底稿时自动写入抬头，避免每份底稿重复填写。
+    signers = tk.Frame(actions, bg=CARD)
+    signers.pack(fill="x", pady=(12, 0))
+    for text, variable in (("编制人", app.prepared_by_var), ("复核人", app.reviewed_by_var)):
+        group = tk.Frame(signers, bg=CARD)
+        group.pack(side="left", padx=(0, 12))
+        label(group, text, size=8, color=MUTED).pack(anchor="w")
+        entry = ttk.Entry(group, textvariable=variable, width=11, font=(FONT, 9))
+        entry.pack(fill="x", pady=(2, 0))
+        entry.bind("<FocusOut>", app._save_signers)
+        entry.bind("<Return>", app._save_signers)
 
     modules = tk.Frame(page, bg=BG)
     modules.grid(row=1, column=0, sticky="new", padx=24, pady=(18, 20))
@@ -237,7 +243,7 @@ def _build_overview(app):
             ("tb", "01", "TB 填列与复核", "取数、识别、复核后另存。", "可用"),
             ("papers", "02", "审计底稿", "核对底稿文字与依据。", "辅助复核"),
             ("notes", "03", "财务报表附注", "复核附注文字与依据。", "辅助复核"),
-            ("report", "04", "报告中心", "按 TB 与附注生成审计报告。", "固定模板"))):
+            ("report", "04", "报告中心", "核对准备情况与现有报告。", "辅助复核"))):
         card = tk.Frame(modules, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
         card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 12, 0))
         head = tk.Frame(card, bg=CARD)
@@ -286,7 +292,7 @@ def _build_report(app):
     page.rowconfigure(1, weight=1)
     head = panel(page, 0, pady=(22, 10))
     label(head, "报告中心", size=22, bold=True).pack(anchor="w", padx=22, pady=(20, 10))
-    label(head, "报告由已复核的 TB 与附注生成，采用固定模板；生成与签发尚未接入，当前可核对准备情况。",
+    label(head, "当前可核对报告准备情况，并辅助复核现有报告；报告生成与签发待实现。",
           color=MUTED, wraplength=900, justify="left").pack(anchor="w", padx=22, pady=(0, 18))
     tk.Label(head, textvariable=app.review_status, bg=CARD, fg=ACCENT, font=(FONT, 9),
              wraplength=850, justify="left").pack(anchor="w", padx=22, pady=(0, 12))
@@ -306,8 +312,6 @@ def _build_report(app):
     actions.grid(row=2, column=0, sticky="ew", padx=22, pady=(0, 20))
     ttk.Button(actions, text="导出报告准备清单", command=lambda: _export_readiness(app)).pack(side="left")
     ttk.Button(actions, text="按知识依据复核现有报告", command=lambda: app._agent_review("报告")).pack(side="left", padx=10)
-    ttk.Button(actions, text="生成报告草稿", style="Accent.TButton",
-               command=app._draft_report).pack(side="left", padx=10)
     label(actions, "正式报告生成与签发：待接模板及项目复核流程", size=9, color=MUTED).pack(side="right")
 
 

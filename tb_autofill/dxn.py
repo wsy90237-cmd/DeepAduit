@@ -502,3 +502,14 @@ def read_journal(subject: Subject, code: str, install_path: str = "", status_cal
     with DxnLedgerDB(subject.project_path, install_path, status_callback,
                      tables=(_JOURNAL_TABLE,)) as database:
         return database.journal(subject, code, limit=limit)
+
+
+def read_journals(subject: Subject, codes, install_path: str = "", status_callback=None,
+                  limit: int = JOURNAL_LIMIT) -> dict[str, list[JournalRow]]:
+    """一次会话读取多个科目的序时账，避免每科重复复制凭证表。"""
+    wanted = [str(code) for code in codes if str(code or "").strip()]
+    if not wanted:
+        return {}
+    with DxnLedgerDB(subject.project_path, install_path, status_callback,
+                     tables=(_JOURNAL_TABLE,)) as database:
+        return {code: database.journal(subject, code, limit=limit) for code in wanted}
