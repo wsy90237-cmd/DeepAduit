@@ -118,7 +118,7 @@ class Sheet:
             cell.border = BOX
         if fill is not None:
             cell.fill = fill
-        if money and isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+        if money and (formula or isinstance(value, (int, float, Decimal))) and not isinstance(value, bool):
             cell.number_format = MONEY_FORMAT
         if percent:
             cell.number_format = PERCENT_FORMAT
@@ -144,6 +144,9 @@ class Sheet:
         self.merge(5, 1, last, f"会计期间：{meta['period']}　｜　会计制度：{meta['standard']}　｜　"
                               f"金额单位：人民币元　｜　{meta['source']}",
                    font=SMALL_FONT, height=22)
+        self.ws.row_dimensions[2].height = 30
+        self.ws.row_dimensions[3].height = 24
+        self.ws.row_dimensions[4].height = 24
         return 7
 
     def page_setup(self, header_row=None):
@@ -304,7 +307,7 @@ def _audit_header(sheet, *, is_pl):
 
 def _audit_sheet(book, meta, accounts, *, is_pl, index_no):
     columns = len(AUDIT_COLUMNS)
-    widths = (12, 26, 6) + (15,) * 8 + (10,) + (15,) * 5 + (14, 9, 14, 9)
+    widths = (12, 26, 6) + (20,) * 8 + (12,) + (20,) * 5 + (20, 12, 20, 12)
     sheet = Sheet(book, f"{index_no} 审定表", widths)
     sheet.header_block(meta, columns=columns, title=f"{meta['name']}审定表",
                        index_no=index_no, page=2)
@@ -335,7 +338,8 @@ def _audit_sheet(book, meta, accounts, *, is_pl, index_no):
     sheet.cell(total, 3, "—", align=CENTER, fill=TOTAL_FILL)
     for column in (4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 20):
         letter = get_column_letter(column)
-        formula = (f'=SUMIF($C${first_data}:$C${last},"借",{letter}${first_data}:{letter}${last})'
+        formula = (f'=SUM({letter}{first_data}:{letter}{last})' if column in (7, 8, 9, 10) else
+                   f'=SUMIF($C${first_data}:$C${last},"借",{letter}${first_data}:{letter}${last})'
                    f'-SUMIF($C${first_data}:$C${last},"贷",{letter}${first_data}:{letter}${last})')
         if column not in (4, 6):
             formula = f'=IF(COUNT({letter}{first_data}:{letter}{last})={last-first_data+1},{formula[1:]},"")'
@@ -350,17 +354,17 @@ def _audit_sheet(book, meta, accounts, *, is_pl, index_no):
                    align=RIGHT, percent=True, fill=TOTAL_FILL, formula=True)
     row = total + 1
     sheet.merge(row, 1, columns,
-                "校验：未审数减审定数（应为 0.00），差异不为零时不得归档。"
+                "衔接核对：审定数应等于未审数加借方调整、减贷方调整（含重分类）。缺少审定或调整依据时保持待补。"
                 + ("　损益类上期发生额需取自上年账套或报表，本机未取数，相关栏留空。"
                    if is_pl else ""),
                 font=SMALL_FONT, height=20)
     row += 1
-    sheet.merge(row, 1, 3, "未审减审定", font=SMALL_FONT, align=CENTER, fill=TOTAL_FILL)
-    sheet.cell(row, 4, f'=IF(COUNT(F{total},K{total})=2,ROUND(F{total}-K{total},2),"")',
+    sheet.merge(row, 1, 3, "审定数与调整衔接差异", font=SMALL_FONT, align=CENTER, fill=TOTAL_FILL)
+    sheet.cell(row, 4, f'=IF(COUNT(F{total}:K{total})=6,ROUND(K{total}-F{total}-G{total}+H{total}-I{total}+J{total},2),"")',
                align=RIGHT, money=True, fill=TOTAL_FILL, formula=True)
     sheet.cell(row, 5, f'=IF(ISNUMBER(D{row}),IF(ABS(D{row})<0.01,"T/B","错"),"待复核")',
                align=CENTER, fill=TOTAL_FILL, formula=True)
-    sheet.merge(row, 6, 11, "T/B 表示未审数与审定数一致；存在审计调整时本行应等于调整净额。",
+    sheet.merge(row, 6, 11, "T/B 仅表示审定数与未审数及已填调整衔接相符，不要求审定数必须等于未审数。",
                 font=SMALL_FONT)
     row += 1
     sheet.merge(row, 1, 3, "报表数", font=SMALL_FONT, align=CENTER, fill=TOTAL_FILL)
@@ -386,7 +390,7 @@ def _audit_sheet(book, meta, accounts, *, is_pl, index_no):
 
 def _detail_sheet(book, meta, accounts, *, is_pl, index_no, audit_total):
     columns = len(DETAIL_COLUMNS)
-    widths = (11, 12, 18, 30, 6) + (14,) * 14 + (10,)
+    widths = (13, 14, 20, 30, 6) + (20,) * 14 + (12,)
     sheet = Sheet(book, f"{index_no} 明细表", widths)
     row = sheet.header_block(meta, columns=columns, title=f"{meta['name']}账项明细表",
                              index_no=f"{index_no}-1", page=3)
@@ -445,13 +449,41 @@ def _detail_sheet(book, meta, accounts, *, is_pl, index_no, audit_total):
                    formula=True)
     sheet.cell(total, 20, "—", align=CENTER, fill=TOTAL_FILL)
     row = total + 1
-    sheet.merge(row, 1, 4, "与审定表核对（期末审定数）", font=SMALL_FONT, align=LEFT, fill=TOTAL_FILL)
+    sheet.merge(row, 1, 4, "与审定表核对（本期未审发生额）" if is_pl else "与审定表核对（期末未审数）",
+                font=SMALL_FONT, fill=TOTAL_FILL)
+    audit_name = f"{index_no} 审定表"
+    if is_pl:
+        terms = [("-" if account.direction == "贷" else "+") +
+                 f"{'L' if account.direction == '贷' else 'K'}{subtotal}"
+                 for account, subtotal in zip(accounts, subtotal_rows)]
+        book_value = "0" + "".join(terms)
+        book_refs = [term[1:] for term in terms]
+    else:
+        book_value = f"Q{total}"
+        book_refs = [book_value]
+    sheet.cell(row, 6, f'=IF(COUNT({",".join(book_refs)},\'{audit_name}\'!F{audit_total})={len(book_refs)+1},'
+               f'ROUND(({book_value})-\'{audit_name}\'!F{audit_total},2),"")',
+               money=True, align=RIGHT, fill=TOTAL_FILL, formula=True)
+    sheet.cell(row, 7, f'=IF(ISNUMBER(F{row}),IF(ABS(F{row})<0.005,"G","差异"),"待补来源")',
+               fill=TOTAL_FILL, formula=True)
+    sheet.merge(row, 8, 19, "同口径核对：资产负债比较期末未审余额；损益比较本期发生额，均不使用尚未取得的审定数。",
+                font=SMALL_FONT)
+    row += 1
+    sheet.merge(row, 1, 4, "与审定表核对（本期审定发生额）" if is_pl else "与审定表核对（期末审定数）",
+                font=SMALL_FONT, align=LEFT, fill=TOTAL_FILL)
     sheet.cell(row, 5, "—", align=CENTER, fill=TOTAL_FILL)
     audit_name = f"{index_no} 审定表"
-    sheet.cell(row, 6, f'=IF(COUNT(S{total},\'{audit_name}\'!K{audit_total})=2,'
-               f'ROUND(S{total}-\'{audit_name}\'!K{audit_total},2),"")',
+    audited_terms = [("-" if account.direction == "贷" else "+") +
+                     f"{'N' if account.direction == '贷' else 'M'}{subtotal}"
+                     for account, subtotal in zip(accounts, subtotal_rows)]
+    audited_refs = [term[1:] for term in audited_terms]
+    audited_value = "0" + "".join(audited_terms) if is_pl else f"S{total}"
+    count_refs = ",".join(audited_refs) if is_pl else f"S{total}"
+    needed = len(audited_refs) + 1 if is_pl else 2
+    sheet.cell(row, 6, f'=IF(COUNT({count_refs},\'{audit_name}\'!K{audit_total})={needed},'
+               f'ROUND(({audited_value})-\'{audit_name}\'!K{audit_total},2),"")',
                align=RIGHT, money=True, fill=TOTAL_FILL, formula=True)
-    sheet.cell(row, 7, f'=IF(ISNUMBER(F{row}),IF(ABS(F{row})<0.01,"G","错"),"待复核")',
+    sheet.cell(row, 7, f'=IF(ISNUMBER(F{row}),IF(ABS(F{row})<0.005,"G","差异"),"待补审定依据")',
                align=CENTER, fill=TOTAL_FILL, formula=True)
     sheet.merge(row, 8, 19, "G 表示明细表合计与审定表期末审定数一致；错 表示存在差异，须追查。",
                 font=SMALL_FONT)
@@ -466,38 +498,36 @@ def _detail_sheet(book, meta, accounts, *, is_pl, index_no, audit_total):
 
 
 def _program_sheet(book, meta, procedures, *, index_no):
-    columns = 10
-    widths = (6, 62, 9, 9, 11, 11, 9, 26, 12, 22)
+    columns = 9
+    widths = (6, 62, 9, 9, 11, 11, 9, 12, 22)
     sheet = Sheet(book, "审计程序", widths)
     row = sheet.header_block(meta, columns=columns, title=f"{meta['name']}审计程序表",
                              index_no=f"{index_no}-0", page=4)
     for column, text in enumerate(("序号", "审计程序", "存在", "完整性", "权利和义务", "计价和分摊",
-                                   "列报", "本项目执行情况", "索引号", "备注"), 1):
+                                   "列报", "索引号", "备注"), 1):
         sheet.cell(row, column, text, font=HEAD_FONT, align=CENTER, fill=HEAD_FILL)
     sheet.ws.row_dimensions[row].height = 30
     row += 1
-    notes = meta.get("procedure_notes") or []
     last_section = ""
     for number, item in enumerate(procedures, 1):
         marks = {key: ("√" if key in item.assertions else "") for key in
                  ("存在", "完整性", "权利和义务", "计价和分摊", "列报")}
-        status = notes[number - 1] if number - 1 < len(notes) else f"{WAIT}（未执行）"
         target = f"{index_no}-2" if item.basis == "-2" else (
             f"{index_no}-{item.basis}" if item.basis else f"{index_no}-1")
         section = ""
         if item.section and item.section != last_section:
             last_section, section = item.section, item.section
         values = (number, item.text, marks["存在"], marks["完整性"], marks["权利和义务"],
-                  marks["计价和分摊"], marks["列报"], status, target, section)
-        rows_needed = max(len(str(item.text)) // 30 + 1, len(str(status)) // 12 + 1)
+                  marks["计价和分摊"], marks["列报"], target, section)
+        rows_needed = len(str(item.text)) // 30 + 1
         for column, value in enumerate(values, 1):
-            sheet.cell(row, column, value, align=CENTER if column not in (2, 8, 10) else LEFT,
+            sheet.cell(row, column, value, align=CENTER if column not in (2, 9) else LEFT,
                        height=max(30, 14 * rows_needed + 6))
         row += 1
     row += 1
     sheet.merge(row, 1, columns,
                 "程序清单按报表项目类别整理，与鼎信诺底稿的「审计程序」表同口径：认定栏勾选与本项目相关的"
-                "认定，执行情况只能写已执行／不适用／待补，不得预填结论。", font=SMALL_FONT, height=30)
+                "认定；列示程序清单不代表已经执行或取得证据。", font=SMALL_FONT, height=30)
     sheet.page_setup(8)
     return sheet
 
@@ -520,7 +550,7 @@ def _disclosure_sheet(book, meta, accounts, *, is_pl, index_no, total_row_values
         name = str(entry.get("item", "")).strip()
         if name:
             mapped[name] = entry.get("note", WAIT)
-    for account in accounts:
+    for account_index, account in enumerate(accounts):
         current = period_amount(account) if is_pl else (_amount(account.ending) or Decimal("0"))
         previous = None if is_pl else (_amount(account.opening) or Decimal("0"))
         note = mapped.get(account.name) or mapped.get(f"{meta['name']}_{account.name}") or WAIT
@@ -529,13 +559,21 @@ def _disclosure_sheet(book, meta, accounts, *, is_pl, index_no, total_row_values
         for column, value in enumerate(values, 1):
             sheet.cell(row, column, value, align=LEFT if column in (1, 5) else RIGHT,
                        money=column in (2, 3, 4), height=22)
+        audit_ref = f"'{index_no} 审定表'!K{9 + account_index}"
+        sheet.cell(row, 4, f'=IF(COUNT(B{row},{audit_ref})=2,ROUND(B{row}-{audit_ref},2),"")',
+                   money=True, align=RIGHT, formula=True)
         row += 1
     sheet.cell(row, 1, "合　　计", font=HEAD_FONT, align=LEFT, fill=TOTAL_FILL, height=22)
     for column, value in ((2, total_row_values.get("current")), (3, total_row_values.get("previous"))):
         sheet.cell(row, column, value, font=HEAD_FONT, align=RIGHT, money=True, fill=TOTAL_FILL)
-    sheet.cell(row, 4, None, fill=TOTAL_FILL)
+    audit_ref = f"'{index_no} 审定表'!K{9 + len(accounts)}"
+    sheet.cell(row, 4, f'=IF(COUNT(B{row},{audit_ref})=2,ROUND(B{row}-{audit_ref},2),"")',
+               money=True, align=RIGHT, formula=True, fill=TOTAL_FILL)
     sheet.cell(row, 5, "—", align=CENTER, fill=TOTAL_FILL)
     sheet.cell(row, 6, "—", align=CENTER, fill=TOTAL_FILL)
+    sheet.merge(row + 2, 1, columns,
+                "本表当前数为账面口径；审定差异仅在两项金额均已提供时计算，留空表示缺少审定依据，不表示无差异。",
+                font=SMALL_FONT, height=30)
     sheet.page_setup(8)
     return sheet
 
@@ -600,16 +638,30 @@ def _review_sheet(book, meta, checks, *, index_no, conclusion):
     return sheet
 
 
+EXTRA_CALCULATIONS = {
+    "银行账户清单": {8: (("G", "F"), "G{r}-F{r}")},
+    "库存现金监盘表": {4: (("C", "B"), "C{r}-B{r}")},
+    "坏账准备计算表": {4: (("B", "C"), "B{r}*C{r}"), 6: (("D", "E"), "D{r}-E{r}")},
+    "存货盘点表": {5: (("D", "C"), "D{r}-C{r}"), 8: (("D", "F"), "D{r}*F{r}")},
+    "存货计价测试表": {5: (("D", "C"), "D{r}-C{r}")},
+    "存货跌价准备测试表": {4: (("B", "C"), "MAX(B{r}-C{r},0)"), 6: (("D", "E"), "D{r}-E{r}")},
+    "资产减值测试表": {4: (("B", "C"), "MAX(B{r}-C{r},0)")},
+    "借款及利息测算表": {8: (("G", "F"), "G{r}-F{r}")},
+}
+
+
 def _extra_sheet(book, meta, spec, *, index_no, page, rows_data=()):
     """按列式生成专项表：能推出来的先填，其余留空待现场。"""
     title, columns, note, blank_rows = spec[:4]
     sheet = Sheet(book, title[:31], tuple(width for _name, width, _kind in columns))
-    row = sheet.header_block(meta, columns=len(columns), title=f"{meta['name']}{title}",
+    heading = title if title.startswith(meta["name"]) else f"{meta['name']}{title}"
+    row = sheet.header_block(meta, columns=len(columns), title=heading,
                              index_no=f"{index_no}-{page}", page=page)
     for column, (name, _width, _kind) in enumerate(columns, 1):
         sheet.cell(row, column, name, font=HEAD_FONT, align=CENTER, fill=HEAD_FILL)
     sheet.ws.row_dimensions[row].height = 30
     row += 1
+    first_data = row
     for values in rows_data:
         lines = 1
         for column, (_name, width, kind) in enumerate(columns, 1):
@@ -619,7 +671,8 @@ def _extra_sheet(book, meta, spec, *, index_no, page, rows_data=()):
             sheet.cell(row, column, value,
                        align=RIGHT if kind in (MONEY, NUM) else
                        (LEFT if kind == TEXT and column in (2, 4) else CENTER),
-                       money=kind == MONEY, height=max(22, 14 * lines + 6))
+                       money=kind == MONEY, percent=title in ("分析程序表", "费用明细及分析表") and column == 5,
+                       height=max(22, 14 * lines + 6))
         row += 1
     for _ in range(max(blank_rows - len(rows_data), 0)):
         for column, (_name, _width, kind) in enumerate(columns, 1):
@@ -627,23 +680,31 @@ def _extra_sheet(book, meta, spec, *, index_no, page, rows_data=()):
                        align=RIGHT if kind in (MONEY, NUM) else CENTER,
                        money=kind == MONEY, height=22)
         row += 1
+    for target_row in range(first_data, row):
+        for column, (sources, expression) in EXTRA_CALCULATIONS.get(title, {}).items():
+            refs = ",".join(f"{source}{target_row}" for source in sources)
+            formula = f'=IF(COUNT({refs})={len(sources)},{expression.format(r=target_row)},"")'
+            sheet.cell(target_row, column, formula, money=columns[column - 1][2] == MONEY,
+                       align=RIGHT, formula=True)
     row += 1
-    sheet.merge(row, 1, len(columns), f"填表说明：{note}", font=SMALL_FONT, height=24)
+    sheet.merge(row, 1, len(columns), f"填表说明：{note}", font=SMALL_FONT,
+                height=max(36, (len(note) // 65 + 1) * 16))
     sheet.merge(row + 1, 1, len(columns),
                 "本表已按科目余额表预填可得信息，空白处须依据取得的资料或原始凭证填写；"
-                "资料未取得前程序执行情况记「待补」。",
+                "缺少输入的差异保持空白，不能作为零差异结论。",
                 font=SMALL_FONT, fill=TOTAL_FILL, height=22)
     sheet.page_setup(8)
     return sheet
 
 
-def _self_checks(consistent, gap, picks, prepared_by, reviewed_by):
+def _self_checks(consistent, gap, picks, prepared_by, reviewed_by, *, has_detail=True):
     """复核自检项：只看格式、索引与勾稽，不评价证据是否充分。"""
     return (
         ("底稿目录、导引表与各工作表名称一致", "已核对", "生成时按同一索引号命名"),
         ("明细表合计与科目余额表逐栏一致",
-         "已核对" if consistent else "不一致，待追查", f"差异 {gap:,.2f} 元"),
-        ("导引表金额与审定表合计一致", "已核对", "同一取数口径"),
+         ("已核对" if consistent else "不一致，待追查") if has_detail else "未提供二级明细",
+         f"四栏绝对差异合计 {gap:,.2f} 元" if has_detail else "直接列示一级记录，不构成独立明细核对"),
+        ("账面/未审与审定核对口径已区分", "待复核", "账面核对可先进行，审定比较须取得独立依据"),
         ("抽凭样本已按风险抽取并写明理由",
          f"已抽取 {len(picks)} 笔" if picks else "未读取序时账",
          "检查结论须核对原始凭证后填写"),
@@ -744,11 +805,12 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
     materials = paper_materials.for_paper(index_no, name)
     pending = paper_materials.pending(materials)
     consistent, gap = consistency(grouped, rows)
+    has_detail = any(detail_rows(rows, account) != [account] for account in grouped)
     total = totals(grouped)
     notes = narrative.get("guide_notes") or baseline_notes(
-        name=name, accounts=grouped, total=total, is_pl=is_pl, consistent=consistent,
-        gap=gap, pending=pending)
-    conclusion = narrative.get("conclusion") or default_conclusion(consistent, pending)
+        name="、".join(account.name for account in grouped), accounts=grouped, total=total, is_pl=is_pl, consistent=consistent,
+        gap=gap, pending=pending, has_detail=has_detail)
+    conclusion = narrative.get("conclusion") or default_conclusion(consistent, pending, has_detail=has_detail)
     meta = {
         "project": project, "name": name, "period": period, "cutoff": cutoff,
         "prepared_by": prepared_by, "reviewed_by": reviewed_by,
@@ -782,6 +844,9 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
         if spec and all(spec[0] != item[0] for item in extras):
             extras.append(spec)
     extras = tuple(extras)
+    analysis_accounts = list({row.code: row for row in [*grouped, *leaves]}.values())
+    movements = paper_sheets.movement_rows(analysis_accounts)
+    cutoff_picks = sampling.cutoff(journal, rows[0].year, rows[0].month) if journal and rows[0].year else []
     for offset, spec in enumerate(extras, 8):
         entries.append((f"{index_no}-{offset}", f"{name}{spec[0]}", spec[0][:31],
                         f"{len(spec[1])} 列 × {spec[3]} 行，待资料填写"))
@@ -810,13 +875,37 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
             data = [(number, str(getattr(row, "date", "")), row.voucher, row.summary, row.code,
                      row.contra, row.debit, row.credit, reason, None)
                     for number, (row, reason) in enumerate(picks, 1)]
+        elif title in ("分析程序表", "费用明细及分析表"):
+            data = []
+            for item in movements:
+                explanation = (narrative.get("analysis_notes") or {}).get(item["code"]) or "AI 尚未填写本项分析；请生成 AI 分析或补充原因证据。"
+                if item["previous"] is None:
+                    explanation += " 未提供上期发生额，不能计算同比变动。"
+                elif item["previous"] == 0:
+                    explanation += " 年初余额为零，变动率不适用。"
+                data.append((f"{item['code']} {item['name']}", item["current"], item["previous"], item["change"],
+                             float(item["rate"]) if item["rate"] is not None else None, explanation))
+            spec = (spec[0], (("项目", 30, TEXT), ("本期发生额" if is_pl else "期末账面数", 20, MONEY),
+                             ("上期发生额（待补）" if is_pl else "年初账面数", 20, MONEY),
+                             ("变动额", 20, MONEY), ("变动率", 14, TEXT), ("AI 变动分析与核查重点", 55, TEXT)),
+                    "金额及变动由本地账套计算；年初账面数不冒充上期审定数。AI 仅填写观察、待核实原因与核查重点。",
+                    spec[3], spec[4])
+        elif title in paper_sheets.CUTOFF_SHEETS:
+            data = [(row.date, row.voucher, row.line, row.code, row.summary, row.debit, row.credit, reason,
+                     None, None, None) for row, reason in cutoff_picks]
+            scope_note = ("未读取序时账，尚未抽样。" if journal is None else
+                          "在已读取范围内未抽中候选，不表示不存在跨期事项。" if not cutoff_picks else
+                          "样本仅用于筛选疑点，不代替业务归属期间的判断。")
+            if journal is not None and not getattr(journal, "complete", True):
+                scope_note += " 序时账已按最近记录截取，抽样总体不完整，需补取未覆盖记录。"
+            spec = (spec[0], spec[1], spec[2] + " " + scope_note, spec[3], spec[4])
         else:
             data = paper_sheets.prefill(title, sheet_state, leaves)
         _extra_sheet(book, meta, spec, index_no=index_no, page=offset, rows_data=data)
     if pick_source:
         meta["pick_source"] = pick_source
     meta["review_page"] = 8 + len(extras)
-    _review_sheet(book, meta, _self_checks(consistent, gap, picks, prepared_by, reviewed_by),
+    _review_sheet(book, meta, _self_checks(consistent, gap, picks, prepared_by, reviewed_by, has_detail=has_detail),
                   index_no=index_no, conclusion=conclusion)
     target = Path(path)
     book.save(target)

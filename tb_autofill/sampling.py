@@ -11,9 +11,57 @@ from __future__ import annotations
 
 import json
 import re
+import calendar
+from datetime import date
 from decimal import Decimal
 
 SAMPLE_SIZE = 10
+CUTOFF_WORDS = ("跨期", "暂估", "冲回", "补记", "期后", "提前", "延后", "未开票", "验收", "发货", "调整")
+
+
+def cutoff(journal, year, month, limit=12):
+    """在截止日前后七天按风险挑分录；仅提供疑点，不判断业务归属期间。"""
+    if limit <= 0 or not 1900 <= year <= 2200 or not 1 <= month <= 12:
+        return []
+    end = date(year, month, calendar.monthrange(year, month)[1])
+    candidates = []
+    for row in journal or []:
+        reasons = []
+        try:
+            posted = date.fromisoformat(str(row.date)[:10])
+        except ValueError:
+            posted = None
+        near = posted is not None and abs((posted - end).days) <= 7
+        mismatch = posted is not None and (posted.year != year or posted.month != row.month)
+        if not near and not mismatch and not (posted is None and row.month == month):
+            continue
+        if _amount(row) == 0:
+            continue
+        if near:
+            reasons.append(f"接近截止日 {end.isoformat()}（前后七天）")
+        if mismatch:
+            reasons.append("凭证日期与记账月份不一致，需核实")
+        if posted is None:
+            reasons.append("期末月份分录日期不完整，需核实")
+        words = [word for word in CUTOFF_WORDS if word in str(row.summary)]
+        if words:
+            reasons.append("摘要涉及" + "、".join(words))
+        if _amount(row) % 10000 == 0:
+            reasons.append("整数金额")
+        distance = abs((posted - end).days) if posted else 8
+        candidates.append((int(mismatch) * 4 + len(words) * 2 + int(distance <= 3),
+                           -distance, _amount(row), row, "；".join(reasons)))
+    candidates.sort(key=lambda item: item[:3], reverse=True)
+    picked, seen = [], set()
+    for _score, _distance, _value, row, reason in candidates:
+        key = (row.date, row.voucher, row.line, row.code)
+        if key in seen:
+            continue
+        seen.add(key)
+        picked.append((row, reason))
+        if len(picked) >= limit:
+            break
+    return picked
 RISK_WORDS = ("调整", "冲销", "红字", "结转", "暂估", "往来", "借款", "其他", "重分类", "更正")
 MONEY_WORDS = ("银行", "现金", "库存现金")
 RELATED_WORDS = ("应收", "应付", "预付", "预收", "其他应收", "其他应付")

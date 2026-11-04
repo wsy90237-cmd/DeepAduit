@@ -127,12 +127,12 @@ class ProcedureTests(unittest.TestCase):
         self.assertGreaterEqual(tagged / len(items), 0.9, f"{tagged}/{len(items)}")
         self.assertTrue(all(item.text.strip() for item in items))
 
-    def test_model_status_is_written_onto_sheet(self):
+    def test_procedure_sheet_omits_execution_status(self):
         book = build(narrative={"procedure_notes": ["已执行（与科目余额表核对一致）"]})
         sheet = book["1-010-0 程序表"]
         text = "\n".join(str(cell.value) for row in sheet.iter_rows() for cell in row if cell.value)
-        self.assertIn("已执行（与科目余额表核对一致）", text)
-        self.assertIn("待补（自动生成，未执行）", text)     # 未给的条目不得被当成已执行
+        self.assertNotIn("本项目执行情况", text)
+        self.assertNotIn("已执行（与科目余额表核对一致）", text)
 
 
 class NarrativeTests(unittest.TestCase):

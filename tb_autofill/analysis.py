@@ -154,6 +154,13 @@ def fact_amounts(facts: dict) -> set:
     for item in facts.get("children") or []:
         for key in ("opening", "debit", "credit", "ending"):
             add(item.get(key))
+    for item in facts.get("analysis_rows") or []:
+        for key in ("current", "previous", "change"):
+            add(item.get(key))
+    for item in facts.get("cutoff_samples") or []:
+        for key in ("debit", "credit"):
+            add(item.get(key))
+    add((facts.get("ledger_scope") or {}).get("rows"))
     journal = facts.get("journal") or {}
     for key in ("debit", "credit", "count"):
         add(journal.get(key))
@@ -171,6 +178,8 @@ def fact_codes(facts: dict) -> set:
     codes = {str(code) for code in facts.get("all_codes", [])}
     codes |= {str(item["code"]) for item in facts.get("movements") or [] if item.get("code")}
     codes |= {str(item["code"]) for item in facts.get("children") or [] if item.get("code")}
+    for group in ("analysis_rows", "cutoff_samples"):
+        codes |= {str(item["code"]) for item in facts.get(group) or [] if item.get("code")}
     if (facts.get("subject") or {}).get("code"):
         codes.add(str(facts["subject"]["code"]))
     journal = facts.get("journal") or {}
@@ -193,7 +202,9 @@ def fact_tokens(facts: dict) -> set:
     for item in facts.get("similarly_named") or []:
         harvest(item.get("name"))
     journal = facts.get("journal") or {}
-    for item in journal.get("samples") or []:
+    for item in facts.get("analysis_rows") or []:
+        harvest(item.get("name"))
+    for item in [*(journal.get("samples") or []), *(facts.get("cutoff_samples") or [])]:
         for key in ("summary", "contra", "voucher"):
             harvest(item.get(key))
     return tokens

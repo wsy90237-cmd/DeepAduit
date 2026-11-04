@@ -172,8 +172,8 @@ class DraftAmountTests(unittest.TestCase):
         sheet = self.build()["披露表"]
         self.assertEqual(sheet["B9"].value, 100)
         self.assertEqual(sheet["C9"].value, 100)
-        self.assertIsNone(sheet["D9"].value)
-        self.assertIsNone(sheet["D8"].value)
+        self.assertIn("COUNT", sheet["D9"].value)
+        self.assertIn("!K9", sheet["D8"].value)
 
     def test_alternate_pack_keeps_audited_and_adjustment_columns_empty(self):
         for is_pl in (False, True):

@@ -59,6 +59,14 @@ class JournalRow:
         return Decimal("0")
 
 
+class JournalRows(list):
+    """保留分录列表兼容性，同时明确读取上限是否截断了总体。"""
+
+    def __init__(self, rows=(), *, complete=True):
+        super().__init__(rows)
+        self.complete = complete
+
+
 @dataclass(frozen=True)
 class Subject:
     id: str

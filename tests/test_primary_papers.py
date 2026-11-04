@@ -166,16 +166,17 @@ class PaperUiTests(unittest.TestCase):
         dialog = self.dialog()
         self.app.store = SimpleNamespace(data={"ai_enabled": True})
         client = Mock(model="synthetic", base_url="https://model.invalid/v1")
-        client.converse.return_value = {"intent": "audit", "answer": '{"audit_notes":["待补合成证据"]}'}
+        client.paper_text.return_value = {"intent": "audit", "answer": '{"audit_notes":["待补合成证据"]}'}
         with patch.object(gui, "PayloadDialog", return_value=SimpleNamespace(confirmed=True)) as preview, \
                 patch.object(dialog, "wait_window"), \
                 patch.object(gui.ai_module.DeepSeekClient, "from_store", return_value=client), \
                 patch.object(gui.threading, "Thread", side_effect=lambda target, daemon: SimpleNamespace(start=target)):
             dialog._generate()
-            client.converse.assert_not_called()
+            client.paper_text.assert_not_called()
             dialog._poll()
         payload = preview.call_args.args[1]
-        client.converse.assert_called_once_with(payload["question"], context=payload["context"])
+        client.paper_text.assert_called_once_with({key: value for key, value in payload.items() if key != "purpose"})
+        client.converse.assert_not_called()
         client.converse_with_skills.assert_not_called()
         dialog._poll()
         self.assertEqual(dialog.draft["subject"]["code"], "1002")

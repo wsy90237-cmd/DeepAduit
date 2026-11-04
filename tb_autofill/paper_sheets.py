@@ -11,8 +11,14 @@
 from __future__ import annotations
 
 import re
+from .models import money
 
 TEXT, MONEY, DATE, NUM = "text", "money", "date", "num"
+CUTOFF_SHEETS = {"货币资金截止性测试", "收入截止性测试表", "费用截止性测试表"}
+CUTOFF_COLUMNS = (("记账日期", 14, DATE), ("凭证号", 16, TEXT), ("分录号", 10, TEXT),
+                  ("科目编码", 14, TEXT), ("摘要", 32, TEXT), ("借方", 20, MONEY),
+                  ("贷方", 20, MONEY), ("抽取理由", 40, TEXT), ("单据/验收日期（人工）", 22, DATE),
+                  ("业务归属期间（人工）", 22, TEXT), ("是否跨期（人工）", 20, TEXT))
 
 # (表名, 列定义, 说明, 预留行数, 生成条件)
 # 生成条件为 facts 的键；None 表示无条件生成。
@@ -146,6 +152,12 @@ SPECS = {
 
 
 _BY_NAME = {spec[0]: spec for spec in BASE}
+for _category, _specs in SPECS.items():
+    SPECS[_category] = tuple((title, CUTOFF_COLUMNS,
+                             "按截止日前后七天、日期与账期不一致及异常摘要抽取可疑分录；"
+                             "单据日期、业务归属与是否跨期由项目组核实。期后月份或下一年度记录未读取时须另行补取。", 12, need)
+                            if title in CUTOFF_SHEETS else (title, columns, note, count, need)
+                            for title, columns, note, count, need in _specs)
 for _specs in SPECS.values():
     for _spec in _specs:
         _BY_NAME.setdefault(_spec[0], _spec)
@@ -161,6 +173,21 @@ def names(category=None):
     if not category:
         return sorted(_BY_NAME)
     return [spec[0] for spec in BASE] + [spec[0] for spec in SPECS.get(category, ())]
+
+
+def movement_rows(accounts):
+    """分析表数值在本地计算；资产负债用年初与期末，损益缺上期发生额时不编造。"""
+    output = []
+    for row in accounts:
+        is_pl = row.is_profit_loss
+        current = money((row.credit if row.direction == "贷" else row.debit) if is_pl else row.ending)
+        previous = None if is_pl else money(row.opening)
+        change = None if current is None or previous is None else current - previous
+        rate = None if change is None or previous == 0 else change / abs(previous)
+        output.append({"code": row.code, "name": row.name, "current": current, "previous": previous,
+                       "change": change, "rate": rate,
+                       "basis": "本期发生额；上期发生额未提供" if is_pl else "期末账面余额与年初账面余额"})
+    return output
 
 
 def facts(accounts, journal=None):

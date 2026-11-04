@@ -345,6 +345,27 @@ class DeepSeekClient:
         except (KeyError, IndexError, TypeError, ValueError):
             raise AIError("AI 返回未通过本地校验，未采纳任何建议。") from None
 
+    def paper_text(self, request):
+        """发送已预览的底稿结构化请求，避免通用聊天 answer 内再次嵌套 JSON。"""
+        messages = [{"role": "system", "content": request["system"]},
+                    {"role": "user", "content": json.dumps(request["context"], ensure_ascii=False)},
+                    {"role": "user", "content": request["question"]}]
+        response = self._request("/chat/completions", {
+            "model": self.model, "messages": messages, "stream": False,
+            "thinking": {"type": "disabled"}, "temperature": 0.2,
+            "max_tokens": 6000, "response_format": {"type": "json_object"},
+        })
+        try:
+            choice = response["choices"][0]
+            if choice.get("finish_reason") != "stop":
+                raise AIError("模型回复未完成，旧草稿已保留；请减少关注点后重试。")
+            content = choice["message"]["content"]
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("empty content")
+            return {"intent": "audit", "answer": content}
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise AIError("模型已响应，但未返回有效底稿正文；旧草稿已保留。") from None
+
     def converse_with_skills(self, question, history=None, context=None, *, limit=SKILL_LIMIT, finder=None):
         """先检索内置 skill，再走字段校验完全一致的 converse。
 

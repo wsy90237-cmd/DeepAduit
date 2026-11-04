@@ -160,8 +160,10 @@ _CATEGORY_KEYWORDS = (
 )
 
 
-def default_conclusion(consistent=True, pending=()):
+def default_conclusion(consistent=True, pending=(), *, has_detail=True):
     """无模型时的结论口径：只写勾稽事实与缺证据，不代替注册会计师判断。"""
+    if not has_detail:
+        return "尚未取得二级明细，无法完成明细合计与一级余额的核对。当前仅列示一级账面记录，需补充明细及外部证据后判断是否需调整或追加程序。"
     if not consistent:
         return "需进一步程序：明细与科目余额表存在差异，须追查差异后再确定结论。"
     names = [str(item) for item in pending if str(item).strip()][:3]
@@ -170,32 +172,35 @@ def default_conclusion(consistent=True, pending=()):
             f"{missing}尚未取得，暂不支持无异常结论。")
 
 
-def baseline_notes(*, name, accounts, total, is_pl, consistent, gap, pending=()):
+def baseline_notes(*, name, accounts, total, is_pl, consistent, gap, pending=(), has_detail=True):
     """无模型时的基础审计说明：只陈述账套事实、勾稽结果与缺资料，不写程序结论。"""
     def amount(value):
         return f"{value:,.2f}" if isinstance(value, Decimal) else "—"
 
-    count = len(accounts)
     current = total.get("period") if is_pl else total.get("ending")
     lines = []
     if is_pl:
-        lines.append(f"1、{name}本期发生额 {amount(current)} 元（收入取贷方、费用取借方，不含结转），"
-                     f"取自本机账套科目余额表，共 {count} 个一级科目；上期发生额需取自上年账套，本次未取数。")
+        lines.append(f"{name}本期发生额 {amount(current)} 元，按账套记录的收入贷方或费用借方累计发生额列示。"
+                     "目前未取得上期发生额，需补充上年账套或已复核的上期明细，暂不能据此评价同比变化。")
     else:
-        lines.append(f"1、{name}期初 {amount(total.get('opening'))} 元、本期借方 {amount(total.get('debit'))} 元、"
-                     f"本期贷方 {amount(total.get('credit'))} 元、期末 {amount(current)} 元，"
-                     f"取自本机账套科目余额表，共 {count} 个一级科目。")
-    if consistent:
-        lines.append("2、明细合计与科目余额表逐栏核对一致，差异 0.00 元，勾稽标记 T/B、G。")
+        change = (current - total["opening"]) if current is not None and total.get("opening") is not None else None
+        lines.append(f"{name}年初账面余额为 {amount(total.get('opening'))} 元，期末为 {amount(current)} 元，"
+                     f"较年初变动 {amount(change)} 元。本期借方累计 {amount(total.get('debit'))} 元，"
+                     f"贷方累计 {amount(total.get('credit'))} 元。以上金额取自本机账套科目余额表。")
+    if not has_detail:
+        lines.append("本科目未提供二级明细，本册直接列示一级账面记录，尚不能执行明细合计与一级余额的核对。")
+    elif consistent:
+        lines.append("本次对明细合计与一级科目余额进行了本地复算，期初、借方、贷方及期末四栏逐栏核对一致。"
+                     "这项核对只说明账内数据相符，不代表银行函证、监盘或原始凭证检查已经完成。")
     else:
-        lines.append(f"2、明细合计与科目余额表存在差异 {amount(gap)} 元，须追查差异来源后方可继续。")
-    lines.append("3、审计程序已按科目列示，仅账套核对类程序可自动执行；函证、监盘、"
-                 "合同与单据检查需取得资料后执行并在程序表登记。")
+        lines.append(f"明细与一级科目的四栏核对存在差异，绝对差异合计为 {amount(gap)} 元。"
+                     "需先核实取数范围、账户分类及缺失明细，再判断是否需要调整。")
     if pending:
         preview = "、".join(pending[:4]) + ("等" if len(pending) > 4 else "")
-        lines.append(f"4、尚需取得 {len(pending)} 项资料：{preview}，取得后归档并在程序表登记。")
+        lines.append(f"尚需取得 {len(pending)} 项资料，包括{preview}。变动原因及余额的真实性应结合这些资料进一步核实，"
+                     "目前不作无异常结论。")
     else:
-        lines.append("4、资料需求清单所列项目均已取得，可直接进入复核。")
+        lines.append("现有资料尚不足以替代原始凭证和外部证据，审定结论留待项目组复核。")
     return lines
 
 
@@ -510,14 +515,14 @@ def _write_guide(book, state, detail, total, draft_body, notes=(), check=None, c
 
 
 def _write_procedures(book, state, rows_procedures, notes=()):
-    sheet = Sheet(book, f"{state['index_no']}-0 程序表", (20, 6, 58, 24, 12, 9, 9, 11, 11, 9, 20))
+    sheet = Sheet(book, f"{state['index_no']}-0 程序表", (20, 6, 58, 12, 9, 9, 11, 11, 9, 20))
     row = sheet.header(f"{state['name']}审计程序表", index_no=f"{state['index_no']}-0", page=3,
                        project=state["project"], prepared_by=state["prepared_by"],
                        reviewed_by=state["reviewed_by"], when=state["date"],
-                       period=state["period"], last_column=11,
-                       note="口径：程序清单按底稿模板的实质性程序框架整理，标“待补”的执行情况须由项目组按实际程序补充；"
+                       period=state["period"], last_column=10,
+                       note="口径：程序清单按底稿模板的实质性程序框架整理，列示程序不表示已经执行；"
                             "同一程序在不同风险类别下是否必做，仍按事务所质量控制制度判断。")
-    row = sheet.table(row, ("科目", "序号", "审计程序", "本项目执行情况", "索引号", "存在", "完整性",
+    row = sheet.table(row, ("科目", "序号", "审计程序", "索引号", "存在", "完整性",
                             "权利和义务", "计价和分摊", "列报", "备注"))
     last_section = ""
     for number, item in enumerate(rows_procedures, 1):
@@ -528,14 +533,13 @@ def _write_procedures(book, state, rows_procedures, notes=()):
             target = f"{state['index_no']}-{item.basis}"
         marks = {key: ("√" if key in item.assertions else "") for key in
                  ("存在", "完整性", "权利和义务", "计价和分摊", "列报")}
-        status = notes[number - 1] if number - 1 < len(notes) else "待补（自动生成，未执行）"
         if item.section and item.section != last_section:
             last_section, group = item.section, item.section
         else:
             group = state["name"] if number == 1 else ""
-        rows_needed = max(len(str(item.text)) // 30 + 1, len(str(status)) // 12 + 1)
+        rows_needed = len(str(item.text)) // 30 + 1
         row = sheet.line(row, (group, number, item.text,
-                               status, target, marks["存在"], marks["完整性"],
+                               target, marks["存在"], marks["完整性"],
                                marks["权利和义务"], marks["计价和分摊"], marks["列报"], ""),
                          align=LEFT, height=max(30, 14 * rows_needed + 6))
     sheet.page_setup(7)

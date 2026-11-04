@@ -14,7 +14,7 @@ import tempfile
 import time
 from decimal import Decimal
 
-from .models import JournalRow, LedgerRow, Subject, money
+from .models import JournalRow, JournalRows, LedgerRow, Subject, money
 
 _DRAFT = "财务报表底稿.xls"
 _ITEM_ID = re.compile(r"^I\d+D(\d+)N(\d+)Z", re.I)
@@ -395,11 +395,11 @@ class DxnLedgerDB:
             cursor.execute(
                 f"SELECT {_JOURNAL_COLUMNS} FROM {_JOURNAL_TABLE} "
                 "WHERE dwid=%s AND ndid=%s AND kjyear=%s AND kjmonth BETWEEN 1 AND %s AND kmbh LIKE %s "
-                "ORDER BY kjmonth,pzbh,bh LIMIT %s",
-                (int(subject.id), int(ledger_id), subject.year, subject.month, f"{code}%", limit))
+                "ORDER BY kjmonth DESC,jzsj DESC,pzbh DESC,bh DESC LIMIT %s",
+                (int(subject.id), int(ledger_id), subject.year, subject.month, f"{code}%", limit + 1))
             rows = cursor.fetchall()
         output = []
-        for row in rows:
+        for row in rows[:limit]:
             month = _integer(row["kjmonth"], "月份")
             if not 1 <= month <= subject.month:
                 raise ValueError("序时账存在超出所选期间的记录，已停止读取")
@@ -412,7 +412,7 @@ class DxnLedgerDB:
                 debit=money(row.get("jffse")), credit=money(row.get("dffse")),
                 contra=re.sub(r"[;\s]+", "、", str(row.get("dfkmmc") or "")).strip("、"),
             ))
-        return output
+        return JournalRows(output, complete=len(rows) <= limit)
 
     def close(self):
         errors = []

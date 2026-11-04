@@ -232,7 +232,7 @@ class PaperDialog(tk.Toplevel):
 
         actions = tk.Frame(shell, bg=CARD)
         actions.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
-        self.run_btn = ttk.Button(actions, text="AI 填写文字草稿", style="Accent.TButton", command=self._generate)
+        self.run_btn = ttk.Button(actions, text="AI 分析变动与审计说明", style="Accent.TButton", command=self._generate)
         self.run_btn.pack(side="left")
         self.export_btn = ttk.Button(actions, text="导出一级科目底稿", command=self._export,
                                      state="normal" if scope == "paper" else "disabled")
@@ -465,7 +465,7 @@ class PaperDialog(tk.Toplevel):
 
             def send():
                 try:
-                    answer = client.converse(request["question"], context=request["context"])
+                    answer = client.paper_text(request)
                     self.queue.put(("ok", (papers.pack_result(answer, request), journal, code)))
                 except Exception as exc:
                     self.queue.put(("error", str(exc)))
@@ -496,7 +496,9 @@ class PaperDialog(tk.Toplevel):
         self.view.configure(state="disabled")
         self.export_btn.configure(state="normal")
         journal = value.get("journal") or {}
-        if value.get("has_journal"):
+        if value.get("analysis_missing") or not value.get("analysis_notes"):
+            self.state.set(f"已收到 AI 说明，仍有 {len(value.get('analysis_missing') or [])} 项变动分析待补，请重试或核实后导出。")
+        elif value.get("has_journal"):
             self.state.set(f"草稿已生成，含序时账 {journal.get('count', 0)} 笔；请复核后使用。")
         else:
             self.state.set("草稿已生成；请复核后使用，金额未由模型改写。")
@@ -508,6 +510,11 @@ class PaperDialog(tk.Toplevel):
             self.state.set("请等待当前任务结束后再导出。")
             return
         if self.scope == "paper":
+            if self.app.store is not None and self.app.store.data.get("ai_enabled") and not self.draft:
+                if messagebox.askyesno("尚未生成 AI 分析", "是否先生成变动分析和审计说明？\n选择“否”仅导出本地数值与待分析提示。",
+                                       parent=self):
+                    self._generate()
+                    return
             self._export_pack()
             return
         if not self.draft:
