@@ -155,6 +155,8 @@ class PaperDialog(tk.Toplevel):
     SCOPE_LABEL = {"paper": "底稿", "notes": "附注", "report": "报告"}
 
     def __init__(self, app, scope="paper"):
+        if scope != "paper":
+            raise ValueError("当前仅开放一级科目底稿草稿制作。")
         super().__init__(app)
         self.scope = scope
         self.title(self.SCOPE_TITLE.get(scope, "生成草稿"))
@@ -162,6 +164,7 @@ class PaperDialog(tk.Toplevel):
         self.geometry("880x640")
         self.minsize(760, 520)
         self.app = app
+        self.store = app.store
         self.queue = queue.Queue()
         self.draft = None
         self.journal_rows, self.journal_code = None, ""
@@ -171,19 +174,13 @@ class PaperDialog(tk.Toplevel):
         shell = tk.Frame(self, bg=CARD)
         shell.pack(fill="both", expand=True, padx=16, pady=12)
         shell.columnconfigure(1, weight=1)
-        shell.rowconfigure(4, weight=1)
+        shell.rowconfigure(5, weight=1)
 
         tk.Label(shell, text="科目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w")
         self.state = tk.StringVar(value="选择科目后生成；金额取自本机账套。")
         pick = tk.Frame(shell, bg=CARD)
         pick.grid(row=0, column=1, sticky="ew", padx=8)
-        self.level_options = (papers.level_options(app.rows) if app.rows
-                              else [(papers.LEVEL_ALL, papers.level_label(papers.LEVEL_ALL))])
-        self.level_var = tk.StringVar()
-        self.level_box = ttk.Combobox(pick, textvariable=self.level_var, state="readonly", width=9,
-                                      values=[label for _level, label in self.level_options])
-        self.level_box.pack(side="left")
-        self.level_box.bind("<<ComboboxSelected>>", lambda _event: self._reload_choices())
+        tk.Label(pick, text="一级科目", bg=CARD, fg=SEC, font=(FONT, 9)).pack(side="left")
         self.choices = []
         self.code_var = tk.StringVar()
         self.code_box = ttk.Combobox(pick, textvariable=self.code_var, state="readonly")
@@ -192,10 +189,6 @@ class PaperDialog(tk.Toplevel):
         self.paper_var = tk.StringVar(value="未选择科目")
         self.current_paper = None
         self._names = {}
-        # 默认一级科目：审定表按一级科目出，需要看明细时再切级次。
-        self.level_box.current(next((index for index, (level, _label) in enumerate(self.level_options)
-                                     if level == papers.PRIMARY_LEVEL), 0))
-        self._reload_choices()
 
         tk.Label(shell, text="报表科目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=2, column=0, sticky="w", pady=(8, 0))
         tk.Label(shell, textvariable=self.paper_var, bg=CARD, fg=TX, font=(FONT, 9),
@@ -212,47 +205,51 @@ class PaperDialog(tk.Toplevel):
         self.suggest_btn.pack(side="left", padx=(12, 0))
         self.sheet_add, self.sheet_drop = [], []
 
-        tk.Label(shell, text="关注点", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=3, column=0, sticky="nw", pady=(8, 0))
+        tk.Label(shell, text="包含的二级科目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=3, column=0, sticky="nw", pady=(8, 0))
+        children = tk.Frame(shell, bg=CARD)
+        children.grid(row=3, column=1, sticky="ew", padx=8, pady=(8, 0))
+        children.columnconfigure(0, weight=1)
+        self.children_tree = ttk.Treeview(children, columns=("code", "name", "ending"), show="headings", height=4)
+        for column, title, width in (("code", "编码", 110), ("name", "二级科目名称", 340), ("ending", "期末账面余额", 140)):
+            self.children_tree.heading(column, text=title)
+            self.children_tree.column(column, width=width, anchor="e" if column == "ending" else "w")
+        self.children_tree.grid(row=0, column=0, sticky="ew")
+        scroll = ttk.Scrollbar(children, orient="vertical", command=self.children_tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.children_tree.configure(yscrollcommand=scroll.set)
+
+        tk.Label(shell, text="关注点", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=4, column=0, sticky="nw", pady=(8, 0))
         self.focus_text = tk.Text(shell, height=2, wrap="word", font=(FONT, 9), relief="flat",
                                   highlightthickness=1, highlightbackground=BORDER, padx=8, pady=6)
-        self.focus_text.grid(row=3, column=1, sticky="ew", padx=8, pady=(8, 0))
+        self.focus_text.grid(row=4, column=1, sticky="ew", padx=8, pady=(8, 0))
 
         self.view = tk.Text(shell, wrap="word", font=(FONT, 9), relief="flat", state="disabled",
                             highlightthickness=1, highlightbackground=BORDER, padx=12, pady=10)
-        self.view.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        self.view.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
         bar = ttk.Scrollbar(shell, orient="vertical", command=self.view.yview)
-        bar.grid(row=4, column=2, sticky="ns", pady=(10, 0))
+        bar.grid(row=5, column=2, sticky="ns", pady=(10, 0))
         self.view.configure(yscrollcommand=bar.set)
 
         actions = tk.Frame(shell, bg=CARD)
-        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 0))
-        self.run_btn = ttk.Button(actions, text="生成草稿", style="Accent.TButton", command=self._generate)
+        actions.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.run_btn = ttk.Button(actions, text="AI 填写文字草稿", style="Accent.TButton", command=self._generate)
         self.run_btn.pack(side="left")
-        self.export_btn = ttk.Button(actions, text="导出 Excel 底稿", command=self._export,
+        self.export_btn = ttk.Button(actions, text="导出一级科目底稿", command=self._export,
                                      state="normal" if scope == "paper" else "disabled")
         self.export_btn.pack(side="left", padx=8)
-        ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
+        ttk.Button(actions, text="关闭", command=self._close).pack(side="right")
         tk.Label(actions, textvariable=self.state, bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=12)
 
-        if scope != "paper":
-            # 附注与报告不按单个科目起草，隐藏科目、类型与报表科目三行，避免误导。
-            for row in (0, 1, 2):
-                for child in shell.grid_slaves(row=row):
-                    child.grid_remove()
+        self._reload_choices()
         self.protocol("WM_DELETE_WINDOW", self._close)
 
-    def _current_level(self):
-        index = self.level_box.current()
-        return self.level_options[index][0] if index >= 0 else papers.LEVEL_ALL
-
     def _reload_choices(self):
-        """按级次重算科目候选；该级次为空时退回全部级次并说明，不留空下拉。"""
+        """只列一级科目；没有一级科目时不退回二级或全部级次。"""
         rows = self.app.rows or []
-        level = self._current_level()
         self._source_snapshot = (self.app._context_revision, self.app.loaded_subject, ledger_digest(rows))
         self.draft, self.journal_rows, self.journal_code = None, None, ""
         self.sheet_add, self.sheet_drop = [], []
-        raw = papers.account_choices(rows, level=level) if rows else []
+        raw = papers.account_choices(rows, level=papers.PRIMARY_LEVEL, limit=None) if rows else []
         seen, unique = set(), []
         for code, label in raw:            # 同一科目只出现一次
             if code in seen:
@@ -260,12 +257,6 @@ class PaperDialog(tk.Toplevel):
             seen.add(code)
             unique.append((code, label))
         self.choices = unique
-        note = ""
-        if not self.choices and level:
-            self.choices = papers.account_choices(rows, level=papers.LEVEL_ALL) if rows else []
-            if self.choices:
-                self.level_box.current(0)
-                note = f"{papers.level_label(level)}无可做底稿的科目，已改为全部级次。"
         self._names = {row.code: row.name for row in rows if getattr(row, "code", "")}
         labels = []
         for code, label in self.choices:
@@ -275,13 +266,14 @@ class PaperDialog(tk.Toplevel):
         if self.choices:
             self.code_box.current(0)
             self._sync_paper()
-            self.state.set(note or f"共 {len(self.choices)} 个可选科目，已默认选中最前一个。")
+            self.state.set(f"共 {len(self.choices)} 个一级科目；每次只制作所选一级科目的底稿。")
         else:
             self.code_var.set("")
             self.current_paper = None
             if hasattr(self, "paper_var"):
                 self.paper_var.set("未选择科目")
-            self.state.set("未识别到可做底稿的科目，请先在「账套与 TB」读取科目余额。")
+            self.children_tree.delete(*self.children_tree.get_children())
+            self.state.set("未识别到一级科目，请先重新读取完整科目余额；二级科目不能单独制作底稿。")
 
     def _resolve_paper(self, code):
         """一级科目 → 财务报表审计报表科目；标黄行在内置清单里已被排除。"""
@@ -306,10 +298,33 @@ class PaperDialog(tk.Toplevel):
             self.paper_var.set(f"{paper.label}（财务报表审计 · {basis}），导出底稿按此索引号归档")
         else:
             self.paper_var.set(f"未匹配到财务报表审计科目：{basis}")
+        self.children_tree.delete(*self.children_tree.get_children())
+        try:
+            root, scoped = papers.primary_scope(self.app.rows, self.choices[index][0])
+        except ValueError as exc:
+            self.state.set(str(exc))
+            return
+        children = [row for row in scoped if row.level == 2 and row.path.rpartition("/")[0] == root.path]
+        for row in sorted(children, key=lambda item: item.code):
+            self.children_tree.insert("", "end", values=(row.code, row.name, fmt_amount(row.ending)))
+        if not children:
+            self.children_tree.insert("", "end", values=("—", "未设置二级科目，本册直接列示一级科目", ""))
+
+    def _confirm_request(self, request, client, code):
+        source = self._source_snapshot
+        dialog = PayloadDialog(self, {"purpose": "一级科目底稿辅助制作", **request}, client.model, client.base_url)
+        self.wait_window(dialog)
+        if not dialog.confirmed:
+            self.state.set("已取消发送，未请求模型。")
+            return False
+        if not self._ensure_fresh_choices() or source != self._source_snapshot or code != self._synced_code:
+            self.state.set("主体、期间、TB 或科目已变化，请重新预览后发送。")
+            return False
+        return True
 
     def _suggest_sheets(self):
         """让模型判断该科目应增删哪些专项表，采纳前先弹窗确认。"""
-        if self.scope != "paper":
+        if self.scope != "paper" or self.running or self.app.busy or not self._ensure_fresh_choices():
             return
         index = self.code_box.current()
         if index < 0 or index >= len(self.choices):
@@ -332,7 +347,8 @@ class PaperDialog(tk.Toplevel):
             client = ai_module.DeepSeekClient.from_store(self.store)
             result = papers.suggest_sheets(
                 client, name=paper.name if paper else (account.name if account else ""),
-                accounts=scoped, available=available, journal=self.journal_rows)
+                accounts=scoped, available=available, journal=self.journal_rows,
+                confirm=lambda request, service: self._confirm_request(request, service, code))
         except Exception as exc:
             messagebox.showerror("建议失败", str(exc), parent=self)
             self.state.set("智能建议失败，可按默认专项表导出。")
@@ -360,6 +376,9 @@ class PaperDialog(tk.Toplevel):
         return dxn.read_journal(subject, code, self.app.install_var.get().strip())
 
     def _close(self):
+        if self.running:
+            messagebox.showinfo("任务进行中", "请等待当前底稿任务结束后关闭，以确保临时副本正确清理。", parent=self)
+            return
         self.running = False
         self.destroy()
 
@@ -373,7 +392,7 @@ class PaperDialog(tk.Toplevel):
         return True
 
     def _generate(self):
-        if self.running:
+        if self.running or self.app.busy:
             return
         if not self._ensure_fresh_choices():
             return
@@ -385,12 +404,22 @@ class PaperDialog(tk.Toplevel):
             self.state.set("请选择科目。")
             return
         code = self.choices[index][0] if self.scope == "paper" and index >= 0 else ""
+        try:
+            _root, rows = papers.primary_scope(self.app.rows, code)
+            if self.current_paper is None:
+                raise ValueError("未匹配报表项目，请先核对所选一级科目。")
+            if self.app.store is None or not self.app.store.data.get("ai_enabled"):
+                raise ValueError("AI 未启用，可直接导出本地底稿；填写模型文字需先启用 AI。")
+            client = ai_module.DeepSeekClient.from_store(self.app.store)
+        except (ValueError, ai_module.AIError, settings.SettingsError) as exc:
+            self.state.set(str(exc))
+            return
         focus = self.focus_text.get("1.0", "end").strip()
         want_journal = self.scope == "paper" and bool(self.with_journal.get())
-        rows, results = tuple(self.app.rows), deepcopy(self.app.results)
         paper, subject = self.current_paper, self.app.loaded_subject
         subject_label, install_path = self.app._subject_label(), self.app.install_var.get().strip()
         self.running = True
+        self.app._set_busy(True, "正在准备底稿预览…")
         self.run_btn.configure(state="disabled")
         self.state.set("正在读取序时账并生成草稿…" if want_journal else "正在生成草稿（模型 + 内置知识库）…")
 
@@ -399,19 +428,10 @@ class PaperDialog(tk.Toplevel):
                 if want_journal and subject is None:
                     raise ValueError("请先读取科目余额并确认主体与期间。")
                 journal = dxn.read_journal(subject, code, install_path) if want_journal else None
-                client = ai_module.DeepSeekClient.from_store(self.app.store)
-                if self.scope == "paper":
-                    texts = [item.text for item in paper_pack.procedures(
-                        paper.index_no if paper else "", paper.name if paper else "")]
-                    result = papers.draft_pack(client, rows=rows, code=code,
-                                               paper=paper, procedures=texts,
-                                               subject_label=subject_label, focus=focus,
-                                               journal=journal)
-                else:
-                    result = papers.draft_document(client, rows=rows, results=results,
-                                                   kind=self.scope, subject_label=subject_label,
-                                                   focus=focus)
-                self.queue.put(("ok", (result, journal, code)))
+                texts = [item.text for item in paper_pack.procedures(paper.index_no, paper.name)]
+                request = papers.pack_request(rows=rows, code=code, paper=paper, procedures=texts,
+                                              subject_label=subject_label, focus=focus, journal=journal)
+                self.queue.put(("preview", (request, journal, code, client)))
             except Exception as exc:  # 网络、校验、知识库异常都回到界面
                 self.queue.put(("error", str(exc)))
 
@@ -427,11 +447,31 @@ class PaperDialog(tk.Toplevel):
             self.after(150, self._poll)
             return
         self.running = False
+        self.app._set_busy(False)
         self.run_btn.configure(state="normal")
         if not self._ensure_fresh_choices():
             return
         if status == "error":
             self.state.set("生成失败：" + value)
+            return
+        if status == "preview":
+            request, journal, code, client = value
+            if not self._confirm_request(request, client, code):
+                return
+            self.running = True
+            self.app._set_busy(True, "正在填写底稿文字…")
+            self.run_btn.configure(state="disabled")
+            self.state.set("正在填写文字草稿…")
+
+            def send():
+                try:
+                    answer = client.converse(request["question"], context=request["context"])
+                    self.queue.put(("ok", (papers.pack_result(answer, request), journal, code)))
+                except Exception as exc:
+                    self.queue.put(("error", str(exc)))
+
+            threading.Thread(target=send, daemon=True).start()
+            self.after(150, self._poll)
             return
         value, journal, code = value
         if self.scope == "paper" and code != self._synced_code:
@@ -463,6 +503,9 @@ class PaperDialog(tk.Toplevel):
 
     def _export(self):
         if not self._ensure_fresh_choices():
+            return
+        if self.running or self.app.busy:
+            self.state.set("请等待当前任务结束后再导出。")
             return
         if self.scope == "paper":
             self._export_pack()
@@ -504,11 +547,21 @@ class PaperDialog(tk.Toplevel):
             self.state.set("未找到该科目，请重新读取科目余额。")
             return
         paper = self.current_paper
+        try:
+            if paper is None:
+                raise ValueError("未匹配报表项目，请先核对所选一级科目。")
+            subject_row, scoped_rows = papers.primary_scope(self.app.rows, code)
+        except ValueError as exc:
+            self.state.set(str(exc))
+            return
         prefix = paper.index_no if paper else ""
         name = f"{prefix + '-' if prefix else ''}{subject_row.code} {subject_row.name}-底稿.xlsx"
         path = filedialog.asksaveasfilename(title="导出整册 Excel 底稿（草稿，需复核）", defaultextension=".xlsx",
                                             filetypes=[("Excel 工作簿", "*.xlsx")], initialfile=name)
         if not path:
+            return
+        if not self._ensure_fresh_choices() or code != self._synced_code:
+            self.state.set("来源或科目已变化，请重新确认后导出。")
             return
         journal = self.journal_rows if getattr(self, "journal_code", "") == code else None
         if journal is None and self.with_journal.get():
@@ -524,7 +577,7 @@ class PaperDialog(tk.Toplevel):
         try:
             output = dxn_paper.build(
                 path, paper=paper, subject_label=self.app._subject_label(),
-                rows=self.app.rows or [], resolve=lambda code, name: audit_index.resolve(
+                rows=scoped_rows, accounts=[subject_row], resolve=lambda code, name: audit_index.resolve(
                     code, name, getattr(self.app, "paper_library", ()))[0],
                 prepared_by=self.app.prepared_by, reviewed_by=self.app.reviewed_by,
                 when=datetime.now().strftime("%Y-%m-%d"),
@@ -1306,7 +1359,7 @@ class App(tk.Tk):
 
     def _draft_document(self, scope):
         """保留旧入口的明确提示，未完成的生成流程不能发送数据或导出。"""
-        messagebox.showinfo("功能待实现", "当前支持现有文档的文字辅助复核；生成、完整勾稽及模板导出待实现。",
+        messagebox.showinfo("功能待实现", "附注、报告生成及批量底稿制作仍待实现；可制作一级科目底稿或辅助复核现有文档。",
                             parent=self)
 
     def _open_review(self):
@@ -1360,7 +1413,12 @@ class App(tk.Tk):
         return sampler
 
     def _draft_paper(self):
-        self._draft_document("paper")
+        if self.busy:
+            return
+        if not self.rows or self.loaded_subject is None:
+            messagebox.showinfo("缺少科目余额", "请先在「账套与 TB」读取科目余额并确认主体、期间。", parent=self)
+            return
+        PaperDialog(self, "paper")
 
     def _set_knowledge_refs(self, refs):
         if not 1 <= len(refs) <= 5 or any(not item.get("excerpt") for item in refs):
@@ -2126,7 +2184,7 @@ class PayloadDialog(tk.Toplevel):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        tk.Label(self, text=f"{len(payload['targets'])} 个目标 · {len(payload['candidates'])} 个候选 · {model}\n发送至：{destination or '当前配置的模型服务'} · 仅预览中所示范围",
+        tk.Label(self, text=f"{payload.get('purpose') or 'AI 复核'} · {model}\n发送至：{destination or '当前配置的模型服务'} · 仅预览中所示范围",
                  bg=BG, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w", padx=PAD, pady=(PAD, 6))
 
         frame = ttk.Frame(self, padding=(PAD, 0, PAD, 0))

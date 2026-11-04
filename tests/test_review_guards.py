@@ -56,17 +56,16 @@ class RequestScopeTests(unittest.TestCase):
         self.send(app)
         app._async.assert_called_once()
 
-    def test_generation_entrypoints_never_open_dialog_or_send_data(self):
+    def test_unfinished_generation_entrypoints_never_open_dialog_or_send_data(self):
         app = self.app()
         app._draft_document = MethodType(gui.App._draft_document, app)
         with patch.object(gui, "PaperDialog") as dialog, \
                 patch.object(gui.dxn_paper, "build_all") as build, \
                 patch.object(gui.ai_module.DeepSeekClient, "from_store") as client, \
                 patch.object(gui.messagebox, "showinfo") as notice:
-            for method in (gui.App._draft_notes, gui.App._draft_report,
-                           gui.App._draft_paper, gui.App._build_all_papers):
+            for method in (gui.App._draft_notes, gui.App._draft_report, gui.App._build_all_papers):
                 method(app)
-            self.assertEqual(notice.call_count, 4)
+            self.assertEqual(notice.call_count, 3)
             dialog.assert_not_called()
             build.assert_not_called()
             client.assert_not_called()
@@ -90,6 +89,7 @@ class RequestScopeTests(unittest.TestCase):
         replies = queue.Queue()
         replies.put(("ok", ({"kind": "pack"}, ["old journal"], "old")))
         dialog = SimpleNamespace(running=True, queue=replies, run_btn=Mock(), state=Mock(),
+                                 app=Mock(),
                                  _ensure_fresh_choices=Mock(return_value=True), scope="paper",
                                  _synced_code="current", draft=None, journal_rows=None, journal_code="")
         gui.PaperDialog._poll(dialog)

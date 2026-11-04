@@ -164,11 +164,11 @@ def build_pages(app):
     for key, title, description, steps in (
             ("notes", "让附注与已复核 TB 保持一致", "当前支持文字与知识来源辅助复核；完整生成与模板导出待实现。",
              ("关联已复核 TB", "选择现有附注", "按知识依据辅助复核")),
-            ("papers", "把科目、程序和审计证据连接起来", "当前支持现有底稿的文字辅助复核；生成、完整勾稽及模板导出待实现。",
-             ("关联已复核 TB", "选择现有底稿", "按知识依据辅助复核"))):
+            ("papers", "按一级科目制作底稿", "每份底稿只对应一个一级科目，下列所属二级科目；可导出 Excel 草稿，审定数与审计调整留待复核。",
+             ("读取账套并确认主体、期间", "选择一级科目，核对包含的二级科目", "制作底稿草稿并复核导出"))):
         future = scroll_page(app, key)
         card = panel(future, 0, pady=(25, 12))
-        label(card, "文字辅助复核已接入 · 生成与模板导出待实现",
+        label(card, "一级科目底稿草稿 · 二级科目随册列示" if key == "papers" else "文字辅助复核已接入 · 生成与模板导出待实现",
               size=9, color=ACCENT, bold=True).pack(anchor="w", padx=28, pady=(28, 15))
         label(card, title, size=22, bold=True).pack(anchor="w", padx=28)
         label(card, description, color=MUTED).pack(anchor="w", padx=28, pady=14)
@@ -179,6 +179,9 @@ def build_pages(app):
         tk.Label(card, textvariable=app.review_status, bg=CARD, fg=ACCENT, font=(FONT, 9),
                  wraplength=820, justify="left").pack(anchor="w", padx=28, pady=(0, 8))
         role = "附注" if key == "notes" else "底稿"
+        if key == "papers":
+            ttk.Button(card, text="制作底稿（一级科目）", style="Accent.TButton",
+                       command=app._draft_paper).pack(anchor="w", padx=28, pady=(4, 10))
         ttk.Button(card, text=f"选择待复核{role}", command=lambda role=role: app._attach_review_document(role)).pack(anchor="w", padx=28, pady=(4, 8))
         ttk.Button(card, text=f"按知识依据复核{role}", style="Accent.TButton", command=lambda role=role: app._agent_review(role)).pack(anchor="w", padx=28, pady=(0, 12))
         ttk.Button(card, text="返回 TB 复核", command=lambda: navigate(app, "tb")).pack(
@@ -241,7 +244,7 @@ def _build_overview(app):
         modules.columnconfigure(col, weight=1, uniform="module")
     for col, (key, number, title, summary, chip) in enumerate((
             ("tb", "01", "TB 填列与复核", "取数、识别、复核后另存。", "可用"),
-            ("papers", "02", "审计底稿", "核对底稿文字与依据。", "辅助复核"),
+            ("papers", "02", "审计底稿", "按一级科目制作，包含二级明细。", "底稿草稿"),
             ("notes", "03", "财务报表附注", "复核附注文字与依据。", "辅助复核"),
             ("report", "04", "报告中心", "核对准备情况与现有报告。", "辅助复核"))):
         card = tk.Frame(modules, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)

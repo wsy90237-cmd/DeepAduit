@@ -92,11 +92,28 @@ def account_choices(rows, limit=120, level=None):
             continue
         has_child = any(path.startswith(f"{row.path}/") for path in parent_paths) if row.path else False
         weight = (abs(row.ending or ZERO) + abs(row.debit or ZERO) + abs(row.credit or ZERO))
-        if has_child and weight == ZERO:      # 无金额的汇总科目对底稿没有意义
+        if has_child and weight == ZERO and level != PRIMARY_LEVEL:
             continue
         picked.append((weight, row))
     picked.sort(key=lambda item: (item[1].level or 1, -item[0], item[1].code))
     return [(row.code, f"{row.code} {row.name}") for _weight, row in picked[:limit]]
+
+
+def primary_scope(rows, code):
+    """一份底稿绑定一个一级科目及其子树，不合并同报表项目下的其他一级科目。"""
+    by_code = {}
+    for row in rows:
+        if row.code in by_code and by_code[row.code] != row:
+            raise ValueError(f"科目编码 {row.code} 存在冲突，请重新核对来源。")
+        by_code[row.code] = row
+    root = by_code.get(code)
+    if root is None or root.level != PRIMARY_LEVEL:
+        raise ValueError("只能选择一级科目制作底稿，二级科目随所属一级科目列示。")
+    scoped = [row for row in by_code.values() if row == root or
+              (root.path and row.path.startswith(root.path + "/") and row.code.startswith(root.code))]
+    if len({(row.subject_id, row.year, row.month, row.ledger_id, row.basis) for row in scoped}) != 1:
+        raise ValueError("本科目数据包含不同账套、主体或期间，请重新读取。")
+    return root, tuple(scoped)
 
 
 def _search_knowledge(query, limit):
@@ -292,12 +309,20 @@ def _clean_list(value, limit=PACK_ITEM_LIMIT):
 
 def draft_pack(client, *, rows, code, paper, procedures, subject_label="", focus="",
                journal=None, limit=5):
-    """让模型按整册底稿的结构填写文字栏；金额与索引仍由本地函数写入。
+    request = pack_request(rows=rows, code=code, paper=paper, procedures=procedures,
+                           subject_label=subject_label, focus=focus, journal=journal, limit=limit)
+    answer = client.converse_with_skills(request["question"], context=request["context"])
+    return pack_result(answer, request)
 
-    返回的 ``procedure_notes`` 与传入的 ``procedures`` 一一对应，缺项自动回落为“待补”。
-    """
+
+def pack_request(*, rows, code, paper, procedures, subject_label="", focus="",
+                 journal=None, limit=5):
+    """本地准备可预览的一级科目文字请求；此函数不发起模型请求。"""
     if not procedures:
         raise ValueError("没有可用的审计程序清单，未生成整册底稿。")
+    _root, rows = primary_scope(rows, code)
+    if paper is None:
+        raise ValueError("未确认报表项目，请先核对一级科目映射。")
     facts = build_facts(rows, code, journal)
     facts["paper"] = {"index_no": getattr(paper, "index_no", "") if paper else "",
                       "name": getattr(paper, "name", "") if paper else ""}
@@ -337,7 +362,14 @@ def draft_pack(client, *, rows, code, paper, procedures, subject_label="", focus
         "audit_notes 要逐条带索引号（如 1-010-1）；procedures 的 no 必须与 facts.procedures 对应；"
         "没有证据的栏目写“待补”，不得编造。引用知识条目用 [K1] 编号。"
     )
-    answer = client.converse_with_skills(question, context=context)
+    return {"question": question, "context": context}
+
+
+def pack_result(answer, request):
+    """解析已预览请求的回复；不读取正在变化的工作区，也不发起网络请求。"""
+    facts = request["context"]["facts"]
+    refs = request["context"]["knowledge_refs"]
+    procedures = facts["procedures"]
     if answer.get("intent") != "audit":
         raise ValueError(answer.get("answer") or "模型未按审计任务回答，未生成底稿。")
     data = _first_json(answer.get("answer"))
@@ -375,11 +407,11 @@ def draft_pack(client, *, rows, code, paper, procedures, subject_label="", focus
             "conclusion": _clean_text(data.get("conclusion"), limit=300, fallback=""),
             "review_conclusion": _clean_text(data.get("review"), limit=200,
                                              fallback="待补（模型未给出复核结论）"),
-            "refs": refs, "has_journal": journal is not None, "journal": facts.get("journal"),
+            "refs": refs, "has_journal": "journal" in facts, "journal": facts.get("journal"),
             "warnings": answer.get("warnings", []) + answer.get("citation_warnings", [])}
 
 
-def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12):
+def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12, confirm=None):
     """让模型判断该科目应增删哪些专项表；只给建议，采纳与否由使用者决定。
 
     返回 {"add": [{"name","reason"}], "remove": [{"name","reason"}]}；
@@ -407,7 +439,12 @@ def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12)
         "表名必须来自 available_sheets，数量不超过 3 个，没有就返回空数组。"
     )
     try:
-        answer = client.converse_with_skills(question, context=context)
+        if confirm is not None:
+            if not confirm({"question": question, "context": context}, client):
+                return {"add": [], "remove": [], "note": "已取消发送，未请求模型。"}
+            answer = client.converse(question, context=context)
+        else:
+            answer = client.converse_with_skills(question, context=context)
         if answer.get("intent") != "audit":
             raise ValueError("模型未按审计任务回答")
         data = _first_json(answer.get("answer"))

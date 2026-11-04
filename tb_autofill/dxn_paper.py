@@ -680,6 +680,25 @@ def _catalog(book, meta, index_no, entries):
             "5、本册为草稿，未经注册会计师复核不得归档。"):
         sheet.merge(row, 1, columns, text, font=SMALL_FONT, height=22)
         row += 1
+    primary = meta.get("primary_account")
+    if primary is not None:
+        row += 1
+        sheet.merge(row, 1, columns, f"一级科目：{primary.code} {primary.name}", font=HEAD_FONT, height=24)
+        row += 1
+        children = meta["secondary_accounts"]
+        sheet.merge(row, 1, columns, f"包含的二级科目（{len(children)} 项，明细见账项明细表）",
+                    font=HEAD_FONT, height=24)
+        row += 1
+        sheet.merge(row, 1, 2, "二级科目编码", font=HEAD_FONT, fill=HEAD_FILL, height=24)
+        sheet.merge(row, 3, 5, "二级科目名称", font=HEAD_FONT, fill=HEAD_FILL)
+        sheet.cell(row, 6, "期末账面余额（元）", font=HEAD_FONT, fill=HEAD_FILL)
+        for child in children:
+            row += 1
+            sheet.merge(row, 1, 2, child.code)
+            sheet.merge(row, 3, 5, child.name)
+            sheet.cell(row, 6, child.ending, money=True, align=RIGHT)
+        if not children:
+            sheet.merge(row + 1, 1, columns, "未设置二级科目，本册直接列示一级科目账面数。", font=SMALL_FONT)
     sheet.page_setup()
     return sheet
 
@@ -740,6 +759,11 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
         "disclosure_notes": narrative.get("disclosure_notes") or [],
         "conclusion": conclusion,
     }
+    if accounts is not None and len(grouped) == 1:
+        root = grouped[0]
+        meta["primary_account"] = root
+        meta["secondary_accounts"] = [line for line in detail_rows(rows, root) if line.level == 2]
+        meta["source"] += f"；一级科目：{root.code} {root.name}"
     book = Workbook()
     book.remove(book.active)
     entries = [
