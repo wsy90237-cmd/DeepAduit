@@ -2,7 +2,7 @@
 
 本文件按任务书要求提交给 Codex 独立复核。本轮只做本地开发、测试与候选包，**未推送、未发布、未替换** `P:\exetoBe\软件开发\审计底稿软件` 下的 0.6.2 在用目录，也未编译正式 EXE。
 
-本地提交：`a657629 feat: assemble report-scope papers with template library coverage [skip ci]`（父提交 `5366841`）。
+本地提交：`a657629 feat: assemble report-scope papers with template library coverage [skip ci]`（父提交 `5366841`），复核文档提交 `11a7081`；候选包按 `11a7081` 冻结构建，本节校验值在构建后追加，不影响包内容。未推送、未发布、未替换在用 0.6.2 目录。
 
 ## 一、结论摘要
 
@@ -10,7 +10,7 @@
 2. 往来明细按账套实际选中的客商核算维度列示，同名不同编码不合并、父子不重复、辅助与总账差异保留、缺值留空。
 3. 损益明细表有 1—12 月发生额列及本期、上期发生额，只取独立发生额字段（`c_kmyek.fse`、`c_cwkmk.ws_fse`/`sn_ws_fse`），不再用借贷单边累计或结转后余额代填。
 4. 17 套安装标准全部完成静态结构解析与原件保留：5,747 个工作簿、35,902 张表、910,906 条可读公式、13,649 条未解析、解析失败 0。运行时模板目录仍只绑定「企业会计准则(已执行新金融工具、新收入和新租赁准则)」一套。
-5. 完整回归 **611 项全部通过**（37 个测试模块）。0.6.3 未编译开发候选包已生成，模板原件随包携带并逐文件校验。
+5. 完整回归 **611 项全部通过**（37 个测试模块）。0.6.3 未编译开发候选包已生成（ZIP SHA-256 `7a9c3ca1…a4b83`，737.8 MB），模板原件随包携带并逐文件校验。
 
 仍未完成：附注与报告生成（界面不提供可用生成按钮）、原插件外部函数内部算法、其余 16 套标准的运行时用表规划、真实账套业务验收。
 
@@ -121,15 +121,21 @@
 
 ## 六、本地候选包
 
-- 版本：0.6.3，未编译（developer-source）。
-- 路径与 SHA-256、自检项见本文件末尾「候选包校验」一节（打包完成后填写）。
+- 版本：0.6.3，未编译（developer-source），Python 3.12.10，构建源提交 `11a7081`。
+- 目录：`dist/DeepAudit-0.6.3-dev/`；压缩包：`dist/DeepAudit-0.6.3-dev/DeepAudit-0.6.3-dev-windows-x64.zip`（737.8 MB）。
+- ZIP SHA-256：`7a9c3ca1551159fe6b5bad44bc4fc69988d4e0b834e73e0c57de9960e96a4b83`。
+- `FILES.sha256`：8,524 行（解压后逐文件校验）；`templates/TEMPLATES.sha256`：5,891 行，清单哈希 `61250d11cab55ae266131bb891cef78b7d64e69a089ded71453962191540e8e3`，已写入 `BUILDINFO.json`。
+- `BUILDINFO.json`：`templates: {standards: 17, files: 5891}`，`compiled: false`。
+- 自检（9 项，全部通过）：`decimal_amount`、`dpapi_key`、`audit_checkpoint`、`protected_header`、`local_knowledge`、`pdf_runtime`、`report_readiness`、`brand_assets`、`paper_index`。
+- 附加校验：`zipfile.testzip()` 返回 `None`，ZIP 共 8,525 个条目，含 `templates/TEMPLATES.sha256`、`tb_autofill/assets/dxn-templates.json`、`BUILDINFO.json`；包内运行时复跑 `runtime/python.exe -I -B tools/run_gui.py --selftest` 输出 `DeepAudit selftest ok 0.6.3`。
+- `dist/` 现只保留本版本目录，`DeepAudit-0.6.2-dev` 已按约定清理；在用安装目录 `P:\exetoBe\软件开发\审计底稿软件` 未被改动。
 - 复现命令：
 
 ```text
 .venv/Scripts/python.exe -B tools/build_dev.py
 ```
 
-默认读取 `local-data/dxn-library-20261105`，可用 `--template-library <目录>` 指定、`--skip-templates` 只打程序。
+默认读取 `local-data/dxn-library-20261105`，可用 `--template-library <目录>` 指定、`--skip-templates` 只打程序。打包要求工作树干净且提交号在构建期间不变，否则拒绝生成清单。
 
 ## 七、代码评审记录（本轮发现并修正）
 
