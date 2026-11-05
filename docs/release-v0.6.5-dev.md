@@ -13,4 +13,6 @@
 
 完整回归命令为 `.venv/Scripts/python.exe -B -m unittest <rg --files tests -g test_*.py 返回的全部模块>`，临时目录位于项目内。日志为 `local-data/codex-review-20261105/pl-chat-targeted.txt` 和 `pl-chat-full.txt`；原始日志不提交。
 
-发布物：`DeepAudit-0.6.5-dev-windows-x64.zip`（773,597,876 字节，SHA-256 `c00e22bc48cd3010a06ca56b7df32371a55a54dd4564c2e21a1ed4b3de268f9a`），解压后双击 `启动DeepAudit.cmd`；本包未编译，正式 EXE 仍走 Nuitka 流程。
+发布物：`DeepAudit-0.6.5-dev-windows-x64.zip`（22,901,032 字节，SHA-256 `49371df1cb8c3c534a6a1fc0d57d2ced42e39be6f9c62a62c3ce3762b88bf982`，构建源提交 `b1eb9e0`）。解压后双击 `启动DeepAudit.cmd`；本包未编译，正式 EXE 仍走 Nuitka 流程。
+
+包内不含鼎信诺空白模板原件：原厂资源不随公开发布再分发。运行时的模板结构目录 `tb_autofill/assets/dxn-templates.json` 已随包提供；如需本机核对原件，按 `docs/dxn-template-coverage-2026-11-05.md` 的命令从自己的安装目录重新采集，再用 `tools/build_dev.py`（默认携带模板）生成本地完整包。
