@@ -1,32 +1,38 @@
-"""独立启动入口：供 pythonw 拉起界面，异常写入本机日志便于排查。
-
-用法（不弹控制台窗口）：
-    .venv\\Scripts\\pythonw.exe tools\\run_gui.py
-"""
+"""Start the source/developer package and report otherwise invisible failures."""
 
 from __future__ import annotations
 
 from pathlib import Path
+import runpy
 import sys
+import tempfile
 import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
-LOG = Path.home() / "AppData" / "Local" / "Temp" / "deepaudit-gui.log"
+LOG = Path(tempfile.gettempdir()) / "deepaudit-gui.log"
 
 
 def main():
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(ROOT))
-    site_packages = ROOT / ".venv" / "Lib" / "site-packages"
-    if site_packages.is_dir():
-        sys.path.append(str(site_packages))
     try:
-        from tb_autofill.gui import main as start_gui
-        start_gui()
-    except Exception:                       # 打包或依赖问题时留下可读堆栈
-        LOG.write_text(traceback.format_exc(), encoding="utf-8")
-        raise
+        runpy.run_path(str(ROOT / "launch.py"), run_name="__main__")
+    except Exception:
+        detail = traceback.format_exc()
+        message = "DeepAudit 启动失败。"
+        try:
+            LOG.write_text(detail, encoding="utf-8")
+            message += f"\n诊断日志：{LOG}"
+        except OSError:
+            message += "\n无法保存日志，请运行 DeepAudit-trial.cmd 查看错误。"
+        if sys.stderr is not None:
+            print(detail, file=sys.stderr)
+        else:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, message, "DeepAudit", 0x10)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

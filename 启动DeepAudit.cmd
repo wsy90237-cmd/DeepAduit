@@ -1,9 +1,13 @@
 @echo off
-rem 双击启动 DeepAudit（源码版，不弹控制台窗口）
+setlocal
 cd /d "%~dp0"
-if not exist "%~dp0.venv\Scripts\pythonw.exe" (
-    echo 未找到 .venv，请先按 requirements.txt 安装依赖。
+set "PYTHONDONTWRITEBYTECODE=1"
+set "PYTHON_EXE=%~dp0runtime\pythonw.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=%~dp0.venv\Scripts\pythonw.exe"
+if not exist "%PYTHON_EXE%" (
+    echo DeepAudit runtime is missing. Extract the whole developer ZIP first.
+    echo For a source checkout, install requirements.txt in .venv.
     pause
     exit /b 1
 )
-start "" "%~dp0.venv\Scripts\pythonw.exe" "%~dp0tools\run_gui.py"
+start "" "%PYTHON_EXE%" -I -B "%~dp0tools\run_gui.py" %*
