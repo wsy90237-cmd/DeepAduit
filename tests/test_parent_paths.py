@@ -90,7 +90,7 @@ class ParentPathTests(unittest.TestCase):
         from openpyxl import Workbook
         from openpyxl.utils import get_column_letter
         from tb_autofill import fields, workbook
-        with TemporaryDirectory(dir='.') as folder:
+        with TemporaryDirectory() as folder:
             path = Path(folder)/'synthetic.xlsx'
             for title in ('试算平衡表(期末)', '自定义页'):
                 for dr, dc in ((0, 0), (37, 3), (101, 8)):

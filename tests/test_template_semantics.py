@@ -16,7 +16,7 @@ from tb_autofill.models import LedgerRow, MatchResult
 
 class OpeningProfitTests(unittest.TestCase):
     def setUp(self):
-        self.folder = TemporaryDirectory(dir=".")
+        self.folder = TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
         self.path = Path(self.folder.name) / "synthetic.xlsx"
 
@@ -206,7 +206,7 @@ class OpeningProfitTests(unittest.TestCase):
 
 class TemplatePeriodTests(unittest.TestCase):
     def setUp(self):
-        self.folder = TemporaryDirectory(dir=".")
+        self.folder = TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
         self.path = Path(self.folder.name) / "synthetic.xlsx"
 
