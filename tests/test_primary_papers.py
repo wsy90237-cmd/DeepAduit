@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from decimal import Decimal
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from openpyxl import load_workbook
 
-from tb_autofill import audit_index, gui, papers
+from tb_autofill import ai, audit_index, gui, papers
 from tb_autofill.models import LedgerRow, Subject
 
 
@@ -53,11 +54,46 @@ class PrimaryScopeTests(unittest.TestCase):
                                        available=["银行账户清单"], confirm=lambda request, service: False)
         client.converse.assert_not_called()
         client.converse_with_skills.assert_not_called()
+        client.paper_text.assert_not_called()
         self.assertIn("取消", result["note"])
+
+    def test_sheet_suggestion_uses_direct_json_and_exact_preview(self):
+        calls, previews = [], []
+        def transport(path, payload):
+            calls.append(payload)
+            return {"choices": [{"finish_reason": "stop", "message": {
+                "content": '{"add":[{"name":"银行账户清单","reason":"核对账户范围"}],"remove":[]}'}}]}
+        client = ai.DeepSeekClient("synthetic-key", transport=transport)
+        result = papers.suggest_sheets(client, name="银行存款", accounts=ledger()[:1],
+                                       available=["银行账户清单"],
+                                       confirm=lambda request, service: previews.append(request) or True)
+        self.assertEqual(result["add"][0]["name"], "银行账户清单")
+        request = previews[0]
+        self.assertEqual(calls[0]["messages"][0]["content"], request["system"])
+        self.assertEqual(json.loads(calls[0]["messages"][1]["content"]), request["context"])
+        self.assertEqual(calls[0]["messages"][2]["content"], request["question"])
+        self.assertNotIn(ai.CONVERSATION_SYSTEM, request["system"])
+        self.assertEqual(request["context"]["facts"]["accounts"][0]["code"], "1002")
+
+    def test_invalid_or_incomplete_sheet_suggestion_is_an_error(self):
+        for content, reason in (("无需增加", "stop"), ('{}', "stop"),
+                                ('{"add":[],"remove":[]}', "length"),
+                                ('{"add":{},"remove":[]}', "stop")):
+            with self.subTest(content=content, reason=reason):
+                client = ai.DeepSeekClient("synthetic-key", transport=lambda *args: {
+                    "choices": [{"finish_reason": reason, "message": {"content": content}}]})
+                result = papers.suggest_sheets(client, name="银行存款", accounts=ledger()[:1],
+                                               available=["银行账户清单"])
+                self.assertTrue(result["error"])
+                self.assertFalse(result["add"])
 
 
 class PaperUiTests(unittest.TestCase):
     def setUp(self):
+        def unexpected_dialog(title, message, **kwargs):
+            self.fail(f"{title}: {message}")
+        for name in ("showerror", "showinfo", "askyesno"):
+            self.enterContext(patch.object(gui.messagebox, name, side_effect=unexpected_dialog))
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
         def isolated_settings(app):
@@ -77,8 +113,10 @@ class PaperUiTests(unittest.TestCase):
         dialog = gui.PaperDialog(self.app)
         dialog.withdraw()
         dialog.with_journal.set(False)
-        dialog.code_box.current(next(index for index, item in enumerate(dialog.choices) if item[0] == "1002"))
+        dialog.code_box.current(next(index for index, item in enumerate(dialog.choices) if item[0] == "1-010"))
         dialog._sync_paper()
+        dialog.children_tree.selection_set("1002")
+        dialog._select_account()
         return dialog
 
     def test_workspace_button_opens_paper_dialog_without_api_key(self):
@@ -93,11 +131,55 @@ class PaperUiTests(unittest.TestCase):
             buttons[0].invoke()
         opened.assert_called_once_with(self.app, "paper")
 
-    def test_dialog_only_lists_primary_and_shows_direct_secondary(self):
+    def test_dialog_groups_report_items_and_shows_primary_and_direct_secondary(self):
         dialog = self.dialog()
-        self.assertEqual({code for code, _label in dialog.choices}, {"1001", "1002"})
-        values = [dialog.children_tree.item(item, "values") for item in dialog.children_tree.get_children()]
-        self.assertEqual([(row[0], row[1]) for row in values], [("100201", "合成银行甲"), ("100202", "合成银行乙")])
+        self.assertEqual(list(dialog.code_box.cget("values")), ["1-010 货币资金"])
+        self.assertEqual(dialog.children_tree.get_children(), ("1001", "1002"))
+        values = [(dialog.children_tree.item(item, "text"), dialog.children_tree.item(item, "values")[0])
+                  for item in dialog.children_tree.get_children("1002")]
+        self.assertEqual(values, [("100201", "合成银行甲"), ("100202", "合成银行乙")])
+        self.assertIn("1002 银行存款", dialog.paper_var.get())
+
+    def test_selecting_secondary_selects_its_primary_and_clears_old_draft(self):
+        dialog = self.dialog()
+        dialog.draft, dialog.journal_rows, dialog.journal_code = {"old": True}, ["old"], "1002"
+        dialog.sheet_add = ["旧建议"]
+        dialog.children_tree.selection_set("1001")
+        dialog._select_account()
+        self.assertEqual(dialog._synced_code, "1001")
+        self.assertIsNone(dialog.draft)
+        self.assertIsNone(dialog.journal_rows)
+        self.assertEqual(dialog.sheet_add, [])
+        dialog.children_tree.selection_set("100202")
+        dialog._select_account()
+        self.assertEqual(dialog._synced_code, "1002")
+
+    def test_report_selection_only_shows_related_accounts(self):
+        root = replace(ledger()[0], code="5001", name="开发成本", path="开发成本")
+        child = replace(root, code="500101", name="合成项目", path="开发成本/合成项目", level=2)
+        self.app.rows.extend([root, child])
+        dialog = self.dialog()
+        dialog.code_box.current(next(index for index, item in enumerate(dialog.choices) if item[0] == "1-150"))
+        dialog._sync_paper()
+        self.assertEqual(dialog.children_tree.get_children(), ("5001",))
+        self.assertEqual(dialog.children_tree.get_children("5001"), ("500101",))
+        self.assertEqual(dialog._synced_code, "5001")
+        self.assertEqual(dialog.current_paper.index_no, "1-150")
+
+    def test_failed_sheet_suggestion_does_not_claim_no_adjustment_or_replace_selection(self):
+        dialog = self.dialog()
+        dialog.store = SimpleNamespace(has_key=True, data={"ai_enabled": True})
+        dialog.sheet_add = ["银行账户清单"]
+        with patch.object(gui.ai_module.DeepSeekClient, "from_store"), \
+                patch.object(gui.papers, "suggest_sheets", return_value={
+                    "add": [], "remove": [], "note": "合成格式错误", "error": True}), \
+                patch.object(gui.messagebox, "showerror") as failed, \
+                patch.object(gui.messagebox, "showinfo") as no_change:
+            dialog._suggest_sheets()
+        failed.assert_called_once()
+        no_change.assert_not_called()
+        self.assertEqual(dialog.state.get(), "合成格式错误")
+        self.assertEqual(dialog.sheet_add, ["银行账户清单"])
 
     def test_missing_primary_does_not_fall_back_to_secondary(self):
         self.app.rows = ledger()[1:4]
@@ -112,7 +194,7 @@ class PaperUiTests(unittest.TestCase):
                             level=2, opening=Decimal(1), ending=Decimal(1)) for index in range(1, 26)]
         self.app.rows = [root, *children]
         dialog = self.dialog()
-        self.assertEqual(len(dialog.children_tree.get_children()), 25)
+        self.assertEqual(len(dialog.children_tree.get_children("1002")), 25)
         path = Path(self.folder.name) / "synthetic-many.xlsx"
         with patch.object(gui.filedialog, "asksaveasfilename", return_value=str(path)):
             dialog._export()

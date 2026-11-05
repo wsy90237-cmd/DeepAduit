@@ -198,7 +198,7 @@ class FakeClient:
         self.answer, self.intent = answer, intent
         self.calls = 0
 
-    def converse_with_skills(self, *args, **kwargs):
+    def paper_text(self, request):
         self.calls += 1
         return {"intent": self.intent, "answer": self.answer, "warnings": [],
                 "citation_warnings": []}

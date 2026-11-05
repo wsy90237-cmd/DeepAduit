@@ -60,6 +60,8 @@ class FakeClient:
     def converse_with_skills(self, *args, **kwargs):
         return {"intent": "audit", "answer": self.answer, "warnings": []}
 
+    paper_text = converse_with_skills
+
 
 class AiPickTests(unittest.TestCase):
     def test_ai_picks_are_honoured(self):
@@ -197,7 +199,7 @@ class SuggestSheetsTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in result["remove"]], ["库存现金监盘表"])
 
     def test_unknown_sheet_is_ignored(self):
-        answer = json.dumps({"add": [{"name": "不存在的表", "reason": "瞎编"}]})
+        answer = json.dumps({"add": [{"name": "不存在的表", "reason": "瞎编"}], "remove": []})
         result = papers.suggest_sheets(FakeClient(answer), name="货币资金",
                                        accounts=self.accounts(),
                                        available=paper_sheets.names("cash"))
@@ -214,4 +216,5 @@ class SuggestSheetsTests(unittest.TestCase):
                                        accounts=self.accounts(),
                                        available=paper_sheets.names("cash"))
         self.assertEqual(result["add"], [])
-        self.assertIn("未给出建议", result["note"])
+        self.assertTrue(result["error"])
+        self.assertIn("专项表建议失败", result["note"])
