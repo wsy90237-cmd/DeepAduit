@@ -10,7 +10,7 @@ from unittest.mock import patch
 from openpyxl import load_workbook
 
 from tb_autofill import audit_index, dxn_paper, paper_sheets
-from tb_autofill.models import AuxiliaryBalanceRow, LedgerRow, PaperData
+from tb_autofill.models import AuxiliaryBalanceRow, JournalRow, JournalRows, LedgerRow, PaperData
 
 
 def row(code, name, ending="100", direction="借", **kwargs):
@@ -107,6 +107,33 @@ class ReportPaperDataTests(unittest.TestCase):
         self.assertIsNone(dxn_paper.totals([root], "贷")["period"])
         self.assertIn("COUNT(D9:D9)=1", book["4-010 审定表"]["D10"].value)
 
+    def test_profit_loss_reconciles_every_exported_level_and_preserves_unknowns(self):
+        root = replace(row("6602", "管理费用", "0", is_profit_loss=True), period_amount=Decimal(100))
+        middle = replace(root, code="660201", name="办公费", path="管理费用/办公费", level=2)
+        leaf = replace(middle, code="66020101", name="文具费", path="管理费用/办公费/文具费", level=3,
+                       period_amount=Decimal(90))
+        self.assertEqual(dxn_paper.consistency([root], [root, middle, leaf]), (False, Decimal(10)))
+        book = self.build([root, middle, leaf])
+        self.assertEqual(book["5-110 明细表"]["R8"].value, 90)
+        text = " ".join(str(cell.value) for cells in book["5-110 审定表"] for cell in cells)
+        self.assertIn("发生额逐级核对存在差异", text)
+        self.assertNotIn("四栏逐栏核对一致", text)
+        self.assertEqual(dxn_paper.consistency([root], [root, middle, replace(leaf, period_amount=None)]), (None, None))
+        self.assertEqual(dxn_paper.consistency([root], [root, middle, replace(leaf, period_amount=Decimal(100))]),
+                         (True, Decimal(0)))
+        reverse = replace(leaf, direction="贷", period_amount=Decimal(-100))
+        self.assertEqual(dxn_paper.consistency([root], [root, middle, reverse]), (True, Decimal(0)))
+
+    def test_profit_loss_checks_previous_occurrence_at_deep_levels(self):
+        root = replace(row("6602", "管理费用", "0", is_profit_loss=True), period_amount=Decimal(100),
+                       previous_period_amount=Decimal(80))
+        middle = replace(root, code="660201", name="办公费", path="管理费用/办公费", level=2)
+        leaf = replace(middle, code="66020101", name="文具费", path="管理费用/办公费/文具费", level=3,
+                       previous_period_amount=Decimal(70))
+        self.assertEqual(dxn_paper.consistency([root], [root, middle, leaf]), (False, Decimal(10)))
+        self.assertEqual(dxn_paper.consistency([root], [root, middle, replace(leaf, previous_period_amount=None)]),
+                         (None, None))
+
     def customer_data(self, count=15):
         root = row("1122", "应收账款", str(count * 10))
         child = replace(root, code="112201", name="开票应收款", path="应收账款/开票应收款", level=2)
@@ -155,6 +182,17 @@ class ReportPaperDataTests(unittest.TestCase):
     def test_required_core_sheets_cannot_be_removed(self):
         book = self.build([row("1001", "库存现金", "0")], sheet_drop=["分析程序表", "抽凭表"])
         self.assertTrue({"分析程序表", "抽凭表"} <= set(book.sheetnames))
+
+    def test_unspecified_journal_uses_paper_data_but_explicit_none_excludes_it(self):
+        source = row("1001", "库存现金", "0")
+        journal = JournalRows([JournalRow(1, "2026-01-01", "SYN-1", "1", "SYNTHETIC-JOURNAL",
+                                          source.code, Decimal(1), Decimal(0))])
+        data = PaperData(rows=(source,), codes=(source.code,), journal=journal)
+        included = self.build(data.rows, paper_data=data)
+        self.assertEqual(included["抽凭表"]["D8"].value, "SYNTHETIC-JOURNAL")
+        included.close()
+        excluded = self.build(data.rows, paper_data=data, journal=None)
+        self.assertIsNone(excluded["抽凭表"]["D8"].value)
 
     def test_unknown_suggested_sheet_can_use_reference_catalog_spec(self):
         spec = ("合成原模板参考表", (("业务事项", 28, "text"), ("依据", 30, "text")),

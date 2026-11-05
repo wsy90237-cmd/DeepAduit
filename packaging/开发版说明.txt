@@ -20,4 +20,4 @@ AI 请求仍须先预览数据范围和目的服务。
 本包不含原账套、客户模板、项目数据、API Key 或本机配置。
 同一 Windows 用户继续读取 %LOCALAPPDATA%\ZSZH-TB 的本机配置；外部模型凭据仍由 DPAPI 保护。
 Excel 另存依赖安装的 Microsoft Excel；WPS 尚未验证。
-核对发布页 SHA256SUMS.txt 中 ZIP 的校验值；FILES.sha256 记录解压后的各文件校验值。
+本地开发包的 ZIP 校验值见同目录 SHA256SUMS.txt；FILES.sha256 记录解压后的各文件校验值。

@@ -91,6 +91,30 @@ class OccurrenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "重复来源"):
             dxn._paper_occurrences(rows, [], [{"kmbh": "6602"}, {"kmbh": "6602"}], subject(1))
 
+    def test_prior_identity_conflict_clears_amount_and_months_including_annual_fallback(self):
+        for month in (1, 12):
+            current = dxn._aggregate([record(name="办公费")], subject(month))
+            for old in (record(name="差旅费", amount="90"),
+                        record(name="办公费", kmjc=2, amount="90"),
+                        record(name="办公费", direction="贷", amount="90")):
+                with self.subTest(month=month, old=old):
+                    result = dxn._paper_occurrences(current, [old],
+                             [{"kmbh": "6602", "ws_fse": "100", "sn_ws_fse": "90"}], subject(month))[0]
+                    self.assertIsNone(result.previous_period_amount)
+                    self.assertEqual(result.previous_monthly_amounts, (None,) * 12)
+                    self.assertIn("待确认", result.previous_period_source)
+
+    def test_prior_parent_change_is_ambiguous_but_whitespace_is_not(self):
+        current_records = [record(), record(code="660201", name="办公费", kmjc=2)]
+        current = dxn._aggregate(current_records, subject(1))
+        previous = [record(name="管理 费用"), record(code="660201", name="办公 费", kmjc=2)]
+        result = dxn._paper_occurrences(current, previous, [], subject(1))
+        self.assertEqual(result[1].previous_period_amount, Decimal(7))
+        previous[0]["kmmc"] = "销售费用"
+        result = dxn._paper_occurrences(current, previous, [], subject(1))
+        self.assertIsNone(result[1].previous_period_amount)
+        self.assertEqual(result[1].previous_monthly_amounts, (None,) * 12)
+
 
 class AuxiliaryTests(unittest.TestCase):
     def test_selected_customer_dimension_does_not_sum_project_dimension(self):
@@ -229,6 +253,34 @@ class PaperReaderTests(unittest.TestCase):
         self.assertEqual(result.rows[0].ending, Decimal(100))
         self.assertIsNone(result.journal)
         self.assertTrue(any("序时账" in note for note in result.warnings))
+
+    def test_confirmed_reserve_component_reads_only_its_branch_after_full_root_check(self):
+        from tb_autofill import audit_index, papers
+        receivable = account("1122", "应收账款", "应收账款", level=1)
+        reserve = replace(receivable, code="1231", name="坏账准备", path="坏账准备", direction="贷",
+                          opening=Decimal(20), ending=Decimal(20), debit=Decimal(0), credit=Decimal(0))
+        first = replace(reserve, code="123101", name="应收账款坏账准备", level=2,
+                        path="坏账准备/应收账款坏账准备", opening=Decimal(12), ending=Decimal(12))
+        second = replace(first, code="123102", name="其他应收款坏账准备",
+                         path="坏账准备/其他应收款坏账准备", opening=Decimal(8), ending=Decimal(8))
+        rows = [receivable, reserve, first, second]
+        paper = audit_index.resolve("1122", "应收账款")[0]
+        accounts, scoped = papers.report_scope(rows, paper)
+        database = self.database(dxn._TABLES, rows)
+        result = database.paper_data(subject(), [row.code for row in accounts], with_journal=False)
+        self.assertEqual({row.code for row in result.rows}, {row.code for row in scoped})
+        sql, params = database.connection.cursor.return_value.__enter__.return_value.execute.call_args_list[0].args
+        self.assertEqual(params[-2:], ("1122%", "1231%"))
+        self.assertNotIn(second, result.rows)
+        database.read.return_value = [receivable, replace(reserve, ending=Decimal(21)), first, second]
+        with self.assertRaisesRegex(ValueError, "子类与总科目不一致"):
+            database.paper_data(subject(), [receivable.code, first.code], with_journal=False)
+
+    def test_unconfirmed_or_orphan_secondary_is_not_a_reader_scope(self):
+        child = account()
+        for rows in ([child], [account("1122", "应收账款", "应收账款", level=1), child]):
+            with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, "备抵类别"):
+                self.database(dxn._TABLES, rows).paper_data(subject(), [child.code], with_journal=False)
 
     def test_combined_journal_is_limited_without_claiming_full_coverage(self):
         roots = [account("1001", "库存现金", "库存现金", level=1),

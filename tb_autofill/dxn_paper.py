@@ -195,28 +195,37 @@ def detail_rows(rows, account):
 
 
 def consistency(accounts, rows, *, is_pl=None):
-    """按直接子级逐栏核对，余额统一为借方方向；缺失值不能充当零。"""
+    """损益按实际导出的层级逐级核对，余额核对直接子级；缺失值不能充当零。"""
     gap = Decimal("0")
+    missing = False
     for account in accounts:
         occurrence = bool(getattr(account, "is_profit_loss", False)) if is_pl is None else is_pl
-        if occurrence and getattr(account, "period_amount", None) is None:
-            return None, None
-        lines = detail_rows(rows, account)
-        if len(lines) == 1 and lines[0] is account:
-            continue
-        keys = (("period_amount", "previous_period_amount") if getattr(account, "previous_period_amount", None) is not None else
-                ("period_amount",)) if occurrence else ("opening", "debit", "credit", "ending")
-        for key in keys:
-            values = [_amount(getattr(line, key)) for line in [account, *lines]]
-            if any(value is None for value in values):
-                if occurrence:
-                    return None, None
-                raise ValueError(f"科目 {account.code} 的 {key} 金额不完整，不能完成勾稽。")
-            signed = key not in ("debit", "credit")
-            parent = values[0] * (-1 if signed and account.direction == "贷" else 1)
-            child = sum((value * (-1 if signed and line.direction == "贷" else 1)
-                         for line, value in zip(lines, values[1:])), Decimal("0"))
-            gap += abs(parent - child)
+        pending = [account]
+        while pending:
+            parent_row = pending.pop()
+            if occurrence and parent_row.period_amount is None:
+                missing = True
+            lines = detail_rows(rows, parent_row)
+            if len(lines) == 1 and lines[0] is parent_row:
+                continue
+            if occurrence:
+                pending.extend(lines)
+            keys = (("period_amount", "previous_period_amount") if parent_row.previous_period_amount is not None else
+                    ("period_amount",)) if occurrence else ("opening", "debit", "credit", "ending")
+            for key in keys:
+                values = [_amount(getattr(line, key)) for line in [parent_row, *lines]]
+                if any(value is None for value in values):
+                    if occurrence:
+                        missing = True
+                        continue
+                    raise ValueError(f"科目 {parent_row.code} 的 {key} 金额不完整，不能完成勾稽。")
+                signed = key not in ("debit", "credit")
+                parent = values[0] * (-1 if signed and parent_row.direction == "贷" else 1)
+                child = sum((value * (-1 if signed and line.direction == "贷" else 1)
+                             for line, value in zip(lines, values[1:])), Decimal("0"))
+                gap += abs(parent - child)
+    if missing and gap <= Decimal("0.005"):
+        return None, None
     return abs(gap) <= Decimal("0.005"), gap
 
 
@@ -936,13 +945,17 @@ def _auxiliary_check_sheet(book, meta, *, index_no):
     return sheet
 
 
+_PAPER_JOURNAL = object()
+
+
 def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed_by="",
           when="", procedures=(), narrative=None, standard="企业会计准则（一般企业）",
-          accounts=None, full=True, journal=None, sampler=None,
+          accounts=None, full=True, journal=_PAPER_JOURNAL, sampler=None,
           sheet_add=(), sheet_drop=(), paper_data=None):
     """生成鼎信诺式底稿册：目录、审定表、明细表、审计程序、披露表。
 
     ``resolve(code, name)`` 返回本项目匹配的 ``Paper``（可为 None）；``accounts`` 缺省时按报表项目自动归集。
+    ``journal`` 未传入时继承 ``paper_data`` 的凭证，显式 ``None`` 表示排除凭证。
     """
     if not rows:
         raise ValueError("请先读取科目余额表。")
@@ -976,8 +989,8 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
         if any(len(types) > 1 for types in dimensions.values()):
             raise ValueError("同一科目选择多个客商维度，不能重复叠加。")
         auxiliary = tuple(unique_auxiliary.values())
-        if journal is None:
-            journal = paper_data.journal
+    if journal is _PAPER_JOURNAL:
+        journal = paper_data.journal if paper_data is not None else None
     period, cutoff = _period_text(subject_label)
     project = str(subject_label or "").split("/")[0].strip() or WAIT
     index_no = getattr(paper, "index_no", "") or WAIT

@@ -456,8 +456,21 @@ class DxnLedgerDB:
         wanted = tuple(dict.fromkeys(_journal_code(code) for code in codes))
         all_rows = self.read(subject)
         roots = [row for row in all_rows if row.code in wanted]
-        if not wanted or len(roots) != len(wanted) or any(row.level != 1 for row in roots):
-            raise ValueError("报表项目必须明确绑定当前账套的一级科目")
+        if not wanted or len(roots) != len(wanted):
+            raise ValueError("报表项目必须明确绑定当前账套的科目")
+        if any(row.level != 1 for row in roots):
+            from . import audit_index
+            # 先用完整总账验证共享总根与全部类别，再允许已确认的类别子树取数。
+            components = {item for paper in audit_index.resolve_papers()
+                          for item in audit_index.reserve_components(all_rows, paper)}
+            for row in roots:
+                if row.level == 1:
+                    continue
+                parent = next((item for item in all_rows if item.level == 1 and item.path
+                               and row.path.rpartition("/")[0] == item.path
+                               and row.code.startswith(item.code)), None)
+                if parent is None or row not in components:
+                    raise ValueError("二级科目必须是经共享总根核对并确认归属的备抵类别")
         subject = replace(subject, ledger_id=roots[0].ledger_id)
         rows = tuple(row for row in all_rows if any(row == root or
                      (row.code.startswith(root.code) and root.path and row.path.startswith(root.path + "/"))
@@ -465,11 +478,17 @@ class DxnLedgerDB:
         condition = " OR ".join("kmbh LIKE %s" for _ in wanted)
         parameters = (int(subject.id), int(subject.ledger_id))
         patterns = tuple(code + "%" for code in wanted)
+        # 上年需同时取得祖先，才能验证类别与层级归属，而非仅按末级编码对数。
+        previous_roots = tuple(dict.fromkeys(next((parent.code for parent in all_rows
+                               if parent.level == 1 and parent.path and
+                               (root == parent or (root.code.startswith(parent.code)
+                                and root.path.startswith(parent.path + "/")))), root.code) for root in roots))
+        previous_condition = " OR ".join("kmbh LIKE %s" for _ in previous_roots)
         with self.connection.cursor() as cursor:
             cursor.execute("SELECT kjmonth,kmbh,kmmc,kmjc,jdfx,qcs,jffse,dffse,fse,qms,sjkmmc "
                            "FROM c_kmyek WHERE dwid=%s AND ndid=%s AND kjyear=%s "
-                           f"AND kjmonth BETWEEN 1 AND %s AND ({condition}) ORDER BY kmbh,kjmonth",
-                           (*parameters, subject.year - 1, subject.month, *patterns))
+                           f"AND kjmonth BETWEEN 1 AND %s AND ({previous_condition}) ORDER BY kmbh,kjmonth",
+                           (*parameters, subject.year - 1, subject.month, *(code + "%" for code in previous_roots)))
             previous = cursor.fetchall()
             cursor.execute("SELECT kmbh,ws_fse,sn_ws_fse FROM c_cwkmk "
                            f"WHERE dwid=%s AND ndid=%s AND ({condition})",
@@ -491,12 +510,14 @@ class DxnLedgerDB:
         warnings = []
         if any(row.is_profit_loss and row.period_amount is None for row in rows):
             warnings.append("部分损益科目缺少独立发生额来源，未用借方或贷方发生额代填。")
+        if any(row.previous_period_source.startswith("待确认") for row in rows):
+            warnings.append("上年同编码科目的名称、层级归属或方向不一致；相应上期数与月份已留空，需确认跨年对应关系。")
         if not all(table in self.tables for table in _AUXILIARY_TABLES):
             warnings.append("未取得支持格式的客商核算配置和余额，客商明细待补。")
         journal = None
         overlapping_codes = any(left != right and left.startswith(right) for left in wanted for right in wanted)
         if with_journal and overlapping_codes:
-            warnings.append("所选一级科目的编码前缀存在重叠，序时账范围待明确，未重复归集。")
+            warnings.append("所选科目的编码前缀存在重叠，序时账范围待明确，未重复归集。")
         elif with_journal and _JOURNAL_TABLE in self.tables:
             parts = [self.journal(subject, code) for code in wanted]
             combined = sorted((row for part in parts for row in part),
@@ -603,19 +624,25 @@ def _paper_occurrences(rows, previous, annual, subject):
         if code in annual_by_code:
             raise ValueError(f"科目 {code} 年度发生额存在重复来源")
         annual_by_code[code] = item
+    def identity(item):
+        path = re.sub(r"\s+", "", (item.path or item.name).replace("\\", "/"))
+        return item.level, item.direction, path
     result = []
     for row in rows:
         before = previous_by_code.get(row.code)
-        previous_amount = before.period_amount if before and before.direction == row.direction else None
-        previous_monthly = before.monthly_amounts if before and before.direction == row.direction else (None,) * 12
+        conflict = before is not None and identity(before) != identity(row)
+        previous_amount = before.period_amount if before and not conflict else None
+        previous_monthly = before.monthly_amounts if before and not conflict else (None,) * 12
         previous_source = "c_kmyek.fse（同账套上年同期账面发生额）" if previous_amount is not None else ""
+        if conflict:
+            previous_source = "待确认：上年同编码科目的名称、层级归属或方向不一致"
         occurrence, source = row.period_amount, row.period_source
         meta = annual_by_code.get(row.code, {})
         if subject.month == 12:
             if occurrence is None and money(meta.get("ws_fse")) is not None:
                 occurrence = money(meta["ws_fse"])
                 source = "c_cwkmk.ws_fse（账套全年未审发生额）"
-            if previous_amount is None and money(meta.get("sn_ws_fse")) is not None:
+            if not conflict and previous_amount is None and money(meta.get("sn_ws_fse")) is not None:
                 previous_amount = money(meta["sn_ws_fse"])
                 previous_source = "c_cwkmk.sn_ws_fse（账套上年全年未审发生额）"
         result.append(replace(row, period_amount=occurrence, period_source=source,

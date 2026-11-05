@@ -7,12 +7,12 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from openpyxl import load_workbook
 
 from tb_autofill import ai, audit_index, gui, papers
-from tb_autofill.models import JournalRows, LedgerRow, PaperData, Subject
+from tb_autofill.models import JournalRow, JournalRows, LedgerRow, PaperData, Subject
 
 
 def ledger():
@@ -228,6 +228,59 @@ class PaperUiTests(unittest.TestCase):
         self.assertEqual(book["1-010 审定表"]["D9"].value, 999)
         self.assertEqual(book["1-010 审定表"]["D10"].value, 100)
         self.assertIsNone(book["1-010 审定表"]["K9"].value)
+
+    def test_journal_checkbox_controls_cached_vouchers_in_actual_export(self):
+        dialog = self.dialog()
+        accounts, rows = papers.report_scope(self.app.rows, dialog.current_paper)
+        journal = JournalRows([JournalRow(1, "2026-01-01", "SYN-1", "1", "SYNTHETIC-CACHED-VOUCHER",
+                                          "1002", Decimal(1), Decimal(0))])
+        dialog.with_journal.set(True)
+        dialog.paper_data = PaperData(rows=rows, codes=tuple(row.code for row in accounts), journal=journal)
+        for enabled in (False, True):
+            dialog.with_journal.set(enabled)
+            path = Path(self.folder.name) / f"synthetic-journal-{enabled}.xlsx"
+            with patch.object(gui.filedialog, "asksaveasfilename", return_value=str(path)):
+                dialog._export_pack()
+            book = load_workbook(path)
+            try:
+                values = [cell.value for sheet in book for cells in sheet for cell in cells]
+                self.assertEqual("SYNTHETIC-CACHED-VOUCHER" in values, enabled)
+            finally:
+                book.close()
+
+    def test_shared_reserve_scope_reaches_real_reader_and_exports_only_its_category(self):
+        base = replace(ledger()[0], code="1122", name="应收账款", path="应收账款",
+                       subject_id="2", ledger_id="18")
+        reserve = replace(base, code="1231", name="坏账准备", path="坏账准备", direction="贷",
+                          opening=Decimal(20), ending=Decimal(20))
+        first = replace(reserve, code="123101", name="应收账款坏账准备", level=2,
+                        path="坏账准备/应收账款坏账准备", opening=Decimal(12), ending=Decimal(12))
+        other = replace(first, code="123102", name="其他应收款坏账准备",
+                        path="坏账准备/其他应收款坏账准备", opening=Decimal(8), ending=Decimal(8))
+        self.app.rows = [base, reserve, first, other]
+        self.app.loaded_subject = Subject("2", "合成企业", 2026, 6, "synthetic", ledger_id="18")
+        database = object.__new__(gui.dxn.DxnLedgerDB)
+        database.data, database.tables = Path("synthetic/data"), gui.dxn._TABLES
+        database.read = Mock(return_value=self.app.rows)
+        database.connection = MagicMock()
+        database.connection.cursor.return_value.__enter__.return_value.fetchall.side_effect = [[], []]
+        gui.dxn.read_paper_data.side_effect = lambda subject, codes, install, with_journal: database.paper_data(
+            subject, codes, with_journal=with_journal)
+        dialog = gui.PaperDialog(self.app)
+        dialog.withdraw()
+        dialog.with_journal.set(False)
+        dialog.code_box.current(next(i for i, item in enumerate(dialog.choices) if item[0] == "1-070"))
+        dialog._sync_paper()
+        path = Path(self.folder.name) / "synthetic-reserve.xlsx"
+        with patch.object(gui.filedialog, "asksaveasfilename", return_value=str(path)):
+            dialog._export_pack()
+        book = load_workbook(path)
+        try:
+            names = [book["1-070 审定表"].cell(i, 2).value for i in (9, 10)]
+            self.assertEqual(names, ["应收账款", "应收账款坏账准备"])
+            self.assertNotIn("其他应收款坏账准备", [cell.value for cells in book["1-070 审定表"] for cell in cells])
+        finally:
+            book.close()
 
     def test_cancelled_preview_starts_no_request(self):
         dialog = self.dialog()

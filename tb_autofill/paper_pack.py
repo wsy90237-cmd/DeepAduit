@@ -198,10 +198,11 @@ def baseline_notes(*, name, accounts, total, is_pl, consistent, gap, pending=(),
     elif consistent is None:
         lines.append("本期发生额来源不完整，尚未完成明细核对；未取得的数据留空待补。")
     elif consistent:
-        lines.append("本次对明细合计与一级科目余额进行了本地复算，期初、借方、贷方及期末四栏逐栏核对一致。"
+        lines.append(("本期发生额已按实际导出的明细层级逐级核对一致；上期仅在汇总数已提供时核对对应明细，缺少的上期数仍待补。"
+                      if is_pl else "本次对明细合计与一级科目余额进行了本地复算，期初、借方、贷方及期末四栏逐栏核对一致。") +
                      "这项核对只说明账内数据相符，不代表银行函证、监盘或原始凭证检查已经完成。")
     else:
-        lines.append(f"明细与一级科目的四栏核对存在差异，绝对差异合计为 {amount(gap)} 元。"
+        lines.append(f"明细与汇总科目的{'发生额逐级' if is_pl else '四栏'}核对存在差异，绝对差异合计为 {amount(gap)} 元。"
                      "需先核实取数范围、账户分类及缺失明细，再判断是否需要调整。")
     if pending:
         preview = "、".join(pending[:4]) + ("等" if len(pending) > 4 else "")
