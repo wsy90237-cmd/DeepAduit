@@ -327,13 +327,15 @@ class PaperDialog(tk.Toplevel):
         except ValueError as exc:
             self.state.set(str(exc))
             return
+        is_pl = self.current_paper.index_no.startswith(("4-", "5-")) or any(row.is_profit_loss for row in accounts)
+        self.children_tree.heading("ending", text="本期账面发生额" if is_pl else "期末账面余额")
         for root in accounts:
             self.children_tree.insert("", "end", iid=root.code, text=root.code,
-                                      values=(root.name, fmt_amount(root.ending)), open=True)
+                                      values=(root.name, fmt_amount(root.period_amount if is_pl else root.ending)), open=True)
             children = [row for row in scoped if row.level == root.level + 1 and row.path.rpartition("/")[0] == root.path]
             for row in sorted(children, key=lambda item: item.code):
                 self.children_tree.insert(root.code, "end", iid=row.code, text=row.code,
-                                          values=(row.name, fmt_amount(row.ending)))
+                                          values=(row.name, fmt_amount(row.period_amount if is_pl else row.ending)))
         self.paper_var.set(f"{self.current_paper.label}，包含 {len(accounts)} 个科目及其明细，合并出册")
         self.state.set("按报表项目整册导出；原值、备抵及净额分别列示。")
 
@@ -1349,17 +1351,15 @@ class App(tk.Tk):
             return
         revision = self._context_revision
         try:
-            # 候选由 ai.narrow_candidates 按相关度自动收敛，界面不再要求手工限定范围。
-            context = ai_module.assistance_payload(
-                [result for result in self.results if result.status != "protected"][:30], list(self.rows))
-            context["scope"] = {"total_targets": len(self.results), "total_accounts": len(self.rows),
-                                "target_limit": 30, "candidate_limit": 300,
-                                "note": "限本次发送范围，不代表完整账套、全表或全部审计程序已完成。"}
-            if self.rows:
-                context["facts"] = analysis.build_facts(self.rows)
+            history = list(self.chat_history[-8:])
+            context = ai_module.conversation_payload(text,
+                [result for result in self.results if result.status != "protected"][:30], list(self.rows), history)
+            context["scope"]["total_targets"] = len(self.results)
             context["knowledge_refs"] = deepcopy(self.knowledge_refs)
             if extra:
                 context = {**context, **extra}
+            report_names = ((context.get("facts") or {}).get("account_scope") or {}).get("reports", [])
+            context, refs, entries = ai_module.inject_skills(" ".join([text, *report_names]), context)
             client = ai_module.DeepSeekClient.from_store(self.store)
         except (ai_module.AIError, settings.SettingsError, ValueError) as exc:
             self._chat_append("sys", str(exc))
@@ -1376,6 +1376,9 @@ class App(tk.Tk):
             self.chat_input.delete("1.0", "end")
         self._chat_append("me", text)
         detail = f"附 {len(context['targets'])} 个字段 / {len(context['candidates'])} 个科目"
+        scope = (context.get("facts") or {}).get("account_scope") or {}
+        if scope.get("reports"):
+            detail += " / " + "、".join(scope["reports"])
         if extra and extra.get("facts"):
             detail += f" / {len(extra['facts']['movements'])} 项变动"
         self._chat_append("sys", detail)
@@ -1383,8 +1386,9 @@ class App(tk.Tk):
 
         def work():
             try:
-                # 先检索内置的会计与 IPO 知识库，命中条目以 K 编号注入后再回答。
-                return client.converse_with_skills(text, history, context)
+                answer = client.converse(text, history, context)
+                answer.update(knowledge_refs=refs, knowledge_note=context.get("knowledge_note", ""), skill_hits=len(entries))
+                return answer
             except ai_module.AIError as exc:
                 return {"intent": "error", "answer": str(exc), "proposals": []}
 

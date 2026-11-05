@@ -134,9 +134,9 @@ SPECS = {
                               ("收入确认期间", 14, TEXT), ("是否跨期", 12, TEXT)),
          "选取资产负债表日前后各若干日的发货与开票记录，检查收入确认期间。", 14, None),
         ("函证信息汇总表", (("序号", 6, NUM), ("客户名称", 28, TEXT), ("本期交易额", 16, MONEY),
-                            ("期末余额", 16, MONEY), ("回函金额", 16, MONEY),
+                            ("上期交易额", 16, MONEY), ("回函交易额", 16, MONEY),
                             ("是否相符", 10, TEXT), ("替代程序", 26, TEXT)),
-         "对大客户实施函证，核对本期交易额与期末余额。", 12, None),
+         "对大客户实施交易额函证；本期及上期交易额需独立发生额来源，不以往来余额代填。", 12, None),
     ),
     "expense": (
         ("费用明细及分析表", (("费用项目", 24, TEXT), ("本期金额", 16, MONEY), ("上期金额", 16, MONEY),
@@ -146,10 +146,10 @@ SPECS = {
                               ("金额", 16, MONEY), ("发票日期", 14, DATE), ("所属期间", 14, TEXT),
                               ("是否跨期", 12, TEXT)),
          "检查资产负债表日前后费用凭证与发票，确认费用归属期间。", 14, None),
-        ("预提待摊检查表", (("项目", 24, TEXT), ("期初余额", 16, MONEY), ("本期计提", 16, MONEY),
-                            ("本期摊销/支付", 16, MONEY), ("期末余额", 16, MONEY),
+        ("预提待摊检查表", (("项目", 24, TEXT), ("本期计提发生额", 16, MONEY), ("本期摊销发生额", 16, MONEY),
+                            ("本期支付发生额", 16, MONEY), ("上期同口径发生额", 16, MONEY),
                             ("计算依据", 30, TEXT)),
-         "复核预提与待摊的计提、摊销依据，检查期后实际支付与计提数是否一致。", 12, None),
+         "核对费用计提、摊销和支付的发生额及依据；对应预付或应付余额在相应资产负债项目核对。", 12, None),
     ),
 }
 
@@ -297,8 +297,8 @@ def prefill(name, state, accounts=()):
                 rows.append((getattr(row, "name", ""), balance,
                              None, None, None, None, None, None))
             elif name == "函证信息汇总表":
-                rows.append((index, getattr(row, "name", ""), balance,
-                             balance, None, None, None))
+                rows.append((index, getattr(row, "name", ""), None if state.get("is_pl") else balance,
+                             None if state.get("is_pl") else balance, None, None, None))
             elif name == "往来账龄分析表":
                 rows.append((getattr(row, "name", ""), balance,
                              None, None, None, None, None))

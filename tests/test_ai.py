@@ -2,7 +2,7 @@ import json
 import unittest
 from decimal import Decimal
 
-from tb_autofill.ai import AIError, DeepSeekClient, assistance_payload
+from tb_autofill.ai import AIError, DeepSeekClient, assistance_payload, conversation_payload
 from tb_autofill.matching import apply_ai_suggestions, match_fields
 from tb_autofill.models import LedgerRow, TargetField
 
@@ -206,6 +206,20 @@ class AuditScopeTests(unittest.TestCase):
 
 
 class FactGroundingTests(unittest.TestCase):
+    def test_question_focused_facts_reach_model_and_stationary_amounts_are_not_false_warnings(self):
+        cost = row("1601", "固定资产", path="固定资产", opening=Decimal(165000), ending=Decimal(165000))
+        depreciation = row("1602", "累计折旧", path="累计折旧", direction="贷", opening=Decimal(0), ending=Decimal(52000))
+        unrelated = [row(str(9000 + i), f"合成无关科目{i}", ending=Decimal(2000000)) for i in range(350)]
+        context = conversation_payload("固定资产今年有什么异常吗", [], [cost, depreciation, *unrelated])
+        self.assertEqual({item["code"] for item in context["candidates"]}, {"1601", "1602"})
+        answer = "固定资产（1601）原值 165000 元，累计折旧（1602）52000 元，净额 113000 元。折旧政策需结合清单核查。"
+        client, calls = make_client(completion({"intent": "audit", "answer": answer, "proposals": []}))
+        result = client.converse("固定资产今年有什么异常吗", context=context)
+        self.assertEqual(result["warnings"], [])
+        sent_context = calls[0][1]["messages"][-2]["content"]
+        self.assertIn('"ending": "165000"', sent_context)
+        self.assertNotIn('"ending": "2000000"', sent_context)
+
     facts = {
         "subject": {"id": "S1", "year": 2026, "month": 6},
         "counts": {"accounts": 5, "leaves": 4},

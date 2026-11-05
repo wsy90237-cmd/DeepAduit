@@ -908,12 +908,12 @@ def _catalog(book, meta, index_no, entries):
         row += 1
         sheet.merge(row, 1, 2, "二级科目编码", font=HEAD_FONT, fill=HEAD_FILL, height=24)
         sheet.merge(row, 3, 5, "二级科目名称", font=HEAD_FONT, fill=HEAD_FILL)
-        sheet.cell(row, 6, "期末账面余额（元）", font=HEAD_FONT, fill=HEAD_FILL)
+        sheet.cell(row, 6, "本期账面发生额（元）" if meta.get("is_pl") else "期末账面余额（元）", font=HEAD_FONT, fill=HEAD_FILL)
         for child in children:
             row += 1
             sheet.merge(row, 1, 2, child.code)
             sheet.merge(row, 3, 5, child.name)
-            sheet.cell(row, 6, child.ending, money=True, align=RIGHT)
+            sheet.cell(row, 6, period_amount(child) if meta.get("is_pl") else child.ending, money=True, align=RIGHT)
         if not children:
             sheet.merge(row + 1, 1, columns, "未设置二级科目，本册直接列示一级科目账面数。", font=SMALL_FONT)
     sheet.page_setup()
@@ -1026,7 +1026,7 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
         "date": when or WAIT, "standard": standard, "rows": rows,
         "accounts": grouped, "presentation_direction": direction, "is_pl": is_pl,
         "auxiliary": auxiliary,
-        "auxiliary_checks": tuple(paper_data.auxiliary_checks) if paper_data is not None else (),
+        "auxiliary_checks": tuple(paper_data.auxiliary_checks) if paper_data is not None and not is_pl else (),
         "source": "金额来源：本机账套（" + ("独立发生额" if is_pl else "科目余额") + ("、已选客商辅助核算" if auxiliary else "") + "）",
         "audit_notes": notes,
         "procedure_notes": narrative.get("procedure_notes") or [],
@@ -1047,7 +1047,7 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
         (f"{index_no}-15", f"{name}披露表", "披露表", "与审定数勾稽"),
     ]
     sheet_state = paper_sheets.facts(rows, journal)
-    sheet_state.update(primary_accounts=grouped, rows=rows, report_total=total["ending"],
+    sheet_state.update(primary_accounts=grouped, rows=rows, report_total=total["period"] if is_pl else total["ending"], is_pl=is_pl,
                        auxiliary=auxiliary, presentation_direction=direction)
     leaves = [line for account in grouped for line in detail_rows(rows, account)]
     extras = list(paper_sheets.for_category(_category_of(index_no, name), sheet_state)) if full else []
@@ -1067,8 +1067,8 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
                         f"{len(spec[1])} 列 × {spec[3]} 行，待资料填写"))
     entries.append((f"9720-{index_no}", f"{name}复核自检清单",
                     f"9720-{index_no} 复核自检清单", "格式、索引与勾稽自检"))
-    has_auxiliary_check = bool(meta["auxiliary_checks"] or auxiliary) or (paper_data is not None and
-                          ("应收" in name or "应付账款" in name or "其他应付款" in name or "预付款" in name or "预收" in name))
+    has_auxiliary_check = not is_pl and (bool(meta["auxiliary_checks"] or auxiliary) or (paper_data is not None and
+                          ("应收" in name or "应付账款" in name or "其他应付款" in name or "预付款" in name or "预收" in name)))
     if has_auxiliary_check:
         entries.append((f"{index_no}-KH", f"{name}客商明细核对", "客商明细核对", "按已选客商维度核对，不叠加多个维度"))
     _metadata_sheet(book, meta, index_no)

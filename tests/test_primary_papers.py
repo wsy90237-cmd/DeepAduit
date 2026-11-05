@@ -149,6 +149,44 @@ class PaperUiTests(unittest.TestCase):
         self.assertIn("1-010 货币资金", dialog.paper_var.get())
         self.assertIn("2 个科目", dialog.paper_var.get())
 
+    def test_profit_loss_tree_shows_occurrence_instead_of_closing_balance(self):
+        source = replace(ledger()[0], code="6602", name="管理费用", path="管理费用", is_profit_loss=True,
+                         opening=Decimal(0), ending=Decimal(0), period_amount=Decimal(12000))
+        child = replace(source, code="660201", name="办公费", path="管理费用/办公费", level=2)
+        self.app.rows = [source, child]
+        dialog = gui.PaperDialog(self.app)
+        dialog.withdraw()
+        self.assertEqual(dialog.children_tree.heading("ending", "text"), "本期账面发生额")
+        for code in (source.code, child.code):
+            value = dialog.children_tree.item(code, "values")[1]
+            self.assertEqual(Decimal(str(value).replace(",", "")), Decimal(12000))
+
+    def test_chat_previews_focused_accounts_and_knowledge_before_sending_exact_payload(self):
+        source = replace(ledger()[0], code="1601", name="固定资产", path="固定资产",
+                         opening=Decimal(165000), ending=Decimal(165000))
+        depreciation = replace(source, code="1602", name="累计折旧", path="累计折旧", direction="贷",
+                               opening=Decimal(0), ending=Decimal(52000))
+        self.app.rows = [source, depreciation]
+        self.app.store = SimpleNamespace(has_key=True, data={"ai_enabled": True})
+        client = Mock(model="synthetic", base_url="https://model.invalid/v1")
+        client.converse.return_value = {"intent": "audit", "answer": "原值未变动，折旧需结合清单核查。", "proposals": []}
+        ref = {"citation_id": "K1", "title": "合成审计参考", "text": "核对资产清单。"}
+        def enrich(question, context):
+            context["knowledge_refs"] = [ref]
+            return context, [ref], [ref]
+        with patch.object(gui.ai_module.DeepSeekClient, "from_store", return_value=client), \
+                patch.object(gui.ai_module, "inject_skills", side_effect=enrich), \
+                patch.object(gui, "PayloadDialog", return_value=SimpleNamespace(confirmed=True)) as preview, \
+                patch.object(self.app, "wait_window"), patch.object(self.app, "_on_chat_answer"), \
+                patch.object(self.app, "_async", side_effect=lambda label, work, done: done(work())):
+            self.app._chat_send("固定资产今年有什么异常吗")
+        payload = preview.call_args.args[1]
+        context = {key: value for key, value in payload.items() if key not in {"question", "history"}}
+        self.assertEqual({item["code"] for item in context["facts"]["accounts"]}, {"1601", "1602"})
+        self.assertEqual(context["knowledge_refs"], [ref])
+        client.converse.assert_called_once_with("固定资产今年有什么异常吗", payload["history"], context)
+        client.converse_with_skills.assert_not_called()
+
     def test_selecting_tree_row_does_not_shrink_report_scope_or_clear_draft(self):
         dialog = self.dialog()
         value = {"report": "1-010"}

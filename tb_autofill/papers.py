@@ -157,22 +157,23 @@ def _report_facts(rows, accounts, paper, journal):
     from types import SimpleNamespace
     direction = dxn_paper.presentation_direction(paper, accounts)
     total = dxn_paper.totals(accounts, direction=direction)
+    is_pl = paper.index_no.startswith(("4-", "5-")) or any(row.is_profit_loss for row in accounts)
     children = [row for account in accounts for row in dxn_paper.detail_rows(rows, account)]
     def item(row):
-        return {"code": row.code, "name": row.name, "path": row.path, "level": row.level,
-                "direction": row.direction, "opening": _amount(row.opening), "ending": _amount(row.ending),
-                "debit": _amount(row.debit), "credit": _amount(row.credit),
-                "current_period": _amount(getattr(row, "period_amount", None)),
-                "previous_period": _amount(getattr(row, "previous_period_amount", None))}
+        return analysis.account_fact(row, is_pl=is_pl)
     facts = {"subject": {"code": paper.index_no, "name": paper.name, "path": paper.name,
                           "direction": direction, "level": 0, "level_label": "报表项目",
                           "opening": _amount(total["opening"]), "ending": _amount(total["ending"]),
                           "debit": _amount(total["debit"]), "credit": _amount(total["credit"]),
                           "current_period": _amount(total["period"]),
-                          "is_profit_loss": any(row.is_profit_loss for row in accounts)},
+                          "is_profit_loss": is_pl},
              "accounts": [item(row) for row in accounts], "children": [item(row) for row in children],
              "all_codes": [row.code for row in rows],
              "ledger_scope": {"rows": len(rows), "note": "仅本主体、本期间、本账套的报表项目全范围；不含尚未取得的审计证据。"}}
+    if is_pl:
+        for key in ("opening", "ending", "debit", "credit"):
+            facts["subject"].pop(key)
+        facts["subject"]["previous_period"] = _amount(total["previous_period"])
     if journal is not None:
         facts["journal"] = _journal_facts(journal, SimpleNamespace(debit=total["debit"], credit=total["credit"]))
     return facts
@@ -311,14 +312,7 @@ def draft(client, *, rows, code, kind=DEFAULT_KIND, subject_label="", focus="", 
     facts["subject_label"] = subject_label
     facts["focus"] = str(focus or "")[:500]
     facts["report_paper"] = {"index_no": paper.index_no, "name": paper.name} if paper else {}
-    movements = []
-    for item in analysis.movements(rows)[:20] if rows else []:
-        movements.append({"code": item.code, "name": item.name, "path": item.path,
-                          "direction": item.direction,
-                          "opening": _amount(item.opening), "ending": _amount(item.ending),
-                          "change": _amount(item.change),
-                          "rate": "" if item.rate is None else f"{item.rate:.4f}"})
-    facts["movements"] = movements
+    facts["movements"] = [item.as_dict() for item in analysis.movements(rows)[:20]] if rows else []
 
     query = " ".join(part for part in (facts["subject"]["name"], facts["focus"]) if part) or KINDS[kind][0]
     hits = _search_knowledge(query, limit)
@@ -435,16 +429,18 @@ def pack_request(*, rows, code="", paper, procedures, subject_label="", focus=""
         facts["source_warnings"] = list(paper_data.warnings)
         facts["auxiliary_checks"] = [{key: _amount(value) if isinstance(value, Decimal) else value
                                       for key, value in item.items()} for item in paper_data.auxiliary_checks]
+        if facts["subject"].get("is_profit_loss"):
+            for item in facts["auxiliary"]:
+                item.pop("opening")
+                item.pop("ending")
+                item.update(current_period=None, previous_period=None)
+            facts["auxiliary_checks"] = []
+            facts["source_warnings"].append("客商独立交易发生额尚未取得，不能将辅助余额作为收入交易额。")
     facts["cutoff_samples"] = [
         {"date": row.date, "voucher": row.voucher, "line": row.line, "code": row.code,
          "summary": row.summary, "debit": _amount(row.debit), "credit": _amount(row.credit), "reason": reason}
         for row, reason in sampling.cutoff(journal, root.year, root.month)] if journal and root.year else []
-    movements = []
-    for item in analysis.movements(rows)[:10] if rows else []:
-        movements.append({"code": item.code, "name": item.name,
-                          "opening": _amount(item.opening), "ending": _amount(item.ending),
-                          "change": _amount(item.change)})
-    facts["movements"] = movements
+    facts["movements"] = [item.as_dict() for item in analysis.movements(rows)[:10]] if rows else []
 
     query = " ".join(part for part in (facts["subject"]["name"], facts["paper"]["name"], "审计程序 认定",
                                        facts["focus"]) if part)
@@ -558,9 +554,7 @@ def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12,
     selected = roots + [row for row in accounts if row not in roots][:limit]
     snapshot = []
     for row in selected:
-        snapshot.append({"code": getattr(row, "code", ""), "name": getattr(row, "name", ""),
-                         "ending": _amount(getattr(row, "ending", None)),
-                         "direction": getattr(row, "direction", "")})
+        snapshot.append(analysis.account_fact(row))
     context = {"facts": {
         "subject": name,
         "accounts": snapshot,
@@ -576,7 +570,7 @@ def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12,
         context["facts"]["auxiliary_dimensions"] = sorted({row.type_name for row in paper_data.auxiliary})
         context["facts"]["source_warnings"] = list(paper_data.warnings)
     question = (
-        f"正在为「{name}」编制审计底稿。账号明细与余额见 facts.accounts，可选工作表见 facts.available_sheets。"
+        f"正在为「{name}」编制审计底稿。科目明细与金额见 facts.accounts，损益为独立发生额，可选工作表见 facts.available_sheets。"
         "请判断：为了充分记录本科目审计，还需要额外增加哪些表（如票据贴现、保理、政府补助、关联方往来等），"
         "以及 current_sheets 里哪些可选表不适用而建议删除。required_sheets 是必备表，不能删除。"
         "同一报表项目所列科目必须整体考虑；余额为零不代表全年没有发生或不需要审计。"

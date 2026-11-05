@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from decimal import Decimal
 
 from tb_autofill import analysis
@@ -42,6 +43,54 @@ class MovementTests(unittest.TestCase):
 
 
 class FactsTests(unittest.TestCase):
+    def test_question_keeps_unchanged_cost_zero_details_and_depreciation_together(self):
+        cost = replace(ledger()[3], opening=Decimal(500000), ending=Decimal(500000))
+        zero = replace(cost, code="160101", name="房屋建筑物", path="固定资产/房屋建筑物", level=2,
+                       opening=Decimal(0), ending=Decimal(0))
+        depreciation = replace(cost, code="1602", name="累计折旧", path="累计折旧", direction="贷",
+                               opening=Decimal(0), ending=Decimal("52248.72"))
+        unrelated = [replace(cost, code=str(9000 + i), name=f"合成科目{i}", path=f"合成科目{i}",
+                             opening=Decimal(0), ending=Decimal(1000000)) for i in range(350)]
+        facts = analysis.build_facts([cost, zero, depreciation, *unrelated], question="固定资产今年有什么异常吗")
+        self.assertEqual({item["code"] for item in facts["accounts"]}, {"1601", "160101", "1602"})
+        self.assertFalse(facts["account_scope"]["truncated"])
+        self.assertEqual(facts["report_totals"][0]["ending"], "447751.28")
+        self.assertIn(Decimal(500000), analysis.fact_amounts(facts))
+        self.assertIn(Decimal("447751.28"), analysis.fact_amounts(facts))
+        followup = analysis.build_facts([cost, zero, depreciation, *unrelated], question="那需要查哪些资料",
+                    history=[{"role": "user", "content": "固定资产今年有什么异常吗"}])
+        self.assertEqual(followup["accounts"], facts["accounts"])
+
+    def test_profit_loss_facts_use_occurrences_when_closing_balances_are_zero(self):
+        source = replace(ledger()[-1], opening=Decimal(0), ending=Decimal(0), is_profit_loss=True,
+                         debit=Decimal(999999), credit=Decimal(999999), period_amount=Decimal(12000),
+                         previous_period_amount=Decimal(10000), monthly_amounts=(Decimal(2000),) * 6 + (None,) * 6)
+        facts = analysis.build_facts([source], question="管理费用今年为什么增加")
+        self.assertEqual(facts["movements"][0]["change"], "2000")
+        self.assertEqual(facts["accounts"][0]["current_period"], "12000")
+        self.assertFalse({"opening", "ending", "debit", "credit"} & facts["accounts"][0].keys())
+        self.assertFalse({"opening", "ending", "debit", "credit"} & facts["movements"][0].keys())
+        self.assertEqual(facts["totals"], {})
+
+    def test_question_scope_marks_truncation_and_new_explicit_question_replaces_history(self):
+        root = ledger()[3]
+        details = [replace(root, code=f"1601{i:03}", name=f"合成设备{i}", path=f"固定资产/合成设备{i}", level=2)
+                   for i in range(305)]
+        facts = analysis.build_facts([root, *details], question="固定资产", account_limit=300)
+        self.assertTrue(facts["account_scope"]["truncated"])
+        self.assertEqual(facts["account_scope"]["available"], 306)
+        facts = analysis.build_facts(ledger(), question="银行存款要怎么审计",
+                    history=[{"role": "user", "content": "固定资产有什么异常"}])
+        self.assertEqual({item["code"] for item in facts["accounts"]}, {"1001", "1002", "100201"})
+
+    def test_custom_account_question_keeps_zero_children_even_when_it_is_the_only_family(self):
+        root = replace(ledger()[0], code="9001", name="合成专用项目", path="合成专用项目")
+        child = replace(root, code="900101", name="合成零额明细", path="合成专用项目/合成零额明细", level=2,
+                        opening=Decimal(0), ending=Decimal(0))
+        facts = analysis.build_facts([root, child], question="合成专用项目有哪些明细")
+        self.assertTrue(facts["account_scope"]["focused"])
+        self.assertEqual(len(facts["accounts"]), 2)
+
     def test_parent_excluded_from_ranking(self):
         facts = analysis.build_facts(ledger())
         self.assertEqual([item["code"] for item in facts["movements"]], ["100201", "1601", "1001"])

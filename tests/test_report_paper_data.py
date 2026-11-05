@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from tb_autofill import audit_index, dxn_paper, paper_sheets
+from tb_autofill import audit_index, dxn_paper, paper_sheets, papers
 from tb_autofill.models import AuxiliaryBalanceRow, JournalRow, JournalRows, LedgerRow, PaperData
 
 
@@ -76,6 +76,30 @@ class ReportPaperDataTests(unittest.TestCase):
         self.assertEqual(book["披露表"]["C9"].value, 6)
         self.assertIn('SUMIF($C$9:$C$9,"贷"', book["4-010 审定表"]["D10"].value)
         self.assertEqual(book["4-010 明细表"]["R8"].value, 7.2)
+
+    def test_profit_loss_catalog_and_model_facts_have_occurrences_instead_of_balances(self):
+        root = replace(row("6602", "管理费用", "888888", is_profit_loss=True), period_amount=Decimal(12000),
+                       previous_period_amount=Decimal(10000))
+        child = replace(root, code="660201", name="办公费", path="管理费用/办公费", level=2)
+        book = self.build([root, child])
+        values = [cell.value for sheet in book if sheet.sheet_state == "visible" for cells in sheet for cell in cells]
+        self.assertIn("本期账面发生额（元）", values)
+        self.assertNotIn("期末账面余额（元）", values)
+        self.assertNotIn("期初余额", values)
+        self.assertNotIn("期末余额", values)
+        self.assertNotIn(888888, values)
+        request = papers.pack_request(rows=[root, child], paper=resolve(root.code, root.name), procedures=["合成核查程序"])
+        facts = request["context"]["facts"]
+        for item in [facts["subject"], *facts["accounts"], *facts["children"], *facts["movements"]]:
+            self.assertFalse({"opening", "ending", "debit", "credit"} & item.keys())
+        self.assertEqual(facts["accounts"][0]["current_period"], "12000")
+
+    def test_revenue_confirmation_does_not_treat_customer_balance_as_turnover(self):
+        state = {"is_pl": True, "auxiliary": [AuxiliaryBalanceRow("6001", "主营业务收入", "KH", "客户",
+                 "SYN-C", "合成客户", ending=Decimal(98765))]}
+        result = paper_sheets.prefill("函证信息汇总表", state)
+        self.assertEqual(result[0][:2], (1, "合成客户"))
+        self.assertTrue(all(value is None for value in result[0][2:]))
 
     def test_monthly_profit_loss_lists_terminal_details_once_and_keeps_future_months_blank(self):
         root = replace(row("6602", "管理费用", "0", is_profit_loss=True), period_amount=Decimal(21),

@@ -2,8 +2,8 @@
 
 设计要点：
 - 变动额与变动率全部由 Decimal 在本地计算，AI 不参与任何数字。
-- 只分析叶子科目，避免父子重复计入；父科目仅用于展示层级。
-- 提供给 AI 的事实是受限清单（Top N），并附带可用于核对的金额集合，
+- 全局变动只排列末级科目，项目汇总按所属根科目计算，避免父子重复计入。
+- 问答提供相关项目的科目全貌，全局摘要保留 Top N，并明确发送范围及可核对金额集合，
   回答里出现清单外的金额会被标记为可疑。
 """
 
@@ -34,7 +34,7 @@ class Movement:
     profit_loss: bool
 
     def as_dict(self) -> dict:
-        return {
+        item = {
             "code": self.code,
             "name": self.name,
             "path": self.path,
@@ -47,6 +47,11 @@ class Movement:
             "credit": _text(self.credit),
             "profit_loss": self.profit_loss,
         }
+        if self.profit_loss:
+            for key in ("opening", "ending", "debit", "credit"):
+                item.pop(key)
+            item.update(current_period=_text(self.ending), previous_period=_text(self.opening))
+        return item
 
 
 def _text(value):
@@ -55,6 +60,66 @@ def _text(value):
 
 def _rate(value):
     return None if value is None else f"{value * 100:.2f}%"
+
+
+def account_fact(row, *, is_pl=None):
+    """面向审计问答的科目事实；损益只提供独立发生额，不混入结转余额。"""
+    is_pl = row.is_profit_loss if is_pl is None else is_pl
+    item = {"code": row.code, "name": row.name, "path": row.path, "level": row.level,
+            "direction": row.direction, "profit_loss": is_pl}
+    if is_pl:
+        item.update(current_period=_text(row.period_amount), previous_period=_text(row.previous_period_amount),
+                    monthly_amounts=[_text(value) for value in row.monthly_amounts],
+                    period_source=row.period_source, previous_period_source=row.previous_period_source)
+    else:
+        item.update({key: _text(getattr(row, key)) for key in ("opening", "ending", "debit", "credit")})
+    return item
+
+
+def question_scope(rows, question, history=()):
+    """按本轮问题选报表项目，短追问沿用最近一轮用户问题；金额不用于排除零变动科目。"""
+    from . import audit_index
+    papers = audit_index.resolve_papers()
+    roots = [row for row in rows if row.level == 1]
+    def matches(text):
+        indices = {paper.index_no for paper in papers if paper.name and paper.name in text}
+        mapped = audit_index.resolve("", text)[0]
+        if mapped:
+            indices.add(mapped.index_no)
+        direct = [row for row in rows if (len(row.name) >= 2 and row.name not in {"其他", "合计", "明细"} and row.name in text)
+                  or re.search(r"(?<![\d.])" + re.escape(row.code) + r"(?![\d.])", text)]
+        selected_roots = [root for root in roots if any(row == root or
+                          (root.path and row.path.startswith(root.path + "/") and row.code.startswith(root.code))
+                          for row in direct)]
+        for root in selected_roots:
+            owner = audit_index.resolve(root.code, root.name)[0]
+            if owner:
+                indices.add(owner.index_no)
+        return indices, selected_roots
+    indices, selected_roots = matches(question)
+    if not indices and not selected_roots:
+        for turn in reversed(list(history)[-8:]):
+            if isinstance(turn, dict) and turn.get("role") == "user":
+                indices, selected_roots = matches(str(turn.get("content") or ""))
+                if indices or selected_roots:
+                    break
+    if not indices and not selected_roots:
+        return list(rows), [], [], False
+    selected = {row.code: row for row in selected_roots}
+    for root in roots:
+        owner = audit_index.resolve(root.code, root.name)[0]
+        if owner and owner.index_no in indices:
+            selected[root.code] = root
+    warnings = []
+    focused_papers = [paper for paper in papers if paper.index_no in indices]
+    for paper in focused_papers:
+        try:
+            selected.update((row.code, row) for row in audit_index.reserve_components(rows, paper))
+        except ValueError as exc:
+            warnings.append(str(exc))
+    scoped = [row for row in rows if any(row == root or (root.path and
+              row.path.startswith(root.path + "/") and row.code.startswith(root.code)) for root in selected.values())]
+    return scoped, focused_papers, warnings, True
 
 
 def _parents(codes) -> set:
@@ -70,44 +135,76 @@ def _parents(codes) -> set:
 def movements(rows: list[LedgerRow]) -> list[Movement]:
     output = []
     for row in rows:
-        change = None if row.opening is None or row.ending is None else row.ending - row.opening
+        opening = row.previous_period_amount if row.is_profit_loss else row.opening
+        ending = row.period_amount if row.is_profit_loss else row.ending
+        change = None if opening is None or ending is None else ending - opening
         rate = None
-        if change is not None and row.opening not in (None, ZERO):
-            rate = change / abs(row.opening)
+        if change is not None and opening not in (None, ZERO):
+            rate = change / abs(opening)
         output.append(Movement(row.code, row.name, row.path, row.level, row.direction,
-                               row.opening, row.ending, change, rate,
+                               opening, ending, change, rate,
                                row.debit, row.credit, row.is_profit_loss))
     return output
 
 
-def build_facts(rows: list[LedgerRow], top: int = 40) -> dict:
+def build_facts(rows: list[LedgerRow], top: int = 40, *, question="", history=(), account_limit=300) -> dict:
     """把账套压缩成可核对的事实清单；不含任何推断或结论。
 
-    movements 只放变动额最大的若干项（控制上下文长度），但 all_codes 给出全部科目编码，
-    用于区分「引用了账套里真实存在的科目」和「凭空编造编码」。
+    accounts 保留提问相关的科目（含零变动），movements 仅为末级变动排序摘要。
+    范围超过上限时明确标记，all_codes 用于区分已知编码与凭空编造编码。
     """
     if not rows:
         raise ValueError("没有科目余额数据")
     contexts = {(row.subject_id, row.year, row.month, row.ledger_id) for row in rows}
     if len(contexts) > 1:
         raise ValueError("科目数据包含不同账套版本、主体或期间，不能混在一起做变动分析")
-    items = movements(rows)
+    scoped, focused_papers, warnings, focused = question_scope(rows, question, history) if question else (list(rows), [], [], False)
+    items = movements(scoped)
     parents = _parents([item.code for item in items])
     leaves = [item for item in items if item.code not in parents]
     ranked = sorted((item for item in leaves if item.change not in (None, ZERO)),
                     key=lambda item: abs(item.change), reverse=True)[:top]
     first = rows[0]
-    return {
+    ranked_codes = {item.code for item in ranked}
+    candidates = scoped if focused else [row for row in scoped if row.level == 1 or row.code in ranked_codes]
+    candidates = sorted(candidates, key=lambda row: (row.level != 1,
+                        not (row.name in question or row.code in question), row.code))
+    sent = candidates[:account_limit]
+    def known_total(key):
+        values = [getattr(item, key) for item in leaves]
+        return _text(sum(values, ZERO)) if values and all(value is not None for value in values) else None
+    result = {
         "subject": {"id": first.subject_id, "year": first.year, "month": first.month},
         "counts": {"accounts": len(items), "leaves": len(leaves)},
+        "accounts": [account_fact(row) for row in sent],
+        "account_scope": {"focused": focused, "reports": [paper.label for paper in focused_papers],
+                          "available": len(scoped), "sent": len(sent), "truncated": len(sent) < len(scoped),
+                          "note": "变动摘要仅为排序结果；未出现在摘要中不表示科目不存在、余额为零或没有发生额。"},
+        "source_warnings": warnings,
         "movements": [item.as_dict() for item in ranked],
         "no_rate": [item.code for item in ranked if item.rate is None][:8],
-        "all_codes": sorted(item.code for item in items),
+        "all_codes": sorted(row.code for row in rows),
         "totals": {
-            "debit": _text(sum((item.debit for item in leaves if item.debit is not None), ZERO)),
-            "credit": _text(sum((item.credit for item in leaves if item.credit is not None), ZERO)),
+            "debit": known_total("debit"),
+            "credit": known_total("credit"),
         },
     }
+    result["report_totals"] = []
+    from . import audit_index, dxn_paper
+    for paper in focused_papers:
+        try:
+            accounts = dxn_paper.group_accounts(scoped, paper, lambda code, name: audit_index.resolve(code, name)[0])
+            if not accounts or warnings:
+                continue
+            totals = dxn_paper.totals(accounts, dxn_paper.presentation_direction(paper, accounts))
+            keys = ("period", "previous_period") if paper.index_no.startswith(("4-", "5-")) else ("opening", "ending", "debit", "credit")
+            result["report_totals"].append({"report": paper.label, "components": [row.code for row in accounts],
+                                          **{key: _text(totals[key]) for key in keys}})
+        except ValueError as exc:
+            result["source_warnings"].append(str(exc))
+    if scoped and all(row.is_profit_loss for row in scoped):
+        result["totals"] = {}
+    return result
 
 
 def summarize(facts: dict, limit: int = 6) -> str:
@@ -119,7 +216,7 @@ def summarize(facts: dict, limit: int = 6) -> str:
         sign = "+" if change >= 0 else ""
         lines.append(f"{item['code']} {item['name']} {sign}{change:,}{rate}")
     if not lines:
-        return "无变动"
+        return "所选范围没有可计算的非零变动；缺少比较期或未列入摘要的科目仍需核查。"
     return "；".join(lines)
 
 
@@ -142,7 +239,7 @@ def fact_amounts(facts: dict) -> set:
             values.add(amount.copy_abs())
 
     for item in facts.get("movements") or []:
-        for key in ("opening", "ending", "change", "debit", "credit"):
+        for key in ("opening", "ending", "change", "debit", "credit", "current_period", "previous_period"):
             add(item.get(key))
     for key in ("debit", "credit"):
         add((facts.get("totals") or {}).get(key))
@@ -156,6 +253,11 @@ def fact_amounts(facts: dict) -> set:
             for key in ("opening", "debit", "credit", "ending", "current_period", "previous_period",
                         "opening_difference", "ending_difference"):
                 add(item.get(key))
+            for value in item.get("monthly_amounts") or []:
+                add(value)
+    for item in facts.get("report_totals") or []:
+        for key in ("opening", "ending", "debit", "credit", "period", "previous_period"):
+            add(item.get(key))
     for item in facts.get("monthly_rows") or []:
         for key in ("current", "previous"):
             for value in item.get(key) or []:
@@ -202,7 +304,7 @@ def fact_tokens(facts: dict) -> set:
             if len(piece) >= 3:
                 tokens.add(piece)
 
-    for item in facts.get("movements") or []:
+    for item in [*(facts.get("movements") or []), *(facts.get("accounts") or [])]:
         for key in ("name", "path"):
             harvest(item.get(key))
     for item in facts.get("similarly_named") or []:
