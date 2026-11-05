@@ -11,7 +11,7 @@
 
 验证记录：相关区域 128 项测试通过（92.102 秒）；最终代码的 37 个测试模块完整回归 **629 项通过（116.450 秒）**；发布前按当前工作树复跑 629 项通过（169.394 秒）。新增 9 项回归覆盖无变动原值与备抵、超限与连续追问、自定义科目、损益发生额口径、收入交易额缺源、科目树、实际预览/发送一致性，以及模拟模型收到完整相关事实后的金额校验。
 
-完整回归命令为 `.venv/Scripts/python.exe -B -m unittest <rg --files tests -g test_*.py 返回的全部模块>`，临时目录位于项目内。日志为 `local-data/codex-review-20261105/pl-chat-targeted.txt` 和 `pl-chat-full.txt`；原始日志不提交。
+完整回归命令为 `.venv/Scripts/python.exe -B -m unittest <rg --files tests -g test_*.py 返回的全部模块>`，合成工作簿使用系统临时目录，不写入项目根。日志为 `local-data/codex-review-20261105/pl-chat-targeted.txt` 和 `pl-chat-full.txt`；原始日志不提交。
 
 发布物：`DeepAudit-0.6.5-dev-windows-x64.zip`（22,901,032 字节，SHA-256 `49371df1cb8c3c534a6a1fc0d57d2ced42e39be6f9c62a62c3ce3762b88bf982`，构建源提交 `b1eb9e0`）。解压后双击 `启动DeepAudit.cmd`；本包未编译，正式 EXE 仍走 Nuitka 流程。
 
