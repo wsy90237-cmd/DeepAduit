@@ -20,7 +20,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from . import paper_materials, paper_sheets, sampling
+from . import audit_index, dxn_templates, paper_materials, paper_sheets, sampling
 from .paper_sheets import MONEY, NUM, TEXT
 from .models import money
 from .paper_pack import baseline_notes, default_conclusion
@@ -45,10 +45,10 @@ AUDIT_COLUMNS = ("科目编码", "项目名称", "借/贷", "期末账面数", "
                  "期末审定数", "索引号", "上期末账面数", "上期末账面调整数", "上期末未审数",
                  "上期末调整数", "上期末审定数", "变动额", "变动率", "本期审定与上期比较（变动额）",
                  "本期审定与上期比较（变动率）")
-AUDIT_COLUMNS_PL = ("科目编码", "项目名称", "借/贷", "本期账面数", "本期账面调整数", "本期未审数",
+AUDIT_COLUMNS_PL = ("科目编码", "项目名称", "借/贷", "本期账面发生额", "本期账面调整数", "本期未审发生额",
                     "账项调整（借）", "账项调整（贷）", "重分类调整（借）", "重分类调整（贷）",
-                    "本期审定数", "索引号", "上期账面数", "上期账面调整数", "上期未审数",
-                    "上期调整数", "上期审定数", "变动额", "变动率", "本期审定与上期比较（变动额）",
+                    "本期审定发生额", "索引号", "上期账面发生额", "上期账面调整数", "上期未审发生额",
+                    "上期调整数", "上期审定发生额", "变动额", "变动率", "本期审定与上期比较（变动额）",
                     "本期审定与上期比较（变动率）")
 DETAIL_COLUMNS = ("取数标记", "科目编号", "上级科目名称", "项目名称", "借/贷",
                   "账面期初数", "账表差异期初调整", "未审期初数", "期初调整", "审定期初数",
@@ -176,6 +176,12 @@ def group_accounts(rows, paper, resolve):
         seen.add(row.code)
         picked.append(row)
     picked.sort(key=lambda item: item.code)
+    if paper is not None:
+        for component in audit_index.reserve_components(rows, paper):
+            if component.code not in seen:
+                picked.append(component)
+                seen.add(component.code)
+    picked.sort(key=lambda item: item.code)
     return picked
 
 
@@ -188,18 +194,25 @@ def detail_rows(rows, account):
     return [account]
 
 
-def consistency(accounts, rows):
+def consistency(accounts, rows, *, is_pl=None):
     """按直接子级逐栏核对，余额统一为借方方向；缺失值不能充当零。"""
     gap = Decimal("0")
     for account in accounts:
+        occurrence = bool(getattr(account, "is_profit_loss", False)) if is_pl is None else is_pl
+        if occurrence and getattr(account, "period_amount", None) is None:
+            return None, None
         lines = detail_rows(rows, account)
         if len(lines) == 1 and lines[0] is account:
             continue
-        for key in ("opening", "debit", "credit", "ending"):
+        keys = (("period_amount", "previous_period_amount") if getattr(account, "previous_period_amount", None) is not None else
+                ("period_amount",)) if occurrence else ("opening", "debit", "credit", "ending")
+        for key in keys:
             values = [_amount(getattr(line, key)) for line in [account, *lines]]
             if any(value is None for value in values):
+                if occurrence:
+                    return None, None
                 raise ValueError(f"科目 {account.code} 的 {key} 金额不完整，不能完成勾稽。")
-            signed = key in ("opening", "ending")
+            signed = key not in ("debit", "credit")
             parent = values[0] * (-1 if signed and account.direction == "贷" else 1)
             child = sum((value * (-1 if signed and line.direction == "贷" else 1)
                          for line, value in zip(lines, values[1:])), Decimal("0"))
@@ -207,23 +220,43 @@ def consistency(accounts, rows):
     return abs(gap) <= Decimal("0.005"), gap
 
 
-def totals(accounts):
-    """余额按借方方向净额合计；借贷发生额保持各自方向。"""
-    result = {"opening": Decimal("0"), "debit": Decimal("0"), "credit": Decimal("0"),
-              "ending": Decimal("0"), "period": Decimal("0")}
-    for account in accounts:
-        for key in ("opening", "debit", "credit", "ending"):
-            sign = -1 if key in ("opening", "ending") and account.direction == "贷" else 1
-            result[key] += (_amount(getattr(account, key)) or Decimal("0")) * sign
-        result["period"] += period_amount(account)
+def presentation_direction(paper, accounts):
+    """对应原模板“报表项目借贷”乘数，备抵科目不能改变资产项目的列示方向。"""
+    index = str(getattr(paper, "index_no", ""))
+    if index.startswith("1-"):
+        return "借"
+    if index.startswith(("2-", "4-")):
+        return "贷"
+    name = str(getattr(paper, "name", ""))
+    if index.startswith("5-"):
+        if any(word in name for word in ("费用", "成本", "支出", "损失")):
+            return "借"
+        if any(word in name for word in ("收益", "收入")):
+            return "贷"
+    directions = {account.direction for account in accounts}
+    if len(directions) == 1 and directions <= {"借", "贷"}:
+        return directions.pop()
+    raise ValueError("报表项目缺少明确的列示方向，请先核对科目归属。")
+
+
+def totals(accounts, direction="借"):
+    """余额与发生额按报表方向净额合计；缺少任一来源值时保留未知。"""
+    result = {}
+    for key in ("opening", "debit", "credit", "ending", "period", "previous_period"):
+        values = []
+        for account in accounts:
+            value = (period_amount(account) if key == "period" else
+                     _amount(getattr(account, "previous_period_amount", None)) if key == "previous_period" else
+                     _amount(getattr(account, key)))
+            sign = -1 if key not in ("debit", "credit") and account.direction != direction else 1
+            values.append(None if value is None else value * sign)
+        result[key] = None if any(value is None for value in values) else sum(values, Decimal("0"))
     return result
 
 
 def period_amount(row):
-    """损益类本期发生额：收入取贷方、费用取借方。"""
-    debit = _amount(getattr(row, "debit", None)) or Decimal("0")
-    credit = _amount(getattr(row, "credit", None)) or Decimal("0")
-    return credit if str(getattr(row, "direction", "")) == "贷" else debit
+    """只取独立的发生额字段，不以借贷单边或结转后的余额代替。"""
+    return _amount(getattr(row, "period_amount", None))
 
 
 # ---------- 读取鼎信诺底稿（取数结构） ----------
@@ -314,13 +347,14 @@ def _audit_sheet(book, meta, accounts, *, is_pl, index_no):
     row = _audit_header(sheet, is_pl=is_pl)
     first_data = row
     for account in accounts:
-        opening = _amount(account.opening) or Decimal("0")
-        ending = _amount(account.ending) or Decimal("0")
+        opening = _amount(account.opening)
+        ending = _amount(account.ending)
         current = period_amount(account) if is_pl else ending
-        previous = None if is_pl else opening
-        change = None if previous is None else current - previous
+        previous = _amount(getattr(account, "previous_period_amount", None)) if is_pl else opening
+        # 本期或上期任一方缺失即保留未知：不把缺数当零，也不由已知一方推算差额与变动率。
+        change = None if current is None or previous is None else current - previous
         rate = None
-        if previous not in (None, 0):
+        if change is not None and previous not in (None, 0):
             rate = float(change / abs(previous))
         # 账面来源不能证明审定数或“无调整”，这些栏须待独立复核后填写。
         values = (dxn_code(account.code, account.level), account.name, account.direction,
@@ -336,13 +370,14 @@ def _audit_sheet(book, meta, accounts, *, is_pl, index_no):
     total = row
     sheet.merge(total, 1, 2, "合　　计", font=HEAD_FONT, align=CENTER, fill=TOTAL_FILL, height=22)
     sheet.cell(total, 3, "—", align=CENTER, fill=TOTAL_FILL)
+    direction = meta["presentation_direction"]
+    opposite = "贷" if direction == "借" else "借"
     for column in (4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 20):
         letter = get_column_letter(column)
         formula = (f'=SUM({letter}{first_data}:{letter}{last})' if column in (7, 8, 9, 10) else
-                   f'=SUMIF($C${first_data}:$C${last},"借",{letter}${first_data}:{letter}${last})'
-                   f'-SUMIF($C${first_data}:$C${last},"贷",{letter}${first_data}:{letter}${last})')
-        if column not in (4, 6):
-            formula = f'=IF(COUNT({letter}{first_data}:{letter}{last})={last-first_data+1},{formula[1:]},"")'
+                   f'=SUMIF($C${first_data}:$C${last},"{direction}",{letter}${first_data}:{letter}${last})'
+                   f'-SUMIF($C${first_data}:$C${last},"{opposite}",{letter}${first_data}:{letter}${last})')
+        formula = f'=IF(COUNT({letter}{first_data}:{letter}{last})={last-first_data+1},{formula[1:]},"")'
         cell = sheet.cell(total, column, formula, font=HEAD_FONT, align=RIGHT, money=True,
                           fill=TOTAL_FILL, formula=True)
     sheet.cell(total, 12, "—", align=CENTER, fill=TOTAL_FILL)
@@ -354,13 +389,14 @@ def _audit_sheet(book, meta, accounts, *, is_pl, index_no):
                    align=RIGHT, percent=True, fill=TOTAL_FILL, formula=True)
     row = total + 1
     sheet.merge(row, 1, columns,
-                "衔接核对：审定数应等于未审数加借方调整、减贷方调整（含重分类）。缺少审定或调整依据时保持待补。"
-                + ("　损益类上期发生额需取自上年账套或报表，本机未取数，相关栏留空。"
+                f"衔接核对：审定数应等于未审数{'加借方调整、减贷方调整' if meta['presentation_direction'] == '借' else '减借方调整、加贷方调整'}（含重分类）。缺少审定或调整依据时保持待补。"
+                + ("　损益类上期发生额仅使用独立的上期发生额来源，缺少时留空。"
                    if is_pl else ""),
                 font=SMALL_FONT, height=20)
     row += 1
     sheet.merge(row, 1, 3, "审定数与调整衔接差异", font=SMALL_FONT, align=CENTER, fill=TOTAL_FILL)
-    sheet.cell(row, 4, f'=IF(COUNT(F{total}:K{total})=6,ROUND(K{total}-F{total}-G{total}+H{total}-I{total}+J{total},2),"")',
+    signs = "-G{t}+H{t}-I{t}+J{t}" if meta["presentation_direction"] == "借" else "+G{t}-H{t}+I{t}-J{t}"
+    sheet.cell(row, 4, f'=IF(COUNT(F{total}:K{total})=6,ROUND(K{total}-F{total}{signs.format(t=total)},2),"")',
                align=RIGHT, money=True, fill=TOTAL_FILL, formula=True)
     sheet.cell(row, 5, f'=IF(ISNUMBER(D{row}),IF(ABS(D{row})<0.01,"T/B","错"),"待复核")',
                align=CENTER, fill=TOTAL_FILL, formula=True)
@@ -388,7 +424,106 @@ def _audit_sheet(book, meta, accounts, *, is_pl, index_no):
     return sheet, total
 
 
+def _leaf_rows(rows, account):
+    children = detail_rows(rows, account)
+    return [account] if children == [account] else [leaf for child in children for leaf in _leaf_rows(rows, child)]
+
+
+def _book_detail_rows(meta, account):
+    auxiliary = [row for row in meta.get("auxiliary", ()) if row.account_code == account.code]
+    if auxiliary:
+        return sorted(auxiliary, key=lambda row: (row.name, row.code))
+    children = detail_rows(meta["rows"], account)
+    if children == [account]:
+        return children
+    codes = {row.account_code for row in meta.get("auxiliary", ())}
+    if any(line.code in codes for line in meta["rows"]
+           if account.path and line.path.startswith(account.path + "/")):
+        return [line for child in children for line in _book_detail_rows(meta, child)]
+    return children
+
+
+def _period_detail_sheet(book, meta, accounts, *, index_no, audit_total):
+    titles = ("取数标记", "科目编号", "上级科目名称", "项目名称", "借/贷",
+              *(f"{month}月发生额" for month in range(1, 13)),
+              "本期账面发生额", "本期未审发生额", "本期调整", "本期审定发生额",
+              "上期账面发生额", "上期未审发生额", "上期调整", "上期审定发生额",
+              "变动额", "变动率", "索引号", "月度合计", "月度与本期差异", "月度核对")
+    sheet = Sheet(book, f"{index_no} 明细表", (14, 16, 28, 28, 8) + (19,) * 26)
+    row = sheet.header_block(meta, columns=len(titles), title=f"{meta['name']}发生额明细表",
+                             index_no=f"{index_no}-1", page=3)
+    for column, title in enumerate(titles, 1):
+        sheet.cell(row, column, title, font=HEAD_FONT, align=CENTER, fill=HEAD_FILL)
+    sheet.ws.row_dimensions[row].height = 42
+    row += 1
+    totals_rows = []
+    cutoff = meta["rows"][0].month
+    for account in accounts:
+        first = row
+        for line in _leaf_rows(meta["rows"], account):
+            months = tuple(getattr(line, "monthly_amounts", ()))
+            months = months if len(months) == 12 else (None,) * 12
+            current, previous = period_amount(line), _amount(getattr(line, "previous_period_amount", None))
+            values = (f"1:K{dxn_code(line.code, line.level)}", dxn_code(line.code, line.level),
+                      line.path.rpartition("/")[0], line.name, line.direction, *months,
+                      current, current, None, None, previous, previous, None, None,
+                      None, None, f"{index_no}-1", None, None, None)
+            for column, value in enumerate(values, 1):
+                sheet.cell(row, column, value, money=6 <= column <= 30 and column not in (27, 28),
+                           align=LEFT if column in (1, 2, 3, 4, 28, 31) else RIGHT, height=22)
+            sheet.cell(row, 26, f'=IF(COUNT(R{row},V{row})=2,R{row}-V{row},"")', money=True, formula=True)
+            sheet.cell(row, 27, f'=IF(AND(COUNT(Z{row},V{row})=2,V{row}<>0),Z{row}/ABS(V{row}),"")',
+                       percent=True, formula=True)
+            if 1 <= cutoff <= 12:
+                last_month = get_column_letter(5 + cutoff)
+                sheet.cell(row, 29, f'=IF(COUNT(F{row}:{last_month}{row})={cutoff},SUM(F{row}:{last_month}{row}),"")',
+                           money=True, formula=True)
+            sheet.cell(row, 30, f'=IF(COUNT(AC{row},R{row})=2,ROUND(AC{row}-R{row},2),"")', money=True, formula=True)
+            sheet.cell(row, 31, f'=IF(ISNUMBER(AD{row}),IF(ABS(AD{row})<0.005,"相符","差异"),"待补发生额或月份")', formula=True)
+            row += 1
+        last = row - 1
+        sheet.merge(row, 1, 4, f"{account.name}小计", font=HEAD_FONT, fill=TOTAL_FILL)
+        sheet.cell(row, 5, account.direction, fill=TOTAL_FILL)
+        opposite = "贷" if account.direction == "借" else "借"
+        for column in (*range(6, 27), 29, 30):
+            letter = get_column_letter(column)
+            span = f"{letter}{first}:{letter}{last}"
+            formula = (f'=IF(COUNT({span})={last-first+1},SUMIF($E${first}:$E${last},"{account.direction}",{span})'
+                       f'-SUMIF($E${first}:$E${last},"{opposite}",{span}),"")')
+            sheet.cell(row, column, formula, money=True, formula=True, fill=TOTAL_FILL)
+        totals_rows.append(row)
+        row += 1
+    total = row
+    sheet.merge(total, 1, 5, f"{meta['name']}合计", font=HEAD_FONT, fill=TOTAL_FILL)
+    for column in (*range(6, 27), 29, 30):
+        letter = get_column_letter(column)
+        refs = [f"{letter}{number}" for number in totals_rows]
+        terms = [("+" if account.direction == meta["presentation_direction"] else "-") + ref
+                 for account, ref in zip(accounts, refs)]
+        sheet.cell(total, column, f'=IF(COUNT({",".join(refs)})={len(refs)},0{"".join(terms)},"")',
+                   money=True, formula=True, fill=TOTAL_FILL)
+    sheet.cell(total, 27, f'=IF(AND(COUNT(Z{total},V{total})=2,V{total}<>0),Z{total}/ABS(V{total}),"")',
+               percent=True, formula=True, fill=TOTAL_FILL)
+    audit_name = f"{index_no} 审定表"
+    for offset, (label, column, audit_column, pending) in enumerate((
+            ("本期未审发生额", "S", "F", "待补发生额依据"),
+            ("本期审定发生额", "U", "K", "待补审定依据")), 1):
+        row = total + offset
+        sheet.merge(row, 1, 4, f"与审定表核对（{label}）", fill=TOTAL_FILL)
+        sheet.cell(row, 6, f'=IF(COUNT({column}{total},\'{audit_name}\'!{audit_column}{audit_total})=2,'
+                   f'ROUND({column}{total}-\'{audit_name}\'!{audit_column}{audit_total},2),"")', money=True, formula=True)
+        sheet.cell(row, 7, f'=IF(ISNUMBER(F{row}),IF(ABS(F{row})<0.005,"G","差异"),"{pending}")', formula=True)
+    sheet.merge(total + 4, 1, len(titles),
+                "月度金额与本期、上期发生额均取自账套独立发生额字段，不使用借贷累计额或结转余额代替。"
+                "截止月份后的列保持空白，缺月不按零补齐；审定数与调整留待独立依据。",
+                font=SMALL_FONT, height=34)
+    sheet.page_setup(7)
+    return sheet
+
+
 def _detail_sheet(book, meta, accounts, *, is_pl, index_no, audit_total):
+    if is_pl:
+        return _period_detail_sheet(book, meta, accounts, index_no=index_no, audit_total=audit_total)
     columns = len(DETAIL_COLUMNS)
     widths = (13, 14, 20, 30, 6) + (20,) * 14 + (12,)
     sheet = Sheet(book, f"{index_no} 明细表", widths)
@@ -400,15 +535,21 @@ def _detail_sheet(book, meta, accounts, *, is_pl, index_no, audit_total):
     row += 1
     subtotal_rows = []
     for account in accounts:
-        lines = detail_rows(meta["rows"], account)
+        lines = _book_detail_rows(meta, account)
         block = []
         for line in lines:
-            opening = _amount(line.opening) or Decimal("0")
-            debit = _amount(line.debit) or Decimal("0")
-            credit = _amount(line.credit) or Decimal("0")
-            ending = _amount(line.ending) or Decimal("0")
-            parent = str(line.path).split("/")[-2] if "/" in str(line.path or "") else ""
-            values = (f"1:K{dxn_code(line.code, line.level)}", dxn_code(line.code, line.level),
+            opening, debit, credit, ending = (_amount(getattr(line, field)) for field in ("opening", "debit", "credit", "ending"))
+            if hasattr(line, "account_code"):
+                code = line.account_code
+                source = next(item for item in meta["rows"] if item.code == code)
+                marker = f"辅助核算:{code}/{line.type_code}/{line.code}"
+                parent = f"{line.account_name} / {line.type_name}"
+                display_code = f"{dxn_code(code, source.level)} / {line.code}"
+            else:
+                marker = f"1:K{dxn_code(line.code, line.level)}"
+                parent = line.path.rpartition("/")[0]
+                display_code = dxn_code(line.code, line.level)
+            values = (marker, display_code,
                       f"\\{parent}" if parent else "", line.name, line.direction,
                       opening, None, opening, None, None, debit, credit, None, None,
                       ending, None, ending, None, None, f"{index_no}-1")
@@ -429,7 +570,8 @@ def _detail_sheet(book, meta, accounts, *, is_pl, index_no, audit_total):
             signed = column in (6, 8, 10, 15, 17, 19)
             span = f"{letter}{block[0]}:{letter}{block[-1]}"
             directions = f"$E${block[0]}:$E${block[-1]}"
-            amount = (f'SUMIF({directions},"借",{span})-SUMIF({directions},"贷",{span})'
+            opposite = "贷" if account.direction == "借" else "借"
+            amount = (f'SUMIF({directions},"{account.direction}",{span})-SUMIF({directions},"{opposite}",{span})'
                       if signed else f'SUM({span})')
             formula = f'=IF(COUNT({span})={len(block)},{amount},"")'
             sheet.cell(subtotal, column, formula, font=HEAD_FONT, align=RIGHT, money=True,
@@ -444,7 +586,10 @@ def _detail_sheet(book, meta, accounts, *, is_pl, index_no, audit_total):
     for column in range(6, 20):
         letter = get_column_letter(column)
         references = [f"{letter}{item}" for item in subtotal_rows]
-        formula = f'=IF(COUNT({",".join(references)})={len(references)},{"+".join(references)},"")'
+        signed = column in (6, 8, 10, 15, 17, 19)
+        terms = [("-" if signed and account.direction != meta["presentation_direction"] else "+") + reference
+                 for account, reference in zip(accounts, references)]
+        formula = f'=IF(COUNT({",".join(references)})={len(references)},0{"".join(terms)},"")'
         sheet.cell(total, column, formula, font=HEAD_FONT, align=RIGHT, money=True, fill=TOTAL_FILL,
                    formula=True)
     sheet.cell(total, 20, "—", align=CENTER, fill=TOTAL_FILL)
@@ -453,7 +598,7 @@ def _detail_sheet(book, meta, accounts, *, is_pl, index_no, audit_total):
                 font=SMALL_FONT, fill=TOTAL_FILL)
     audit_name = f"{index_no} 审定表"
     if is_pl:
-        terms = [("-" if account.direction == "贷" else "+") +
+        terms = [("-" if account.direction != meta["presentation_direction"] else "+") +
                  f"{'L' if account.direction == '贷' else 'K'}{subtotal}"
                  for account, subtotal in zip(accounts, subtotal_rows)]
         book_value = "0" + "".join(terms)
@@ -473,7 +618,7 @@ def _detail_sheet(book, meta, accounts, *, is_pl, index_no, audit_total):
                 font=SMALL_FONT, align=LEFT, fill=TOTAL_FILL)
     sheet.cell(row, 5, "—", align=CENTER, fill=TOTAL_FILL)
     audit_name = f"{index_no} 审定表"
-    audited_terms = [("-" if account.direction == "贷" else "+") +
+    audited_terms = [("-" if account.direction != meta["presentation_direction"] else "+") +
                      f"{'N' if account.direction == '贷' else 'M'}{subtotal}"
                      for account, subtotal in zip(accounts, subtotal_rows)]
     audited_refs = [term[1:] for term in audited_terms]
@@ -552,7 +697,7 @@ def _disclosure_sheet(book, meta, accounts, *, is_pl, index_no, total_row_values
             mapped[name] = entry.get("note", WAIT)
     for account_index, account in enumerate(accounts):
         current = period_amount(account) if is_pl else (_amount(account.ending) or Decimal("0"))
-        previous = None if is_pl else (_amount(account.opening) or Decimal("0"))
+        previous = _amount(getattr(account, "previous_period_amount", None)) if is_pl else _amount(account.opening)
         note = mapped.get(account.name) or mapped.get(f"{meta['name']}_{account.name}") or WAIT
         values = (f"{meta['name']}_{account.name}", current, previous, None, note,
                   f"{index_no}-1")
@@ -697,13 +842,14 @@ def _extra_sheet(book, meta, spec, *, index_no, page, rows_data=()):
     return sheet
 
 
-def _self_checks(consistent, gap, picks, prepared_by, reviewed_by, *, has_detail=True):
+def _self_checks(consistent, gap, picks, prepared_by, reviewed_by, *, has_detail=True, is_pl=False):
     """复核自检项：只看格式、索引与勾稽，不评价证据是否充分。"""
     return (
         ("底稿目录、导引表与各工作表名称一致", "已核对", "生成时按同一索引号命名"),
-        ("明细表合计与科目余额表逐栏一致",
-         ("已核对" if consistent else "不一致，待追查") if has_detail else "未提供二级明细",
-         f"四栏绝对差异合计 {gap:,.2f} 元" if has_detail else "直接列示一级记录，不构成独立明细核对"),
+        ("明细发生额与汇总发生额一致" if is_pl else "明细表合计与科目余额表逐栏一致",
+         ("待补发生额来源" if consistent is None else "已核对" if consistent else "不一致，待追查") if has_detail else "未提供二级明细",
+         (f"{'发生额' if is_pl else '四栏'}绝对差异合计 {gap:,.2f} 元" if gap is not None else "来源不完整，尚未完成核对")
+         if has_detail else "直接列示一级记录，不构成独立明细核对"),
         ("账面/未审与审定核对口径已区分", "待复核", "账面核对可先进行，审定比较须取得独立依据"),
         ("抽凭样本已按风险抽取并写明理由",
          f"已抽取 {len(picks)} 笔" if picks else "未读取序时账",
@@ -736,17 +882,18 @@ def _catalog(book, meta, index_no, entries):
     for text in (
             "1、本目录与工作簿中同名工作表一一对应，索引号沿用《审计业务索引号及底稿名称清单》；",
             "2、审定表与明细表的取数标记沿用鼎信诺底稿写法（A 列 1:K<科目编号>）；",
-            "3、期初数、期末数、借贷发生额全部取自本机账套科目余额表，未取数的一律写“待补”；",
-            "4、报表数、上期数需与 TB 或上年账套核对后填列，本册不代为确定；",
+            ("3、本期与上期发生额取自独立发生额字段，逐月发生额不使用借贷累计额或结转余额代替；"
+             if meta.get("is_pl") else "3、期初、期末及借贷发生额取自账套；有已选客商维度时按该维度填列明细；"),
+            "4、报表数与上期审定数需有独立的 TB 或审定依据；账面期初不能代替上期审定数；",
             "5、本册为草稿，未经注册会计师复核不得归档。"):
         sheet.merge(row, 1, columns, text, font=SMALL_FONT, height=22)
         row += 1
-    primary = meta.get("primary_account")
-    if primary is not None:
+    for primary in meta.get("accounts") or []:
         row += 1
-        sheet.merge(row, 1, columns, f"一级科目：{primary.code} {primary.name}", font=HEAD_FONT, height=24)
+        level_label = "一级科目" if primary.level == 1 else "报表备抵组成科目"
+        sheet.merge(row, 1, columns, f"{level_label}：{primary.code} {primary.name}", font=HEAD_FONT, height=24)
         row += 1
-        children = meta["secondary_accounts"]
+        children = [line for line in detail_rows(meta["rows"], primary) if line is not primary]
         sheet.merge(row, 1, columns, f"包含的二级科目（{len(children)} 项，明细见账项明细表）",
                     font=HEAD_FONT, height=24)
         row += 1
@@ -764,10 +911,35 @@ def _catalog(book, meta, index_no, entries):
     return sheet
 
 
+def _auxiliary_check_sheet(book, meta, *, index_no):
+    sheet = Sheet(book, "客商明细核对", (16, 25, 22, 20, 20, 18, 60))
+    row = sheet.header_block(meta, columns=7, title=f"{meta['name']}客商明细核对",
+                             index_no=f"{index_no}-KH", page=6)
+    for column, text in enumerate(("科目编码", "科目名称", "核算维度", "期初差异", "期末差异", "核对状态", "范围与说明"), 1):
+        sheet.cell(row, column, text, font=HEAD_FONT, align=CENTER, fill=HEAD_FILL)
+    labels = {"matched": "相符", "difference": "差异，待核实", "missing": "待补来源", "ambiguous": "维度歧义，未取数"}
+    for check in meta.get("auxiliary_checks", ()):
+        row += 1
+        code = check.get("account_code", "")
+        account = next((item for item in meta["rows"] if item.code == code), None)
+        values = (code, account.name if account else "", check.get("type_code", ""),
+                  check.get("opening_difference"), check.get("ending_difference"),
+                  labels.get(check.get("status"), "待核实"), check.get("note", ""))
+        for column, value in enumerate(values, 1):
+            sheet.cell(row, column, value, money=column in (4, 5), height=32)
+    if not meta.get("auxiliary_checks"):
+        row += 1
+        sheet.merge(row, 1, 7, "未取得已明确选择的客商核算维度，客商明细与账龄不能由科目名称猜填。", height=32)
+    sheet.merge(row + 2, 1, 7, "同一科目只使用已确认的客户、供应商或往来单位维度。客商明细不与其科目汇总重复计数；"
+                "账龄、函证及交易真实性仍需独立证据。", font=SMALL_FONT, height=36)
+    sheet.page_setup(7)
+    return sheet
+
+
 def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed_by="",
           when="", procedures=(), narrative=None, standard="企业会计准则（一般企业）",
           accounts=None, full=True, journal=None, sampler=None,
-          sheet_add=(), sheet_drop=()):
+          sheet_add=(), sheet_drop=(), paper_data=None):
     """生成鼎信诺式底稿册：目录、审定表、明细表、审计程序、披露表。
 
     ``resolve(code, name)`` 返回本项目匹配的 ``Paper``（可为 None）；``accounts`` 缺省时按报表项目自动归集。
@@ -784,6 +956,28 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
             raise ValueError(f"科目编码 {row.code} 存在冲突，需人工确认来源。")
         by_code[row.code] = row
     rows = list(by_code.values())
+    auxiliary = ()
+    if paper_data is not None:
+        if any(row.code not in by_code or by_code[row.code] != row for row in paper_data.rows):
+            raise ValueError("客商与发生额来源和本册科目快照不一致，请重新读取。")
+        identity = (rows[0].subject_id, rows[0].ledger_id, rows[0].year, rows[0].month)
+        unique_auxiliary = {}
+        dimensions = {}
+        for item in paper_data.auxiliary:
+            if item.account_code not in by_code or (item.subject_id, item.ledger_id, item.year, item.month) != identity:
+                raise ValueError("客商明细含其他科目、账套或期间，已停止导出。")
+            if item.direction not in {"借", "贷"}:
+                raise ValueError("客商明细缺少明确的借贷方向。")
+            key = (item.account_code, item.type_code, item.code)
+            if key in unique_auxiliary and unique_auxiliary[key] != item:
+                raise ValueError("同一客商核算项目存在冲突，不能合并导出。")
+            unique_auxiliary[key] = item
+            dimensions.setdefault(item.account_code, set()).add(item.type_code)
+        if any(len(types) > 1 for types in dimensions.values()):
+            raise ValueError("同一科目选择多个客商维度，不能重复叠加。")
+        auxiliary = tuple(unique_auxiliary.values())
+        if journal is None:
+            journal = paper_data.journal
     period, cutoff = _period_text(subject_label)
     project = str(subject_label or "").split("/")[0].strip() or WAIT
     index_no = getattr(paper, "index_no", "") or WAIT
@@ -794,28 +988,33 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
     valid_accounts = group_accounts(rows, paper, resolve)
     if any(account not in valid_accounts for account in grouped):
         raise ValueError("指定科目不属于当前账套的已确认报表项目。")
+    is_pl = bool(getattr(grouped[0], "is_profit_loss", False)) or index_no.startswith(("4-", "5-"))
     for account in grouped:
         for line in [account, *detail_rows(rows, account)]:
             if line.direction not in ("借", "贷"):
                 raise ValueError(f"科目 {line.code} 缺少明确的借贷方向。")
-            if any(_amount(getattr(line, key)) is None for key in ("opening", "debit", "credit", "ending")):
+            if not is_pl and any(_amount(getattr(line, key)) is None for key in ("opening", "debit", "credit", "ending")):
                 raise ValueError(f"科目 {line.code} 金额不完整，不能以零代替缺少的数据。")
-    is_pl = bool(getattr(grouped[0], "is_profit_loss", False)) or index_no.startswith(("4-", "5-"))
     narrative = narrative or {}
     materials = paper_materials.for_paper(index_no, name)
     pending = paper_materials.pending(materials)
-    consistent, gap = consistency(grouped, rows)
+    consistent, gap = consistency(grouped, rows, is_pl=is_pl)
     has_detail = any(detail_rows(rows, account) != [account] for account in grouped)
-    total = totals(grouped)
+    direction = presentation_direction(paper, grouped)
+    total = totals(grouped, direction)
     notes = narrative.get("guide_notes") or baseline_notes(
         name="、".join(account.name for account in grouped), accounts=grouped, total=total, is_pl=is_pl, consistent=consistent,
         gap=gap, pending=pending, has_detail=has_detail)
-    conclusion = narrative.get("conclusion") or default_conclusion(consistent, pending, has_detail=has_detail)
+    conclusion = narrative.get("conclusion") or ("待定：本期发生额来源不完整，尚未完成明细核对，不能据此判断无异常。"
+                                                if consistent is None else default_conclusion(consistent, pending, has_detail=has_detail))
     meta = {
         "project": project, "name": name, "period": period, "cutoff": cutoff,
         "prepared_by": prepared_by, "reviewed_by": reviewed_by,
         "date": when or WAIT, "standard": standard, "rows": rows,
-        "source": "金额来源：本机账套（科目余额表）",
+        "accounts": grouped, "presentation_direction": direction, "is_pl": is_pl,
+        "auxiliary": auxiliary,
+        "auxiliary_checks": tuple(paper_data.auxiliary_checks) if paper_data is not None else (),
+        "source": "金额来源：本机账套（" + ("独立发生额" if is_pl else "科目余额") + ("、已选客商辅助核算" if auxiliary else "") + "）",
         "audit_notes": notes,
         "procedure_notes": narrative.get("procedure_notes") or [],
         "disclosure_notes": narrative.get("disclosure_notes") or [],
@@ -835,12 +1034,15 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
         (f"{index_no}-15", f"{name}披露表", "披露表", "与审定数勾稽"),
     ]
     sheet_state = paper_sheets.facts(rows, journal)
+    sheet_state.update(primary_accounts=grouped, rows=rows, report_total=total["ending"],
+                       auxiliary=auxiliary, presentation_direction=direction)
     leaves = [line for account in grouped for line in detail_rows(rows, account)]
     extras = list(paper_sheets.for_category(_category_of(index_no, name), sheet_state)) if full else []
     if sheet_drop:
-        extras = [spec for spec in extras if spec[0] not in set(sheet_drop)]
+        mandatory = {spec[0] for spec in paper_sheets.BASE}
+        extras = [spec for spec in extras if spec[0] not in set(sheet_drop) or spec[0] in mandatory]
     for title in sheet_add or ():
-        spec = paper_sheets.by_name(title)
+        spec = paper_sheets.by_name(title) or dxn_templates.spec_for(title, name)
         if spec and all(spec[0] != item[0] for item in extras):
             extras.append(spec)
     extras = tuple(extras)
@@ -852,15 +1054,19 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
                         f"{len(spec[1])} 列 × {spec[3]} 行，待资料填写"))
     entries.append((f"9720-{index_no}", f"{name}复核自检清单",
                     f"9720-{index_no} 复核自检清单", "格式、索引与勾稽自检"))
+    has_auxiliary_check = bool(meta["auxiliary_checks"] or auxiliary) or (paper_data is not None and
+                          ("应收" in name or "应付账款" in name or "其他应付款" in name or "预付款" in name or "预收" in name))
+    if has_auxiliary_check:
+        entries.append((f"{index_no}-KH", f"{name}客商明细核对", "客商明细核对", "按已选客商维度核对，不叠加多个维度"))
     _metadata_sheet(book, meta, index_no)
     _catalog(book, meta, index_no, entries)
     audit, audit_total = _audit_sheet(book, meta, grouped, is_pl=is_pl, index_no=index_no)
     _detail_sheet(book, meta, grouped, is_pl=is_pl, index_no=index_no, audit_total=audit_total)
+    if has_auxiliary_check:
+        _auxiliary_check_sheet(book, meta, index_no=index_no)
     _program_sheet(book, meta, procedures, index_no=index_no)
-    current_total = sum((((period_amount(row) if is_pl else _amount(row.ending))
-                         * (-1 if row.direction == "贷" else 1))
-                         for row in grouped), Decimal("0"))
-    previous_total = None if is_pl else total["opening"]
+    current_total = total["period"] if is_pl else total["ending"]
+    previous_total = total["previous_period"] if is_pl else total["opening"]
     _disclosure_sheet(book, meta, grouped, is_pl=is_pl, index_no=index_no,
                       total_row_values={"current": current_total, "previous": previous_total})
     picks, pick_source = [], ""
@@ -901,11 +1107,24 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
             spec = (spec[0], spec[1], spec[2] + " " + scope_note, spec[3], spec[4])
         else:
             data = paper_sheets.prefill(title, sheet_state, leaves)
+            if title in {"账龄分析表", "函证信息汇总表", "往来账龄分析表"} and not auxiliary:
+                spec = (spec[0], spec[1], spec[2] + " 未取得明确选择的客商核算项目，本表不以科目名称代填客商。", *spec[3:])
         _extra_sheet(book, meta, spec, index_no=index_no, page=offset, rows_data=data)
     if pick_source:
         meta["pick_source"] = pick_source
     meta["review_page"] = 8 + len(extras)
-    _review_sheet(book, meta, _self_checks(consistent, gap, picks, prepared_by, reviewed_by, has_detail=has_detail),
+    checks = list(_self_checks(consistent, gap, picks, prepared_by, reviewed_by, has_detail=has_detail, is_pl=is_pl))
+    for check in meta["auxiliary_checks"]:
+        checks.append((f"客商明细与科目 {check.get('account_code', '')} 核对",
+                       {"matched": "相符", "difference": "差异", "missing": "待补来源", "ambiguous": "维度歧义"}.get(check.get("status"), "待核实"),
+                       str(check.get("note") or "见客商明细核对表")))
+    if is_pl:
+        checks.append(("本期及上期发生额来源完整",
+                       "已读取" if total["period"] is not None and total["previous_period"] is not None else "待补发生额来源",
+                       "损益明细按月份列示；借贷累计额和结转后余额不能代替独立的本期、上期发生额。"))
+    if paper_data is not None:
+        checks.extend(("取数范围与缺口", "待核实", str(warning)) for warning in paper_data.warnings)
+    _review_sheet(book, meta, checks,
                   index_no=index_no, conclusion=conclusion)
     target = Path(path)
     book.save(target)
@@ -947,7 +1166,7 @@ def build_all(folder, *, subject_label, rows, resolve, papers=(), prepared_by=""
               accounts=accounts, journal=scoped or None, sampler=sampler)
         materials = paper_materials.for_paper(index_no, name)
         pending = paper_materials.pending(materials)
-        total = totals(accounts)
+        total = totals(accounts, presentation_direction(paper, accounts))
         produced.append({
             "index_no": index_no, "name": name, "accounts": len(accounts),
             "ending": total["ending"], "period": total["period"],

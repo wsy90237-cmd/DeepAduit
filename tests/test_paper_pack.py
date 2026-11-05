@@ -251,7 +251,7 @@ def revenue_ledger():
         return LedgerRow(code=code, name=name, path=path, level=level, direction="贷",
                          opening=Decimal("0"), debit=Decimal(debit), credit=Decimal(credit),
                          ending=Decimal("0"), subject_id="S1", year=2025, month=12,
-                         is_profit_loss=pl)
+                         is_profit_loss=pl, period_amount=Decimal(credit), period_source="synthetic fse")
 
     return [
         row("6001", "主营业务收入", "主营业务收入", 1, "8652000", "8652000"),
@@ -314,10 +314,23 @@ class ProfitLossLayoutTests(unittest.TestCase):
         check = paper_pack.reconcile(total, revenue_ledger()[0])
         self.assertTrue(check["consistent"])
 
+    def test_missing_period_source_is_unknown_not_a_difference(self):
+        """缺独立发生额来源时既不能显示一致，也不能显示成已查出差错。"""
+        from dataclasses import replace
+        total = {"opening": Decimal("0"), "debit": Decimal("8652000"),
+                 "credit": Decimal("8652000"), "ending": Decimal("0"), "period": None}
+        check = paper_pack.reconcile(total, replace(revenue_ledger()[0], period_amount=None))
+        self.assertIsNone(check["consistent"])
+        self.assertIsNone(check["diff"]["period"])
+        self.assertIn("缺少", paper_pack.verdict_text(check["consistent"], is_pl=True))
+        self.assertEqual(paper_pack.check_status(check["consistent"]), "缺少依据，待补")
+
     def test_period_amount_by_direction(self):
         expense = revenue_ledger()[0]
         self.assertEqual(paper_pack.period_amount(expense), Decimal("8652000"))
         debit_side = LedgerRow(code="6602", name="管理费用", path="管理费用", level=1, direction="借",
                                opening=Decimal("0"), debit=Decimal("120000"), credit=Decimal("120000"),
-                               ending=Decimal("0"), is_profit_loss=True)
-        self.assertEqual(paper_pack.period_amount(debit_side), Decimal("120000"))
+                               ending=Decimal("0"), is_profit_loss=True, period_amount=Decimal("110000"))
+        self.assertEqual(paper_pack.period_amount(debit_side), Decimal("110000"))
+        from dataclasses import replace
+        self.assertIsNone(paper_pack.period_amount(replace(debit_side, period_amount=None)))

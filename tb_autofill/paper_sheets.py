@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 import re
+
 from .models import money
 
 TEXT, MONEY, DATE, NUM = "text", "money", "date", "num"
@@ -89,7 +91,8 @@ SPECS = {
                                   ("累计折旧/摊销", 16, MONEY), ("减值准备", 15, MONEY),
                                   ("账面价值", 16, MONEY), ("本期折旧/摊销", 16, MONEY),
                                   ("权属证书", 22, TEXT)),
-         "资产名称与账面价值已按明细预填；折旧摊销、权属证书待取得卡片账与权证后填列。", 16, None),
+         "按本册原值、累计折旧/摊销及减值科目填列，只有明细名称唯一对应时才计算分类净额；"
+         "不能对应的项目保留空白，权属及本期折旧摊销仍需独立来源。", 16, None),
         ("权属证明检查表", (("资产名称", 26, TEXT), ("权属证书编号", 24, TEXT),
                             ("权利人", 24, TEXT), ("抵押/质押情况", 24, TEXT),
                             ("检查结论", 18, TEXT)),
@@ -180,13 +183,14 @@ def movement_rows(accounts):
     output = []
     for row in accounts:
         is_pl = row.is_profit_loss
-        current = money((row.credit if row.direction == "贷" else row.debit) if is_pl else row.ending)
-        previous = None if is_pl else money(row.opening)
+        current = money(getattr(row, "period_amount", None) if is_pl else row.ending)
+        previous = money(getattr(row, "previous_period_amount", None) if is_pl else row.opening)
         change = None if current is None or previous is None else current - previous
         rate = None if change is None or previous == 0 else change / abs(previous)
         output.append({"code": row.code, "name": row.name, "current": current, "previous": previous,
                        "change": change, "rate": rate,
-                       "basis": "本期发生额；上期发生额未提供" if is_pl else "期末账面余额与年初账面余额"})
+                       "basis": ("本期发生额与上期发生额" if previous is not None else "本期发生额；上期发生额未提供")
+                       if is_pl else "期末账面余额与年初账面余额"})
     return output
 
 
@@ -201,7 +205,7 @@ def facts(accounts, journal=None):
         if not code.startswith(("1002", "1009", "1012")):
             continue
         # 有下级时一级科目本身不再单独函证，避免与明细账户重复
-        if len(code) == 4 and any(other.startswith(code) and other != code for other in all_codes):
+        if any(other.startswith(code) and other != code for other in all_codes):
             continue
         name = str(getattr(row, "name", "") or "")
         match = re.search(r"\d{6,}", name)
@@ -230,33 +234,76 @@ def for_category(category, state=None):
     return tuple(selected)
 
 
+def asset_component_rows(roots, rows, report_total=None):
+    """原值、累计折旧/摊销和减值按相同明细名衔接；名称歧义时不分摊备抵金额。"""
+    components = {}
+    root_roles = set()
+    totals = {role: [] for role in ("cost", "accumulated", "impairment")}
+    for root in roots:
+        name = str(root.name)
+        # 备抵按名称识别；资产项目自身科目即原值科目，不按科目代码写死类别。
+        role = ("accumulated" if any(word in name for word in ("累计折旧", "累计摊销")) else
+                "impairment" if "减值准备" in name else "cost")
+        root_roles.add(role)
+        amount = money(root.ending)
+        natural = "借" if role == "cost" else "贷"
+        totals[role].append(None if amount is None else amount * (1 if root.direction == natural else -1))
+        children = [line for line in rows if root.path and line.level == root.level + 1
+                    and line.path.rpartition("/")[0] == root.path]
+        for line in children or [root]:
+            label = line.name if children else "整体"
+            components.setdefault(label, {}).setdefault(role, []).append(line)
+    output = []
+    for label, roles in sorted(components.items()):
+        values = {}
+        for role in totals:
+            candidates = roles.get(role, [])
+            amount = money(candidates[0].ending) if len(candidates) == 1 else None
+            natural = "借" if role == "cost" else "贷"
+            values[role] = None if amount is None else amount * (1 if candidates[0].direction == natural else -1)
+        cost, accumulated, impairment = (values[role] for role in totals)
+        # 账套里没有某类备抵科目时该栏留空、净额按零计；科目存在但金额未知则净额留空。
+        known = [Decimal("0") if role not in root_roles else values[role] for role in totals]
+        net = None if any(value is None for value in known) else known[0] - known[1] - known[2]
+        output.append((label, cost, accumulated, impairment, net, None, None))
+    if output:
+        amounts = [None if not values or any(value is None for value in values) else sum(values)
+                   for values in totals.values()]
+        output.append(("报表项目合计", *amounts, report_total, None, None))
+    return output
+
+
 def prefill(name, state, accounts=()):
     """能由科目余额表直接推出的行，先填好；其余留空给现场。"""
     if name == "银行函证信息汇总表":
         return [(index, item["name"], item["number"], item["balance"], None, None, None, None, None)
                 for index, item in enumerate(state.get("bank_accounts") or [], 1)]
     if name == "银行账户清单":
-        return [(index, item["name"], item["number"], None, "人民币", item["balance"], None, None, None)
+        return [(index, item["name"], item["number"], None, None, item["balance"], None, None, None)
                 for index, item in enumerate(state.get("bank_accounts") or [], 1)]
-    if name in {"账龄分析表", "函证信息汇总表", "往来账龄分析表", "存货盘点表",
-                "资产明细及折旧摊销表"}:
-        ordered = sorted(accounts, key=lambda row: -abs(getattr(row, "ending", 0) or 0))
+    if name == "资产明细及折旧摊销表":
+        return asset_component_rows(state.get("primary_accounts", ()), state.get("rows", ()), state.get("report_total"))
+    if name in {"账龄分析表", "函证信息汇总表", "往来账龄分析表", "存货盘点表"}:
+        sources = state.get("auxiliary", ()) if name != "存货盘点表" else accounts
+        ordered = sorted(sources, key=lambda row: -abs(getattr(row, "ending", 0) or 0))
+        if name == "函证信息汇总表":
+            ordered = ordered[:10]
         rows = []
-        for index, row in enumerate(ordered[:10], 1):
+        for index, row in enumerate(ordered, 1):
+            balance = money(getattr(row, "ending", None))
+            if balance is not None and getattr(row, "direction", "") != state.get("presentation_direction", "借"):
+                balance = -balance
             if name == "账龄分析表":
-                rows.append((getattr(row, "name", ""), getattr(row, "ending", None),
+                rows.append((getattr(row, "name", ""), balance,
                              None, None, None, None, None, None))
             elif name == "函证信息汇总表":
-                rows.append((index, getattr(row, "name", ""), getattr(row, "ending", None),
-                             getattr(row, "ending", None), None, None, None))
+                rows.append((index, getattr(row, "name", ""), balance,
+                             balance, None, None, None))
             elif name == "往来账龄分析表":
-                rows.append((getattr(row, "name", ""), getattr(row, "ending", None),
+                rows.append((getattr(row, "name", ""), balance,
                              None, None, None, None, None))
             elif name == "存货盘点表":
                 rows.append((getattr(row, "name", ""), None, None, None, None, None,
                              getattr(row, "ending", None), None))
-            else:
-                rows.append((getattr(row, "name", ""), getattr(row, "ending", None),
-                             None, None, getattr(row, "ending", None), None, None))
         return rows
     return []

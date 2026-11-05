@@ -149,11 +149,17 @@ def fact_amounts(facts: dict) -> set:
     for value in (facts.get("counts") or {}).values():
         add(value)
     subject = facts.get("subject") or {}
-    for key in ("opening", "debit", "credit", "ending"):
+    for key in ("opening", "debit", "credit", "ending", "current_period", "previous_period"):
         add(subject.get(key))
-    for item in facts.get("children") or []:
-        for key in ("opening", "debit", "credit", "ending"):
-            add(item.get(key))
+    for group in ("children", "accounts", "auxiliary", "auxiliary_checks"):
+        for item in facts.get(group) or []:
+            for key in ("opening", "debit", "credit", "ending", "current_period", "previous_period",
+                        "opening_difference", "ending_difference"):
+                add(item.get(key))
+    for item in facts.get("monthly_rows") or []:
+        for key in ("current", "previous"):
+            for value in item.get(key) or []:
+                add(value)
     for item in facts.get("analysis_rows") or []:
         for key in ("current", "previous", "change"):
             add(item.get(key))

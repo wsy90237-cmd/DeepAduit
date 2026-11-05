@@ -164,6 +164,8 @@ def default_conclusion(consistent=True, pending=(), *, has_detail=True):
     """无模型时的结论口径：只写勾稽事实与缺证据，不代替注册会计师判断。"""
     if not has_detail:
         return "尚未取得二级明细，无法完成明细合计与一级余额的核对。当前仅列示一级账面记录，需补充明细及外部证据后判断是否需调整或追加程序。"
+    if consistent is None:
+        return "本期发生额来源不完整，尚未完成明细核对，需补充同口径数据和项目证据后再形成结论。"
     if not consistent:
         return "需进一步程序：明细与科目余额表存在差异，须追查差异后再确定结论。"
     names = [str(item) for item in pending if str(item).strip()][:3]
@@ -180,8 +182,12 @@ def baseline_notes(*, name, accounts, total, is_pl, consistent, gap, pending=(),
     current = total.get("period") if is_pl else total.get("ending")
     lines = []
     if is_pl:
-        lines.append(f"{name}本期发生额 {amount(current)} 元，按账套记录的收入贷方或费用借方累计发生额列示。"
-                     "目前未取得上期发生额，需补充上年账套或已复核的上期明细，暂不能据此评价同比变化。")
+        lines.append(f"{name}本期发生额 {amount(current)} 元，按账套独立发生额字段列示，未用借贷累计数代替。")
+        if total.get("previous_period") is None:
+            lines.append("目前未取得同口径上期发生额，需补充上年账套同一主体、同一期间的独立发生额来源，"
+                         "暂不能据此评价同比变化，也不能用年初余额或本期数代替。")
+        else:
+            lines.append(f"同口径上期发生额为 {amount(total['previous_period'])} 元，变动原因尚需结合业务资料核实。")
     else:
         change = (current - total["opening"]) if current is not None and total.get("opening") is not None else None
         lines.append(f"{name}年初账面余额为 {amount(total.get('opening'))} 元，期末为 {amount(current)} 元，"
@@ -189,6 +195,8 @@ def baseline_notes(*, name, accounts, total, is_pl, consistent, gap, pending=(),
                      f"贷方累计 {amount(total.get('credit'))} 元。以上金额取自本机账套科目余额表。")
     if not has_detail:
         lines.append("本科目未提供二级明细，本册直接列示一级账面记录，尚不能执行明细合计与一级余额的核对。")
+    elif consistent is None:
+        lines.append("本期发生额来源不完整，尚未完成明细核对；未取得的数据留空待补。")
     elif consistent:
         lines.append("本次对明细合计与一级科目余额进行了本地复算，期初、借方、贷方及期末四栏逐栏核对一致。"
                      "这项核对只说明账内数据相符，不代表银行函证、监盘或原始凭证检查已经完成。")
@@ -262,9 +270,8 @@ def _change_rate(opening, ending):
 
 
 def period_amount(row):
-    """损益类科目的本期数：收入按贷方发生额、费用按借方发生额，不含结转方向。"""
-    debit, credit = _amount(row.debit) or Decimal("0"), _amount(row.credit) or Decimal("0")
-    return credit if str(getattr(row, "direction", "")) == "贷" else debit
+    """独立发生额缺少依据时保持未知，不能用借贷累计数代填。"""
+    return _amount(getattr(row, "period_amount", None))
 
 
 def summary_rows(rows, code, paper):
@@ -295,7 +302,7 @@ def summary_rows(rows, code, paper):
         "debit": sum((item["debit"] or Decimal("0")) for item in detail),
         "credit": sum((item["credit"] or Decimal("0")) for item in detail),
         "ending": sum((item["ending"] or Decimal("0")) for item in detail),
-        "period": sum((item["period"] or Decimal("0")) for item in detail),
+        "period": None if any(item["period"] is None for item in detail) else sum(item["period"] for item in detail),
     }
     return detail, total
 
@@ -308,7 +315,29 @@ def reconcile(total, subject_row):
         raise ValueError("科目金额不完整，不能以零代替缺少的数据。")
     diff = {key: ledger[key] - (total.get(key) or Decimal("0")) for key in ledger}
     consistent = all(abs(value) <= Decimal("0.005") for value in diff.values())
+    if subject_row.is_profit_loss:
+        ledger["period"] = period_amount(subject_row)
+        diff["period"] = (ledger["period"] - total["period"]
+                          if ledger["period"] is not None and total.get("period") is not None else None)
+        if diff["period"] is None:
+            consistent = None          # 缺独立发生额依据：既不算一致，也不报成差异
+        else:
+            consistent = consistent and abs(diff["period"]) <= Decimal("0.005")
     return {"ledger": ledger, "diff": diff, "consistent": consistent}
+
+
+def check_status(consistent):
+    """自检清单用短语：未知与已查出差错必须分开写。"""
+    if consistent is None:
+        return "缺少依据，待补"
+    return "已核对" if consistent else "不一致，待追查"
+
+
+def verdict_text(consistent, *, is_pl=False):
+    """三态勾稽结论：未知不能显示成“不一致”，避免把缺依据报成已查出差错。"""
+    if consistent is None:
+        return "缺少本期发生额依据，待补" if is_pl else "缺少依据，待补"
+    return "一致" if consistent else "不一致，需追查"
 
 
 def sample_journal(journal, limit=SAMPLE_LIMIT):
@@ -451,13 +480,13 @@ def _write_guide(book, state, detail, total, draft_body, notes=(), check=None, c
                        note=f"科目：{state['code']} {state['subject_name']}　｜　"
                             f"底稿名称：{state['name']}　｜　{state['direction']}方科目　｜　"
                             f"级次：{state['level_label']}　｜　{state['amount_source']}"
-                            + ("　｜　损益类按本期发生额列示（收入取贷方、费用取借方，不含结转）"
+                            + ("　｜　损益类按账套独立本期发生额列示"
                                if is_pl else ""))
     if is_pl:
         row = sheet.table(row, ("项目", "本期未审数", "审计调整", "本期审定数", "占比", "索引号", "备注"))
         base = total["period"]
         for item in detail:
-            share = (item["period"] / base) if base else None
+            share = (item["period"] / base) if base and item["period"] is not None else None
             row = sheet.line(row, (f"{item['code']} {item['name']}", item["period"], None, None,
                                    share, item["index"], ""),
                              money_columns=(2, 3, 4), percent_columns=(5,), height=22)
@@ -481,14 +510,16 @@ def _write_guide(book, state, detail, total, draft_body, notes=(), check=None, c
                          percent_columns=(6,), bold=True, fill=TOTAL_FILL, height=22)
     row += 1
     if check:
-        verdict = "一致" if check["consistent"] else "不一致，需追查"
+        verdict = verdict_text(check["consistent"], is_pl=is_pl)
         figure = total["period"] if is_pl else total["ending"]
-        ledger = check["ledger"]["credit"] if is_pl else check["ledger"]["ending"]
-        gap = check["diff"]["credit"] if is_pl else check["diff"]["ending"]
+        ledger = check["ledger"].get("period") if is_pl else check["ledger"]["ending"]
+        gap = check["diff"].get("period") if is_pl else check["diff"]["ending"]
         label = "本期发生额" if is_pl else "期末余额"
+        def figure_text(value):
+            return f"{value:,.2f}" if value is not None else "待补"
         sheet.merge(row, 1, columns,
-                    f"勾稽：明细合计{label} {figure:,.2f} 元，科目余额表 {ledger:,.2f} 元，"
-                    f"差异 {gap:,.2f} 元（{verdict}）。",
+                    f"勾稽：明细合计{label} {figure_text(figure)} 元，科目余额表 {figure_text(ledger)} 元，"
+                    f"差异 {figure_text(gap)} 元（{verdict if gap is not None else '缺少发生额依据'}）。",
                     font=SMALL_FONT, height=22)
         row += 1
     sheet.merge(row, 1, columns, "审计说明（模型草稿，需复核）", font=HEAD_FONT, height=22)
@@ -583,17 +614,17 @@ def _write_detail(book, state, detail, total, check):
     sheet.ws.cell(row=row, column=9).border = BOX
     row += 1
     sheet.merge(row, 1, 3, "差异（明细合计－科目余额表）", font=HEAD_FONT, align=LEFT, height=22,
-                fill=None if check["consistent"] else PatternFill("solid", fgColor="FDE8E8"))
+                fill=PatternFill("solid", fgColor="FDE8E8") if check["consistent"] is False else None)
     for column, value in zip((4, 5, 6, 7),
                              (diff["opening"], diff["debit"], diff["credit"], diff["ending"])):
         cell = sheet.ws.cell(row=row, column=column, value=value)
         cell.font, cell.border = HEAD_FONT, BOX
         cell.alignment = Alignment(horizontal="right", vertical="center")
         cell.number_format = MONEY_FORMAT
-        if not check["consistent"]:
+        if check["consistent"] is False:
             cell.fill = PatternFill("solid", fgColor="FDE8E8")
     verdict = sheet.ws.cell(row=row, column=9,
-                            value="一致" if check["consistent"] else "不一致，需追查")
+                            value=verdict_text(check["consistent"], is_pl="period" in check["ledger"]))
     verdict.font, verdict.border, verdict.alignment = HEAD_FONT, BOX, CENTER
     row += 1
     row += 1
@@ -777,7 +808,7 @@ def build(path, *, paper, subject_label, subject_row, rows, journal=None, draft_
     checks = [
         ("底稿目录、索引导引表与各工作表名称一致", "已核对", "自动生成时按同一索引号命名"),
         ("明细表合计与科目余额表本科目期末余额一致",
-         "已核对" if check["consistent"] else "不一致，待追查",
+         check_status(check["consistent"]),
          f"明细合计 {total['ending']:,.2f}，差异 {check['diff']['ending']:,.2f}"),
         ("导引表期末余额与明细表合计一致", "已核对", "同一取数口径"),
         ("凭证抽查表样本与序时账一致", "已核对" if samples else "不适用",

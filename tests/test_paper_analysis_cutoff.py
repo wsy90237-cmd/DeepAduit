@@ -18,7 +18,8 @@ def ledger(code="1002", name="银行存款", direction="借", pl=False):
     root = LedgerRow(code, name, path=name, level=1, direction=direction,
                      opening=Decimal(0 if pl else 100), ending=Decimal(0 if pl else 125),
                      debit=Decimal(125 if pl else 25), credit=Decimal(125 if pl else 0),
-                     subject_id="1", ledger_id="9", year=2026, month=6, is_profit_loss=pl)
+                     subject_id="1", ledger_id="9", year=2026, month=6, is_profit_loss=pl,
+                     period_amount=Decimal(125) if pl else None)
     child = replace(root, code=code + "01", name="合成明细", path=name + "/合成明细", level=2)
     return [root, child]
 
@@ -119,8 +120,8 @@ class PaperFillTests(unittest.TestCase):
         for code, name, direction, pl, expected_term in (
             ("1002", "银行存款", "借", False, "Q"),
             ("2501", "长期借款", "贷", False, "Q"),
-            ("6001", "主营业务收入", "贷", True, "-L"),
-            ("6602", "管理费用", "借", True, "+K"),
+            ("6001", "主营业务收入", "贷", True, "S"),
+            ("6602", "管理费用", "借", True, "S"),
         ):
             with self.subTest(code=code):
                 book, index = self.build(ledger(code, name, direction, pl))

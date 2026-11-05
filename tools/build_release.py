@@ -16,8 +16,9 @@ from tb_autofill import APP_NAME, __version__
 
 NATIVE_MODULES = {f"tb_autofill.{name}" for name in (
     'ai', 'analysis', 'audit_index', 'auditlog', 'connections', 'dxn', 'dxn_paper', 'dxn_programs',
-    'fields', 'gui', 'knowledge', 'knowledge_ui', 'matching', 'models', 'paper_materials', 'paper_pack',
-    'paper_sheets', 'papers', 'sampling', 'settings', 'skills', 'workbook', 'workflow', 'workspace')}
+    'dxn_templates', 'fields', 'gui', 'knowledge', 'knowledge_ui', 'matching', 'models',
+    'paper_materials', 'paper_pack', 'paper_sheets', 'papers', 'sampling', 'settings', 'skills',
+    'workbook', 'workflow', 'workspace')}
 try:
     from .inspect_release import inspect
 except ImportError:

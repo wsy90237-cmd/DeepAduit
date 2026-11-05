@@ -141,7 +141,8 @@ class AuditSheetTests(unittest.TestCase):
         rows = [LedgerRow(code="6001", name="主营业务收入", path="主营业务收入", level=1,
                           direction="贷", opening=Decimal("0"), debit=Decimal("8652000"),
                           credit=Decimal("8652000"), ending=Decimal("0"),
-                          subject_id="S1", year=2025, month=12, is_profit_loss=True)]
+                          subject_id="S1", year=2025, month=12, is_profit_loss=True,
+                          period_amount=Decimal("8652000"))]
         folder = tempfile.mkdtemp()
         path = Path(folder) / "收入.xlsx"
         paper = audit_index.resolve("6001", "主营业务收入")[0]
@@ -149,8 +150,8 @@ class AuditSheetTests(unittest.TestCase):
                         resolve=resolve, prepared_by="张三", reviewed_by="李四", when="2026-11-04",
                         procedures=paper_pack.procedures(paper.index_no, paper.name))
         text = text_of(load_workbook(path)["4-010 审定表"])
-        self.assertIn("本期账面数", text)
-        self.assertIn("上期账面数", text)
+        self.assertIn("本期账面发生额", text)
+        self.assertIn("上期账面发生额", text)
         self.assertNotIn("期末账面数", text)
 
 

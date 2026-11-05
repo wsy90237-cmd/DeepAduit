@@ -14,11 +14,12 @@ import tempfile
 import time
 from decimal import Decimal
 
-from .models import JournalRow, JournalRows, LedgerRow, Subject, money
+from .models import AuxiliaryBalanceRow, JournalRow, JournalRows, LedgerRow, PaperData, Subject, money
 
 _DRAFT = "财务报表底稿.xls"
 _ITEM_ID = re.compile(r"^I\d+D(\d+)N(\d+)Z", re.I)
 _TABLES = ("c_kmyek", "c_cwkmk")
+_AUXILIARY_TABLES = ("c_hsxm_yye", "c_kmvshsxm")
 # 序时账＝凭证分录表；同一库内按 kmbh 前缀取明细，不另建汇总。
 _JOURNAL_TABLE = "c_cwpz"
 _JOURNAL_COLUMNS = "kjmonth,jzsj,pzzl,pzbh,bh,sm,kmbh,jffse,dffse,dfkmbh,dfkmmc"
@@ -213,10 +214,12 @@ def list_subjects(project_path: str) -> list[Subject]:
 
 
 def _source_files(data: Path, tables=_TABLES) -> list[Path]:
+    if not tables:
+        raise ValueError("没有指定读取数据表")
     schema = data / "powersj"
     files = sorted(p for p in schema.iterdir() if p.is_file() and
                    any(p.name.lower().startswith(table + suffix) for table in tables for suffix in (".", "#")))
-    required = "c_kmyek" if tuple(tables) == _TABLES else _JOURNAL_TABLE
+    required = "c_kmyek" if "c_kmyek" in tables else _JOURNAL_TABLE if _JOURNAL_TABLE in tables else tables[0]
     if not any(p.name.lower().startswith(required) and p.suffix.lower() == ".myd" for p in files):
         if required == "c_kmyek":
             raise ValueError("此项目不是已支持的 MyISAM 科目余额格式，未尝试修改或修复原数据库")
@@ -247,8 +250,9 @@ def _open_source(path: Path):
         raise
 
 
-def _snapshot(data: Path, destination: Path, tables=_TABLES) -> None:
+def _snapshot(data: Path, destination: Path, tables=_TABLES):
     files = _source_files(data, tables)
+    fingerprints = []
     with contextlib.ExitStack() as stack:
         opened = [(path, stack.enter_context(_open_source(path))) for path in files]
         before = {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in files}
@@ -263,9 +267,41 @@ def _snapshot(data: Path, destination: Path, tables=_TABLES) -> None:
             with target.open("rb") as copied:
                 if hashlib.file_digest(copied, "sha256").digest() != source_hash.digest():
                     raise RuntimeError("数据库副本校验失败，已停止取数")
+            fingerprints.append((str(path.resolve()), *before[path], source_hash.hexdigest()))
         after = {path: (path.stat().st_size, path.stat().st_mtime_ns) for path in files}
         if before != after or set(_source_files(data, tables)) != set(files):
             raise RuntimeError("复制期间源数据库发生变化；请退出当前项目后重试")
+    return tuple(fingerprints)
+
+
+def _present_table(schema: Path, table: str) -> bool:
+    return any((schema / (table + suffix)).is_file() for suffix in (".MYD", ".myd"))
+
+
+def validate_paper_data_source(data: PaperData) -> bool:
+    """导出或发送前重验一致副本来源；来源被改动、成员变化或补入新表都判为失效。"""
+    if not data.source_path or not data.source_tables or not data.source_fingerprint:
+        return False
+    schema = Path(data.source_path) / "powersj"
+    if any(_present_table(schema, table) for table in data.source_missing_tables):
+        return False
+    expected = {record[0]: record[1:] for record in data.source_fingerprint}
+    files = _source_files(Path(data.source_path), data.source_tables)
+    if {str(path.resolve()) for path in files} != set(expected):
+        return False
+    with contextlib.ExitStack() as stack:
+        opened = [(path, stack.enter_context(_open_source(path))) for path in files]
+        for path, stream in opened:
+            size, stamp, digest = expected[str(path.resolve())]
+            before = path.stat()
+            if (before.st_size, before.st_mtime_ns) != (size, stamp):
+                return False
+            if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
+                return False
+            after = path.stat()
+            if (after.st_size, after.st_mtime_ns) != (size, stamp):
+                return False
+    return True
 
 
 def _free_port() -> int:
@@ -310,7 +346,7 @@ class DxnLedgerDB:
         self.temp = tempfile.TemporaryDirectory(prefix="zszh_ledger_")
         root = Path(self.temp.name)
         copy_data = root / "data"
-        _snapshot(self.data, copy_data, self.tables)
+        self.source_fingerprint = _snapshot(self.data, copy_data, self.tables)
         port = _free_port()
         config = root / "reader.ini"
         config.write_text(
@@ -361,7 +397,7 @@ class DxnLedgerDB:
                     raise ValueError("所选主体期间缺少唯一账套编号，请重新选择对应的鼎信诺底稿")
                 ledger_id = str(identities[0]["ndid"])
             cursor.execute(
-                "SELECT kjmonth,kmbh,kmmc,kmjc,jdfx,qcs,jffse,dffse,qms,sjkmmc "
+                "SELECT kjmonth,kmbh,kmmc,kmjc,jdfx,qcs,jffse,dffse,fse,qms,sjkmmc "
                 "FROM c_kmyek WHERE dwid=%s AND ndid=%s AND kjyear=%s AND kjmonth BETWEEN %s AND %s "
                 "ORDER BY kmbh,kjmonth", (int(subject.id), int(ledger_id), subject.year, 1, subject.month))
             rows = cursor.fetchall()
@@ -413,6 +449,67 @@ class DxnLedgerDB:
                 contra=re.sub(r"[;\s]+", "、", str(row.get("dfkmmc") or "")).strip("、"),
             ))
         return JournalRows(output, complete=len(rows) <= limit)
+
+    def paper_data(self, subject: Subject, codes, *, with_journal=True) -> PaperData:
+        """报表项目的总账、月份、客商和凭证共用一次一致副本。"""
+        from dataclasses import replace
+        wanted = tuple(dict.fromkeys(_journal_code(code) for code in codes))
+        all_rows = self.read(subject)
+        roots = [row for row in all_rows if row.code in wanted]
+        if not wanted or len(roots) != len(wanted) or any(row.level != 1 for row in roots):
+            raise ValueError("报表项目必须明确绑定当前账套的一级科目")
+        subject = replace(subject, ledger_id=roots[0].ledger_id)
+        rows = tuple(row for row in all_rows if any(row == root or
+                     (row.code.startswith(root.code) and root.path and row.path.startswith(root.path + "/"))
+                     for root in roots))
+        condition = " OR ".join("kmbh LIKE %s" for _ in wanted)
+        parameters = (int(subject.id), int(subject.ledger_id))
+        patterns = tuple(code + "%" for code in wanted)
+        with self.connection.cursor() as cursor:
+            cursor.execute("SELECT kjmonth,kmbh,kmmc,kmjc,jdfx,qcs,jffse,dffse,fse,qms,sjkmmc "
+                           "FROM c_kmyek WHERE dwid=%s AND ndid=%s AND kjyear=%s "
+                           f"AND kjmonth BETWEEN 1 AND %s AND ({condition}) ORDER BY kmbh,kjmonth",
+                           (*parameters, subject.year - 1, subject.month, *patterns))
+            previous = cursor.fetchall()
+            cursor.execute("SELECT kmbh,ws_fse,sn_ws_fse FROM c_cwkmk "
+                           f"WHERE dwid=%s AND ndid=%s AND ({condition})",
+                           (*parameters, *patterns))
+            annual = cursor.fetchall()
+            auxiliary, configs = [], []
+            if all(table in self.tables for table in _AUXILIARY_TABLES):
+                cursor.execute("SELECT kmbh,hsxmlxbh,hsxmlxmc,xz FROM c_kmvshsxm "
+                               f"WHERE dwid=%s AND ndid=%s AND ({condition})", (*parameters, *patterns))
+                configs = cursor.fetchall()
+                cursor.execute("SELECT kjmonth,kmbh,kmmc,jdfx,hsxmlxbh,hsxmlxmc,hsxmbh,hsxmmc,"
+                               "hsxmjc,hsxmsfmx,qcs,jffse,dffse,qms FROM c_hsxm_yye "
+                               "WHERE dwid=%s AND ndid=%s AND kjyear=%s AND kjmonth BETWEEN 1 AND %s "
+                               f"AND ({condition}) ORDER BY kmbh,hsxmlxbh,hsxmbh,kjmonth",
+                               (*parameters, subject.year, subject.month, *patterns))
+                auxiliary = cursor.fetchall()
+        rows = _paper_occurrences(rows, previous, annual, subject)
+        parties, checks = _auxiliary_balances(auxiliary, configs, rows, subject)
+        warnings = []
+        if any(row.is_profit_loss and row.period_amount is None for row in rows):
+            warnings.append("部分损益科目缺少独立发生额来源，未用借方或贷方发生额代填。")
+        if not all(table in self.tables for table in _AUXILIARY_TABLES):
+            warnings.append("未取得支持格式的客商核算配置和余额，客商明细待补。")
+        journal = None
+        overlapping_codes = any(left != right and left.startswith(right) for left in wanted for right in wanted)
+        if with_journal and overlapping_codes:
+            warnings.append("所选一级科目的编码前缀存在重叠，序时账范围待明确，未重复归集。")
+        elif with_journal and _JOURNAL_TABLE in self.tables:
+            parts = [self.journal(subject, code) for code in wanted]
+            combined = sorted((row for part in parts for row in part),
+                              key=lambda row: (row.month, row.date, row.voucher, row.line), reverse=True)
+            journal = JournalRows(combined[:JOURNAL_LIMIT],
+                                  complete=len(combined) <= JOURNAL_LIMIT and all(part.complete for part in parts))
+        elif with_journal:
+            warnings.append("未取得支持格式的序时账，凭证和截止性测试待补。")
+        expected_optional = (*_AUXILIARY_TABLES, _JOURNAL_TABLE) if with_journal else _AUXILIARY_TABLES
+        return PaperData(rows=rows, codes=wanted, auxiliary=parties, journal=journal,
+                         auxiliary_checks=checks, warnings=tuple(warnings), source_path=str(self.data),
+                         source_tables=self.tables, source_fingerprint=getattr(self, "source_fingerprint", ()),
+                         source_missing_tables=tuple(table for table in expected_optional if table not in self.tables))
 
     def close(self):
         errors = []
@@ -475,12 +572,16 @@ def _aggregate(rows: list[dict], subject: Subject) -> list[LedgerRow]:
         complete = set(months) == set(range(1, subject.month + 1))
         debit = sum(values["jffse"], Decimal(0)) if complete and None not in values["jffse"] else None
         credit = sum(values["dffse"], Decimal(0)) if complete and None not in values["dffse"] else None
+        monthly = tuple(money(months[month].get("fse")) if month in months else None for month in range(1, 13))
+        occurrence = sum(monthly[:subject.month], Decimal(0)) if complete and None not in monthly[:subject.month] else None
         # qcs/qms 是原库自然方向金额；不把普通贷方余额统一转负。
         level = _integer(last.get("kmjc", ""), "科目级次")
         output.append(LedgerRow(code=code, name=name, direction=direction, opening=opening, ending=ending,
                                 debit=debit, credit=credit, level=level, subject_id=subject.id,
                                 year=subject.year, month=subject.month, basis="book",
-                                ledger_id=subject.ledger_id))
+                                ledger_id=subject.ledger_id, period_amount=occurrence,
+                                monthly_amounts=monthly,
+                                period_source="c_kmyek.fse（独立账面发生额）" if occurrence is not None else ""))
     from dataclasses import replace
     for index, row in enumerate(output):
         parents = sorted((p for p in output if row.code.startswith(p.code) and len(p.code) < len(row.code)
@@ -491,9 +592,163 @@ def _aggregate(rows: list[dict], subject: Subject) -> list[LedgerRow]:
     return output
 
 
+def _paper_occurrences(rows, previous, annual, subject):
+    """独立发生额保留来源；上年未审数不冒充上年审定数或中期同期数。"""
+    from dataclasses import replace
+    previous_subject = replace(subject, year=subject.year - 1)
+    previous_by_code = {row.code: row for row in _aggregate(previous, previous_subject)}
+    annual_by_code = {}
+    for item in annual:
+        code = str(item["kmbh"]).strip()
+        if code in annual_by_code:
+            raise ValueError(f"科目 {code} 年度发生额存在重复来源")
+        annual_by_code[code] = item
+    result = []
+    for row in rows:
+        before = previous_by_code.get(row.code)
+        previous_amount = before.period_amount if before and before.direction == row.direction else None
+        previous_monthly = before.monthly_amounts if before and before.direction == row.direction else (None,) * 12
+        previous_source = "c_kmyek.fse（同账套上年同期账面发生额）" if previous_amount is not None else ""
+        occurrence, source = row.period_amount, row.period_source
+        meta = annual_by_code.get(row.code, {})
+        if subject.month == 12:
+            if occurrence is None and money(meta.get("ws_fse")) is not None:
+                occurrence = money(meta["ws_fse"])
+                source = "c_cwkmk.ws_fse（账套全年未审发生额）"
+            if previous_amount is None and money(meta.get("sn_ws_fse")) is not None:
+                previous_amount = money(meta["sn_ws_fse"])
+                previous_source = "c_cwkmk.sn_ws_fse（账套上年全年未审发生额）"
+        result.append(replace(row, period_amount=occurrence, period_source=source,
+                              previous_period_amount=previous_amount,
+                              previous_monthly_amounts=previous_monthly, previous_period_source=previous_source))
+    return tuple(result)
+
+
+def _auxiliary_balances(records, configs, rows, subject):
+    """只取明确选中的客商维度，科目和核算项目的汇总层不得重复相加。"""
+    accounts = {row.code: row for row in rows}
+    records_by_account = {}
+    for record in records:
+        records_by_account.setdefault(str(record.get("kmbh") or "").strip(), []).append(record)
+    chosen = {}
+    for item in configs:
+        code = str(item.get("kmbh") or "").strip()
+        label = str(item.get("hsxmlxmc") or "").strip()
+        if str(item.get("xz") or "").strip() == "1" and any(
+                token in label for token in ("客户", "供应商", "客商", "往来单位")):
+            chosen.setdefault(code, set()).add((str(item.get("hsxmlxbh") or "").strip(), label))
+    selected, checks = [], []
+    for code, dimensions in sorted(chosen.items()):
+        account = accounts.get(code)
+        if account is None:
+            continue
+        # 配置和余额均包含上下级时，只使用有实际辅助余额的末级科目。
+        if any(other != code and other in accounts and accounts[other].path.startswith(account.path + "/")
+               and any(str(record.get("hsxmlxbh") or "").strip() in {item[0] for item in chosen[other]}
+                       for record in records_by_account.get(other, ())) for other in chosen):
+            continue
+        type_code = next(iter(dimensions))[0] if len(dimensions) == 1 else ""
+        check = {"account_code": code, "type_code": type_code, "status": "missing",
+                 "opening_difference": None, "ending_difference": None, "note": "未取得完整客商余额"}
+        if len(dimensions) != 1 or not type_code:
+            check.update(status="ambiguous", note="同一科目选择了多个客商维度，未重复归集")
+            checks.append(check)
+            continue
+        type_name = next(iter(dimensions))[1]
+        candidates = [record for record in records_by_account.get(code, ())
+                      if str(record.get("hsxmlxbh") or "").strip() == type_code]
+        has_hierarchy = any(_integer(record.get("hsxmjc") or 1, "核算项目级次") > 1 for record in candidates)
+        unknown_flags = any(str(record.get("hsxmsfmx") or "").strip() not in {"0", "1"}
+                            for record in candidates)
+        if unknown_flags and (has_hierarchy or any(str(record.get("hsxmjc") or "").strip() != "1"
+                                                   for record in candidates)):
+            check.update(status="ambiguous", note="客商层级缺少末级标记，未猜测汇总范围")
+            checks.append(check)
+            continue
+        grouped = {}
+        for record in candidates:
+            if str(record.get("hsxmsfmx") or "").strip() == "0":
+                continue
+            party = str(record.get("hsxmbh") or "").strip()
+            name = str(record.get("hsxmmc") or "").strip()
+            month = _integer(record.get("kjmonth"), "月份")
+            if not party or not name or not 1 <= month <= subject.month:
+                raise ValueError("客商余额缺少编码、名称或有效期间")
+            months = grouped.setdefault(party, {})
+            if month in months:
+                raise ValueError("同一科目、核算维度和客商同月有重复余额，已停止")
+            months[month] = record
+        lines = []
+        for party, months in sorted(grouped.items()):
+            last = months[max(months)]
+            directions = {str(record.get("jdfx") or "").strip() for record in months.values()}
+            names = {str(record.get("hsxmmc") or "").strip() for record in months.values()}
+            if len(directions) != 1 or not directions <= {"借", "贷"} or len(names) != 1:
+                raise ValueError("同一客商编码的名称或借贷方向在期间内冲突，已停止")
+            complete = set(months) == set(range(1, subject.month + 1))
+            totals = {}
+            for field in ("jffse", "dffse"):
+                values = [money(record.get(field)) for record in months.values()]
+                totals[field] = sum(values, Decimal(0)) if complete and None not in values else None
+            lines.append(AuxiliaryBalanceRow(
+                account_code=code, account_name=account.name, type_code=type_code, type_name=type_name,
+                code=party, name=str(last["hsxmmc"]).strip(), direction=directions.pop(),
+                opening=money(months[1].get("qcs")) if 1 in months else None,
+                ending=money(months[subject.month].get("qms")) if subject.month in months else None,
+                debit=totals["jffse"], credit=totals["dffse"], subject_id=subject.id,
+                ledger_id=subject.ledger_id, year=subject.year, month=subject.month))
+        for field in ("opening", "ending"):
+            amounts = [getattr(line, field) * (1 if line.direction == account.direction else -1)
+                       if getattr(line, field) is not None else None for line in lines]
+            if amounts and None not in amounts and getattr(account, field) is not None:
+                check[field + "_difference"] = sum(amounts, Decimal(0)) - getattr(account, field)
+        gaps = (check["opening_difference"], check["ending_difference"])
+        if any(gap is not None and gap != 0 for gap in gaps):
+            check.update(status="difference", note="客商余额合计与对应科目账面数存在差异")
+        elif None not in gaps:
+            check.update(status="matched", note="客商期初、期末合计与对应科目账面数一致")
+        checks.append(check)
+        selected.extend(lines)
+    for root in (row for row in rows if row.level == 1):
+        nested = [line for line in selected if line.account_code != root.code and
+                  accounts[line.account_code].path.startswith(root.path + "/")]
+        if not nested:
+            continue
+        check = {"account_code": root.code, "type_code": "", "status": "missing",
+                 "opening_difference": None, "ending_difference": None, "note": "客商明细覆盖范围待核对"}
+        for field in ("opening", "ending"):
+            amounts = [getattr(line, field) * (1 if line.direction == root.direction else -1)
+                       if getattr(line, field) is not None else None for line in nested]
+            if None not in amounts and getattr(root, field) is not None:
+                check[field + "_difference"] = sum(amounts, Decimal(0)) - getattr(root, field)
+        gaps = (check["opening_difference"], check["ending_difference"])
+        incomplete = any(item["status"] in {"missing", "ambiguous"} and item["account_code"] != root.code
+                         and accounts[item["account_code"]].path.startswith(root.path + "/") for item in checks)
+        if any(gap is not None and gap != 0 for gap in gaps):
+            check.update(status="difference", note="客商明细合计与一级科目账面数存在差异")
+        elif None not in gaps and not incomplete:
+            check.update(status="matched", note="客商明细期初、期末合计与一级科目账面数一致")
+        checks.append(check)
+    return tuple(selected), tuple(checks)
+
+
 def read_ledger(subject: Subject, install_path: str = "", status_callback=None) -> list[LedgerRow]:
     with DxnLedgerDB(subject.project_path, install_path, status_callback) as database:
         return database.read(subject)
+
+
+def read_paper_data(subject: Subject, codes, install_path: str = "", with_journal=True,
+                    status_callback=None) -> PaperData:
+    data = _data_dir(subject.project_path)
+    tables = list(_TABLES)
+    for table in _AUXILIARY_TABLES:
+        if (data / "powersj" / (table + ".MYD")).is_file() or (data / "powersj" / (table + ".myd")).is_file():
+            tables.append(table)
+    if with_journal and ((data / "powersj" / (_JOURNAL_TABLE + ".MYD")).is_file()
+                         or (data / "powersj" / (_JOURNAL_TABLE + ".myd")).is_file()):
+        tables.append(_JOURNAL_TABLE)
+    with DxnLedgerDB(subject.project_path, install_path, status_callback, tables=tables) as database:
+        return database.paper_data(subject, codes, with_journal=with_journal)
 
 
 def read_journal(subject: Subject, code: str, install_path: str = "", status_callback=None,

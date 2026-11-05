@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from openpyxl import load_workbook
 
 from tb_autofill import ai, audit_index, gui, papers
-from tb_autofill.models import LedgerRow, Subject
+from tb_autofill.models import JournalRows, LedgerRow, PaperData, Subject
 
 
 def ledger():
@@ -108,6 +108,15 @@ class PaperUiTests(unittest.TestCase):
         self.app.audit.verify.return_value = (True, 0, "")
         self.app.rows = ledger()
         self.app.loaded_subject = Subject("synthetic", "合成企业", 2026, 6, "synthetic", ledger_id="1")
+        def read_paper_data(subject, codes, install_path, with_journal=True):
+            roots = [row for row in self.app.rows if row.code in codes]
+            scoped = [row for row in self.app.rows if any(row == root or
+                      (root.path and row.path.startswith(root.path + "/") and row.code.startswith(root.code))
+                      for root in roots)]
+            return PaperData(rows=tuple(scoped), codes=tuple(codes),
+                             journal=JournalRows() if with_journal else None)
+        self.enterContext(patch.object(gui.dxn, "read_paper_data", side_effect=read_paper_data))
+        self.enterContext(patch.object(gui.dxn, "validate_paper_data_source", return_value=True))
 
     def dialog(self):
         dialog = gui.PaperDialog(self.app)
@@ -116,7 +125,6 @@ class PaperUiTests(unittest.TestCase):
         dialog.code_box.current(next(index for index, item in enumerate(dialog.choices) if item[0] == "1-010"))
         dialog._sync_paper()
         dialog.children_tree.selection_set("1002")
-        dialog._select_account()
         return dialog
 
     def test_workspace_button_opens_paper_dialog_without_api_key(self):
@@ -125,7 +133,7 @@ class PaperUiTests(unittest.TestCase):
                 yield child
                 yield from descendants(child)
         buttons = [widget for widget in descendants(self.app.pages["papers"])
-                   if isinstance(widget, gui.ttk.Button) and widget.cget("text") == "制作底稿（一级科目）"]
+                   if isinstance(widget, gui.ttk.Button) and widget.cget("text") == "制作报表项目底稿"]
         self.assertEqual(len(buttons), 1)
         with patch.object(gui, "PaperDialog") as opened:
             buttons[0].invoke()
@@ -138,21 +146,19 @@ class PaperUiTests(unittest.TestCase):
         values = [(dialog.children_tree.item(item, "text"), dialog.children_tree.item(item, "values")[0])
                   for item in dialog.children_tree.get_children("1002")]
         self.assertEqual(values, [("100201", "合成银行甲"), ("100202", "合成银行乙")])
-        self.assertIn("1002 银行存款", dialog.paper_var.get())
+        self.assertIn("1-010 货币资金", dialog.paper_var.get())
+        self.assertIn("2 个科目", dialog.paper_var.get())
 
-    def test_selecting_secondary_selects_its_primary_and_clears_old_draft(self):
+    def test_selecting_tree_row_does_not_shrink_report_scope_or_clear_draft(self):
         dialog = self.dialog()
-        dialog.draft, dialog.journal_rows, dialog.journal_code = {"old": True}, ["old"], "1002"
-        dialog.sheet_add = ["旧建议"]
+        value = {"report": "1-010"}
+        dialog.draft = value
         dialog.children_tree.selection_set("1001")
-        dialog._select_account()
-        self.assertEqual(dialog._synced_code, "1001")
-        self.assertIsNone(dialog.draft)
-        self.assertIsNone(dialog.journal_rows)
-        self.assertEqual(dialog.sheet_add, [])
+        self.assertEqual(dialog._synced_code, "1-010")
+        self.assertIs(dialog.draft, value)
         dialog.children_tree.selection_set("100202")
-        dialog._select_account()
-        self.assertEqual(dialog._synced_code, "1002")
+        self.assertEqual(dialog._synced_code, "1-010")
+        self.assertIs(dialog.draft, value)
 
     def test_report_selection_only_shows_related_accounts(self):
         root = replace(ledger()[0], code="5001", name="开发成本", path="开发成本")
@@ -163,7 +169,7 @@ class PaperUiTests(unittest.TestCase):
         dialog._sync_paper()
         self.assertEqual(dialog.children_tree.get_children(), ("5001",))
         self.assertEqual(dialog.children_tree.get_children("5001"), ("500101",))
-        self.assertEqual(dialog._synced_code, "5001")
+        self.assertEqual(dialog._synced_code, "1-150")
         self.assertEqual(dialog.current_paper.index_no, "1-150")
 
     def test_failed_sheet_suggestion_does_not_claim_no_adjustment_or_replace_selection(self):
@@ -203,7 +209,7 @@ class PaperUiTests(unittest.TestCase):
         catalog_codes = {row[0].value for row in book["底稿目录"]}
         self.assertTrue({child.code for child in children} <= catalog_codes)
 
-    def test_export_contains_only_selected_primary_and_secondary(self):
+    def test_export_contains_entire_cash_report_including_cash_and_bank(self):
         dialog = self.dialog()
         path = Path(self.folder.name) / "synthetic.xlsx"
         with patch.object(gui.filedialog, "asksaveasfilename", return_value=str(path)):
@@ -211,15 +217,16 @@ class PaperUiTests(unittest.TestCase):
         book = load_workbook(path)
         self.addCleanup(book.close)
         catalog = " ".join(str(cell.value) for row in book["底稿目录"] for cell in row if cell.value is not None)
-        self.assertIn("一级科目：1002 银行存款", catalog)
-        self.assertIn("包含的二级科目（2 项", catalog)
+        self.assertIn("库存现金", catalog)
+        self.assertIn("银行存款", catalog)
         self.assertIn("合成银行甲", catalog)
         self.assertIn("合成银行乙", catalog)
         detail = book["1-010 明细表"]
         codes = [row[1].value for row in detail if row[0].value and str(row[0].value).startswith("1:K")]
-        self.assertEqual(codes, ["1002.01", "1002.02"])
-        self.assertNotIn("库存现金监盘表", book.sheetnames)
-        self.assertEqual(book["1-010 审定表"]["D9"].value, 100)
+        self.assertEqual(codes, ["1001", "1002.01", "1002.02"])
+        self.assertIn("库存现金监盘表", book.sheetnames)
+        self.assertEqual(book["1-010 审定表"]["D9"].value, 999)
+        self.assertEqual(book["1-010 审定表"]["D10"].value, 100)
         self.assertIsNone(book["1-010 审定表"]["K9"].value)
 
     def test_cancelled_preview_starts_no_request(self):
@@ -261,4 +268,16 @@ class PaperUiTests(unittest.TestCase):
         client.converse.assert_not_called()
         client.converse_with_skills.assert_not_called()
         dialog._poll()
-        self.assertEqual(dialog.draft["subject"]["code"], "1002")
+        self.assertEqual(dialog.draft["subject"]["code"], "1-010")
+
+    def test_changed_source_blocks_export_before_choosing_a_file(self):
+        dialog = self.dialog()
+        accounts, rows = papers.report_scope(self.app.rows, dialog.current_paper)
+        dialog.paper_data = PaperData(rows=rows, codes=tuple(row.code for row in accounts))
+        dialog.draft = {"kind": "pack"}
+        with patch.object(gui.dxn, "validate_paper_data_source", return_value=False), \
+                patch.object(gui.filedialog, "asksaveasfilename") as choose:
+            dialog._export_pack()
+        choose.assert_not_called()
+        self.assertIsNone(dialog.draft)
+        self.assertIsNone(dialog.paper_data)

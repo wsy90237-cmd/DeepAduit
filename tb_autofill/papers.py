@@ -125,6 +125,59 @@ def primary_scope(rows, code):
     return root, tuple(scoped)
 
 
+def report_scope(rows, paper, library=()):
+    """一册包含同一报表项目的全部已确认科目，不合并不同账套或期间。"""
+    from . import audit_index, dxn_paper
+    if paper is None:
+        raise ValueError("未确认报表项目，请先核对科目映射。")
+    by_code = {}
+    for row in rows:
+        if row.code in by_code and by_code[row.code] != row:
+            raise ValueError(f"科目编码 {row.code} 存在冲突，请先复核来源。")
+        by_code[row.code] = row
+    rows = tuple(by_code.values())
+    accounts = dxn_paper.group_accounts(rows, paper, lambda code, name: audit_index.resolve(code, name, library)[0])
+    if not accounts:
+        raise ValueError("该报表项目没有可列示的科目，请重新读取科目余额。")
+    scoped = {}
+    for account in accounts:
+        if account.level == PRIMARY_LEVEL:
+            _root, branch = primary_scope(rows, account.code)
+        else:
+            branch = [row for row in rows if row == account or (account.path and
+                      row.path.startswith(account.path + "/") and row.code.startswith(account.code))]
+        scoped.update((row.code, row) for row in branch)
+    if len({(row.subject_id, row.year, row.month, row.ledger_id, row.basis) for row in scoped.values()}) != 1:
+        raise ValueError("报表项目数据包含不同账套、主体或期间，请重新读取。")
+    return tuple(accounts), tuple(scoped.values())
+
+
+def _report_facts(rows, accounts, paper, journal):
+    from . import dxn_paper
+    from types import SimpleNamespace
+    direction = dxn_paper.presentation_direction(paper, accounts)
+    total = dxn_paper.totals(accounts, direction=direction)
+    children = [row for account in accounts for row in dxn_paper.detail_rows(rows, account)]
+    def item(row):
+        return {"code": row.code, "name": row.name, "path": row.path, "level": row.level,
+                "direction": row.direction, "opening": _amount(row.opening), "ending": _amount(row.ending),
+                "debit": _amount(row.debit), "credit": _amount(row.credit),
+                "current_period": _amount(getattr(row, "period_amount", None)),
+                "previous_period": _amount(getattr(row, "previous_period_amount", None))}
+    facts = {"subject": {"code": paper.index_no, "name": paper.name, "path": paper.name,
+                          "direction": direction, "level": 0, "level_label": "报表项目",
+                          "opening": _amount(total["opening"]), "ending": _amount(total["ending"]),
+                          "debit": _amount(total["debit"]), "credit": _amount(total["credit"]),
+                          "current_period": _amount(total["period"]),
+                          "is_profit_loss": any(row.is_profit_loss for row in accounts)},
+             "accounts": [item(row) for row in accounts], "children": [item(row) for row in children],
+             "all_codes": [row.code for row in rows],
+             "ledger_scope": {"rows": len(rows), "note": "仅本主体、本期间、本账套的报表项目全范围；不含尚未取得的审计证据。"}}
+    if journal is not None:
+        facts["journal"] = _journal_facts(journal, SimpleNamespace(debit=total["debit"], credit=total["credit"]))
+    return facts
+
+
 def _search_knowledge(query, limit):
     """先按审计 skill 检索程序口径；无命中再回落到全库，避免被问答库淹没。"""
     references = [item for item in skills.load_documents() if not item.get("path", "").endswith("SKILL.md")]
@@ -330,34 +383,58 @@ def draft_pack(client, *, rows, code, paper, procedures, subject_label="", focus
     return pack_result(answer, request)
 
 
-def pack_request(*, rows, code, paper, procedures, subject_label="", focus="",
-                 journal=None, limit=5):
-    """本地准备可预览的一级科目文字请求；此函数不发起模型请求。"""
+def pack_request(*, rows, code="", paper, procedures, subject_label="", focus="",
+                 journal=None, limit=5, library=(), paper_data=None):
+    """本地准备可预览的整册请求；显式 code 保留旧单科目接口。"""
     if not procedures:
         raise ValueError("没有可用的审计程序清单，未生成整册底稿。")
-    root, rows = primary_scope(rows, code)
     if paper is None:
-        raise ValueError("未确认报表项目，请先核对一级科目映射。")
-    facts = build_facts(rows, code, journal)
+        raise ValueError("未确认报表项目，请先核对科目映射。")
+    if code:
+        root, rows = primary_scope(rows, code)
+        accounts = (root,)
+        facts = build_facts(rows, code, journal)
+    else:
+        accounts, rows = report_scope(rows, paper, library)
+        root = accounts[0]
+        facts = _report_facts(rows, accounts, paper, journal)
     facts["paper"] = {"index_no": getattr(paper, "index_no", "") if paper else "",
                       "name": getattr(paper, "name", "") if paper else ""}
     facts["procedures"] = [{"no": number, "text": str(text)[:220]} for number, text in
                            enumerate(procedures, 1)]
     facts["focus"] = str(focus or "")[:500]
     facts["subject_label"] = subject_label
-    selected = [row for row in rows if row == root or
-                (row.level == 2 and row.path.rpartition("/")[0] == root.path)]
-    if len(selected) > 1:
+    selected = list({row.code: row for account in accounts for row in rows if row == account or
+                     (row.level == account.level + 1 and row.path.rpartition("/")[0] == account.path)}.values())
+    if any(row not in accounts for row in selected):
         from .dxn_paper import consistency
-        consistent, gap = consistency([root], rows)
-        facts["book_check"] = {"checked": True, "consistent": consistent, "absolute_difference_sum": _amount(gap),
-                               "scope": "仅比较二级明细合计与一级账面期初、借方、贷方及期末，不代表外部证据已取得"}
+        consistent, gap = consistency(accounts, rows)
+        facts["book_check"] = {"checked": consistent is not None, "consistent": consistent,
+                               "absolute_difference_sum": _amount(gap),
+                               "scope": ("仅比较同口径明细合计与所属科目的账面金额/损益发生额，不代表外部证据已取得"
+                                         if consistent is not None else "发生额来源不完整，尚未完成明细核对")}
     else:
         facts["book_check"] = {"checked": False, "consistent": None, "absolute_difference_sum": None,
                                "scope": "没有二级明细，无法进行明细合计与一级科目的核对"}
     movements_for_table = paper_sheets.movement_rows(selected)
     facts["analysis_rows"] = [{key: (f"{value:.2%}" if key == "rate" else _amount(value)) if isinstance(value, Decimal) else value
                                for key, value in item.items()} for item in movements_for_table]
+    facts["monthly_rows"] = [
+        {"code": row.code, "name": row.name,
+         "current": [_amount(value) for value in getattr(row, "monthly_amounts", ())],
+         "previous": [_amount(value) for value in getattr(row, "previous_monthly_amounts", ())],
+         "current_source": getattr(row, "period_source", ""),
+         "previous_source": getattr(row, "previous_period_source", "")}
+        for row in selected if row.is_profit_loss]
+    if paper_data is not None:
+        facts["auxiliary"] = [
+            {"account_code": row.account_code, "type": row.type_name, "code": row.code, "name": row.name,
+             "direction": row.direction, "opening": _amount(row.opening), "ending": _amount(row.ending)}
+            for row in paper_data.auxiliary[:50]]
+        facts["auxiliary_scope"] = {"total": len(paper_data.auxiliary), "sent": len(facts["auxiliary"])}
+        facts["source_warnings"] = list(paper_data.warnings)
+        facts["auxiliary_checks"] = [{key: _amount(value) if isinstance(value, Decimal) else value
+                                      for key, value in item.items()} for item in paper_data.auxiliary_checks]
     facts["cutoff_samples"] = [
         {"date": row.date, "voucher": row.voucher, "line": row.line, "code": row.code,
          "summary": row.summary, "debit": _amount(row.debit), "credit": _amount(row.credit), "reason": reason}
@@ -385,7 +462,7 @@ def pack_request(*, rows, code, paper, procedures, subject_label="", focus="",
         },
     }
     question = (
-        f"请为科目 {facts['subject']['code']} {facts['subject']['name']} 填写"
+        f"请为{'科目' if code else '报表项目'} {facts['subject']['code']} {facts['subject']['name']} 填写"
         f"《{facts['paper']['name']}》整册底稿的文字栏，按以下 JSON 结构输出：\n"
         '{"audit_notes": ["围绕本科目余额及明细变化的自然段", "具体待核实事项及所需证据的自然段"], '
         '"analysis": [{"code": "给定科目编码", "note": "变动观察、原因待核实及具体核查重点"}], '
@@ -393,7 +470,9 @@ def pack_request(*, rows, code, paper, procedures, subject_label="", focus="",
         '"review": "一级复核自检结论（一句话）"}\n'
         "audit_notes 围绕本科目实际情况写自然段，必要时引用明细表索引；"
         "analysis 的 code 必须来自 facts.analysis_rows，数值已由本地计算，不要在回复中改写数值；"
-        "必须逐项覆盖 facts.analysis_rows，包括一级汇总及所属二级科目，缺原因证据时写具体需核实事项；"
+        "必须逐项覆盖 facts.analysis_rows，包括同一报表项目的全部科目及明细，缺原因证据时写具体需核实事项；"
+        "损益只用给定的本期/上期发生额和月度发生额，不用借方或贷方累计数代替；"
+        "往来按给定核算维度和客商名称分析，辅助核算差异尚未查清时不能宣称已核对一致；"
         "没有证据的栏目写“待补”，不得编造。引用知识条目用 [K1] 编号。"
     )
     return {"system": PACK_SYSTEM, "question": question, "context": context}
@@ -465,7 +544,8 @@ def pack_result(answer, request):
             "warnings": answer.get("warnings", []) + answer.get("citation_warnings", [])}
 
 
-def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12, confirm=None):
+def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12, confirm=None,
+                   current_sheets=None, protected_sheets=(), template_context=None, paper_data=None):
     """让模型判断该科目应增删哪些专项表；只给建议，采纳与否由使用者决定。
 
     返回 {"add": [{"name","reason"}], "remove": [{"name","reason"}]}；
@@ -473,8 +553,11 @@ def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12,
     """
     if client is None or not available:
         return {"add": [], "remove": [], "note": "未接入模型，按科目类别出表"}
+    accounts = list(accounts)
+    roots = [row for row in accounts if getattr(row, "level", 1) == 1]
+    selected = roots + [row for row in accounts if row not in roots][:limit]
     snapshot = []
-    for row in list(accounts)[:limit]:
+    for row in selected:
         snapshot.append({"code": getattr(row, "code", ""), "name": getattr(row, "name", ""),
                          "ending": _amount(getattr(row, "ending", None)),
                          "direction": getattr(row, "direction", "")})
@@ -482,13 +565,23 @@ def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12,
         "subject": name,
         "accounts": snapshot,
         "available_sheets": list(available),
+        "current_sheets": list(current_sheets) if current_sheets is not None else list(available),
+        "required_sheets": list(protected_sheets),
+        "account_scope": {"total": len(accounts), "sent": len(selected), "all_primary_accounts_sent": True},
+        "template_reference": template_context or {},
         "journal_rows": len(journal or []),
         "constraints": {"output": "JSON", "no_fabrication": True},
     }}
+    if paper_data is not None:
+        context["facts"]["auxiliary_dimensions"] = sorted({row.type_name for row in paper_data.auxiliary})
+        context["facts"]["source_warnings"] = list(paper_data.warnings)
     question = (
         f"正在为「{name}」编制审计底稿。账号明细与余额见 facts.accounts，可选工作表见 facts.available_sheets。"
         "请判断：为了充分记录本科目审计，还需要额外增加哪些表（如票据贴现、保理、政府补助、关联方往来等），"
-        "以及现有清单里哪些表在该科目下没有意义应删除。只输出 JSON："
+        "以及 current_sheets 里哪些可选表不适用而建议删除。required_sheets 是必备表，不能删除。"
+        "同一报表项目所列科目必须整体考虑；余额为零不代表全年没有发生或不需要审计。"
+        "辅助维度、原模板表名和来源警告见 facts；没有凭证或外部资料不能宣称已执行相应程序。"
+        "原模板参考表保留资料记录用途，未知取数公式不交给模型计算。只输出 JSON："
         '{"add":[{"name":"表名","reason":"为什么需要"}],"remove":[{"name":"表名","reason":"为什么不需要"}]}；'
         "表名必须来自 available_sheets，数量不超过 3 个，没有就返回空数组。"
     )
@@ -511,13 +604,17 @@ def suggest_sheets(client, *, name, accounts, available, journal=None, limit=12,
     except Exception as exc:                      # 网络、格式问题都不阻断出表
         return {"add": [], "remove": [], "note": f"专项表建议失败：{exc}", "error": True}
     allowed = {str(item) for item in available}
+    current = {str(item) for item in current_sheets} if current_sheets is not None else allowed
+    protected = {str(item) for item in protected_sheets}
     result = {"add": [], "remove": [], "note": ""}
     for key in ("add", "remove"):
         for item in data.get(key) or []:
             if not isinstance(item, dict):
                 continue
             title = str(item.get("name") or "").strip()
-            if title not in allowed:
+            if title not in allowed or (key == "remove" and (title not in current or title in protected)):
+                continue
+            if any(old["name"] == title for old in result[key]):
                 continue
             result[key].append({"name": title,
                                 "reason": _clean_text(item.get("reason"), limit=80, fallback="模型建议")})

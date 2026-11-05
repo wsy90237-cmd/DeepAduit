@@ -25,7 +25,7 @@ site.addsitedir(str(ROOT / ".venv/Lib/site-packages"))
 from openpyxl import load_workbook
 
 from tb_autofill import ai, fields, matching, settings
-from tb_autofill.models import LedgerRow, money
+from tb_autofill.models import LedgerRow, ledger_row_from_record, money
 
 BASE = ROOT / 'local-data/qa'
 PLAN = ROOT / "local-data/tb-finish-20261030-1352"
@@ -37,9 +37,7 @@ def load_rows(path):
     for item in json.loads(Path(path).read_text(encoding="utf-8")):
         if not {'level', 'basis', 'is_profit_loss', 'subject_id'} <= item.keys():
             raise ValueError('账套快照缺少来源上下文，请重新生成完整快照')
-        for key in ('opening', 'ending', 'debit', 'credit'):
-            item[key] = money(item.get(key))
-        rows.append(LedgerRow(**item))
+        rows.append(ledger_row_from_record(item))
     return rows
 
 

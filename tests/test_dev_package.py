@@ -1,9 +1,61 @@
 from pathlib import Path
+import hashlib
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from tools import build_dev, run_gui
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+class TemplateCarryTests(unittest.TestCase):
+    """模板原件随包携带时必须可复核：逐文件校验，缺件或篡改直接拒绝。"""
+
+    def library(self, folder):
+        root = Path(folder) / "library"
+        (root / "合成准则" / "originals" / "xls_demo").mkdir(parents=True)
+        (root / "合成准则" / "originals" / "xls_demo" / "货币资金.xls").write_bytes(b"synthetic-blank")
+        manifest = digest(b"synthetic-blank") + "  xls_demo/货币资金.xls\n"
+        (root / "合成准则" / "ORIGINALS.sha256").write_text(manifest, encoding="utf-8")
+        (root / "coverage.json").write_text(json.dumps({"standards": [
+            {"standard": "合成准则", "declared": {"version": "9.9.9.9"}}]}, ensure_ascii=False), encoding="utf-8")
+        return root
+
+    def test_templates_are_copied_with_a_verifiable_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            library = self.library(folder)
+            output = Path(folder) / "package"
+            output.mkdir()
+            result = build_dev.carry_templates(library, output)
+            self.assertEqual(result["standards"], 1)
+            self.assertEqual(result["files"], 1)
+            copied = output / "templates" / "合成准则" / "originals" / "xls_demo" / "货币资金.xls"
+            self.assertEqual(copied.read_bytes(), b"synthetic-blank")
+            rows = (output / "templates" / "TEMPLATES.sha256").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(rows, [f"{digest(b'synthetic-blank')}  合成准则/originals/xls_demo/货币资金.xls"])
+            self.assertEqual(result["manifest_sha256"],
+                             digest((output / "templates" / "TEMPLATES.sha256").read_bytes()))
+
+    def test_tampered_original_is_rejected_instead_of_shipped(self):
+        with tempfile.TemporaryDirectory() as folder:
+            library = self.library(folder)
+            target = library / "合成准则" / "originals" / "xls_demo" / "货币资金.xls"
+            target.write_bytes(b"synthetic-changed")
+            output = Path(folder) / "package"
+            output.mkdir()
+            with self.assertRaises(RuntimeError):
+                build_dev.carry_templates(library, output)
+
+    def test_missing_coverage_stops_the_build(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "package"
+            output.mkdir()
+            with self.assertRaises(SystemExit):
+                build_dev.carry_templates(Path(folder) / "empty", output)
 
 
 class DeveloperPackageTests(unittest.TestCase):

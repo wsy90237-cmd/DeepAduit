@@ -35,6 +35,12 @@ class LedgerRow:
     basis: str = "book"
     is_profit_loss: bool = False
     ledger_id: str = ""
+    period_amount: Decimal | None = None
+    previous_period_amount: Decimal | None = None
+    monthly_amounts: tuple[Decimal | None, ...] = (None,) * 12
+    previous_monthly_amounts: tuple[Decimal | None, ...] = (None,) * 12
+    period_source: str = ""
+    previous_period_source: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,41 @@ class JournalRows(list):
     def __init__(self, rows=(), *, complete=True):
         super().__init__(rows)
         self.complete = complete
+
+
+@dataclass(frozen=True)
+class AuxiliaryBalanceRow:
+    """独立核算维度的客商余额；不与科目层级共用唯一编码。"""
+    account_code: str
+    account_name: str
+    type_code: str
+    type_name: str
+    code: str
+    name: str
+    direction: str = "借"
+    opening: Decimal | None = None
+    ending: Decimal | None = None
+    debit: Decimal | None = None
+    credit: Decimal | None = None
+    subject_id: str = ""
+    ledger_id: str = ""
+    year: int = 0
+    month: int = 0
+
+
+@dataclass(frozen=True)
+class PaperData:
+    """同一一致副本内的报表项目取数，不把辅助维度重复计入总账。"""
+    rows: tuple[LedgerRow, ...] = ()
+    codes: tuple[str, ...] = ()
+    auxiliary: tuple[AuxiliaryBalanceRow, ...] = ()
+    journal: JournalRows | None = None
+    auxiliary_checks: tuple[dict, ...] = ()
+    warnings: tuple[str, ...] = ()
+    source_path: str = ""
+    source_tables: tuple[str, ...] = ()
+    source_fingerprint: tuple[tuple[str, int, int, str], ...] = ()
+    source_missing_tables: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,6 +172,21 @@ class MatchResult:
     @property
     def source_ids(self):
         return [row.code for row in self.sources]
+
+
+def ledger_row_from_record(record) -> "LedgerRow":
+    """缓存与快照共用的还原口径：金额回 Decimal，月份固定 12 位，缺失保持 None。
+
+    JSON 往返会把 Decimal 变成字符串、把元组变成列表；还原时必须走同一函数，
+    否则同一科目在缓存前后不相等，来源指纹与复核绑定会误判。
+    """
+    item = dict(record)
+    for key in ("opening", "ending", "debit", "credit", "period_amount", "previous_period_amount"):
+        item[key] = money(item.get(key))
+    for key in ("monthly_amounts", "previous_monthly_amounts"):
+        values = [money(value) for value in list(item.get(key) or ())[:12]]
+        item[key] = tuple(values) + (None,) * (12 - len(values))
+    return LedgerRow(**item)
 
 
 def ledger_digest(rows) -> str:

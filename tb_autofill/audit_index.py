@@ -296,6 +296,9 @@ def resolve(code, name="", papers=None):
     available = resolve_papers(papers)
     if not available:
         return None, "未加载底稿索引清单"
+    if "坏账准备" in name:
+        matched = _reserve_owner(name, available)
+        return (matched, "按明确应收类别对应备抵科目") if matched else (None, "共享坏账准备需按应收类别确认归属")
     paper = _by_code(code, available)
     if paper:
         return paper, "按科目代码对应"
@@ -303,6 +306,48 @@ def resolve(code, name="", papers=None):
     if paper:
         return paper, "按科目名称对应"
     return None, "清单中无对应报表科目，请人工确认索引号"
+
+
+def _reserve_owner(name, papers=None):
+    targets = {index for word, index in (("应收账款", "1-070"), ("其他应收款", "1-130"),
+               ("应收票据", "1-060"), ("长期应收款", "1-380"), ("预付账款", "1-090")) if word in name}
+    return find(papers, targets.pop()) if len(targets) == 1 else None
+
+
+def reserve_components(rows, paper, library=()):
+    """共享备抵只按明确子类分派；整根核对不符或归属未知时停止相关项目。"""
+    from decimal import Decimal
+    if paper.index_no not in {"1-070", "1-130", "1-060", "1-380", "1-090"}:
+        return []
+    result = []
+    root_paths = {row.path for row in rows if row.level == 1 and "坏账准备" in row.name}
+    for row in rows:
+        parent = row.path.rpartition("/")[0]
+        if row.level == 2 and parent not in root_paths and parent.rpartition("/")[2] == "坏账准备":
+            owner = _reserve_owner(row.name, library)
+            if owner and owner.index_no == paper.index_no:
+                result.append(row)
+    for root in rows:
+        if root.level != 1 or "坏账准备" not in root.name or _reserve_owner(root.name, library):
+            continue
+        children = [row for row in rows if root.path and row.level == 2
+                    and row.path.rpartition("/")[0] == root.path and row.code.startswith(root.code)]
+        owners = [_reserve_owner(row.name, library) for row in children]
+        if not children or any(owner is None for owner in owners):
+            raise ValueError("共享坏账准备缺少明确的应收类别，不能将整根备抵或零额静默归入本项目，请先确认科目对应关系。")
+        if any(row.direction not in {"借", "贷"} for row in (root, *children)) or len({
+            (row.subject_id, row.ledger_id, row.year, row.month, row.basis) for row in (root, *children)}) != 1:
+            raise ValueError("共享坏账准备方向或账套期间不一致，请先核对来源。")
+        for key in ("opening", "debit", "credit", "ending"):
+            values = [getattr(row, key) for row in (root, *children)]
+            if any(value is None for value in values):
+                raise ValueError("共享坏账准备金额不完整，不能分派至报表项目。")
+            signs = [-1 if key in ("opening", "ending") and row.direction == "贷" else 1 for row in (root, *children)]
+            gap = values[0] * signs[0] - sum((value * sign for value, sign in zip(values[1:], signs[1:])), Decimal("0"))
+            if abs(gap) > Decimal("0.005"):
+                raise ValueError("共享坏账准备子类与总科目不一致，请先复核对应关系。")
+        result.extend(row for row, owner in zip(children, owners) if owner.index_no == paper.index_no)
+    return result
 
 
 def options(papers=None):

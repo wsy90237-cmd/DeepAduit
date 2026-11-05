@@ -10,7 +10,10 @@ import zipfile
 
 from pypdf import PdfWriter
 from tb_autofill import ai, knowledge, settings, workflow
-from test_ai import completion
+try:  # 既支持 `python -m unittest tests.test_x`，也支持在 tests 目录内直接运行
+    from test_ai import completion
+except ImportError:
+    from tests.test_ai import completion
 
 
 class CredentialTests(unittest.TestCase):

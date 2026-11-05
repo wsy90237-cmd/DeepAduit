@@ -25,7 +25,7 @@ site.addsitedir(str(ROOT / ".venv/Lib/site-packages"))
 from openpyxl import load_workbook
 
 from tb_autofill import dxn, fields, matching
-from tb_autofill.models import LedgerRow, money
+from tb_autofill.models import LedgerRow, ledger_row_from_record, money
 
 BASE = ROOT / 'local-data/qa'
 CACHE = BASE / "ledgers"
@@ -74,9 +74,7 @@ def load_cache(subject):
     for item in data:
         if not {'level', 'basis', 'is_profit_loss', 'subject_id'} <= item.keys():
             return None
-        for key in ('opening', 'ending', 'debit', 'credit'):
-            item[key] = money(item.get(key))
-        rows.append(LedgerRow(**item))
+        rows.append(ledger_row_from_record(item))
     return rows
 
 
