@@ -69,6 +69,7 @@ class PrimaryScopeTests(unittest.TestCase):
                                        confirm=lambda request, service: previews.append(request) or True)
         self.assertEqual(result["add"][0]["name"], "银行账户清单")
         request = previews[0]
+        self.assertIn("高级审计经理", request["system"])
         self.assertEqual(calls[0]["messages"][0]["content"], request["system"])
         self.assertEqual(json.loads(calls[0]["messages"][1]["content"]), request["context"])
         self.assertEqual(calls[0]["messages"][2]["content"], request["question"])
@@ -201,14 +202,60 @@ class PaperUiTests(unittest.TestCase):
     def test_inline_preview_confirms_the_displayed_request(self):
         dialog = self.dialog()
         captured = {}
+        self.assertEqual(dialog.view.winfo_manager(), "")
         def confirm():
             captured["text"] = dialog.view.get("1.0", "end-1c")
+            captured["visible"] = dialog.view.winfo_manager()
             dialog._preview_choice.set("send")
         dialog.after(20, confirm)
         payload = {"purpose": "合成测试", "context": {"example": "仅合成数据"}}
         self.assertTrue(dialog._preview_request(payload, "合成模型", "https://model.invalid"))
         self.assertIn("仅合成数据", captured["text"])
         self.assertIn("https://model.invalid", captured["text"])
+        self.assertEqual(captured["visible"], "grid")
+        self.assertEqual(dialog.view.winfo_manager(), "")
+
+    def test_voucher_picker_allows_removing_internal_transfer(self):
+        parent = self.dialog()
+        internal = JournalRow(1, "2026-01-01", "合成-1", "1", "内部往来", "1002", Decimal(100), contra="其他应收款")
+        outside = JournalRow(1, "2026-01-02", "合成-2", "1", "购买材料", "1002", Decimal(50), contra="应付账款")
+        picker = gui.VoucherPicker(parent, JournalRows([internal, outside]))
+        self.assertIn(internal, picker.selected)
+        picker._toggle(str(picker.rows.index(internal)))
+        picker._accept()
+        self.assertEqual([row for row, _reason in picker.result], [outside])
+
+    def test_manual_voucher_selection_reaches_the_exported_sheet(self):
+        dialog = self.dialog()
+        accounts, rows = papers.report_scope(self.app.rows, dialog.current_paper)
+        internal = JournalRow(1, "2026-01-01", "合成-1", "1", "内部往来", "1002", Decimal(100))
+        outside = JournalRow(1, "2026-01-02", "合成-2", "1", "购买材料", "1002", Decimal(50))
+        dialog.paper_data = PaperData(rows=rows, codes=tuple(row.code for row in accounts), journal=JournalRows([internal, outside]))
+        dialog.sample_selection = ((outside, "人工选取"),)
+        dialog.sample_source = gui.paper_source_key(dialog.paper_data)
+        path = Path(self.folder.name) / "synthetic-selected.xlsx"
+        with patch.object(gui.filedialog, "asksaveasfilename", return_value=str(path)):
+            dialog._export_pack()
+        book = load_workbook(path)
+        self.addCleanup(book.close)
+        values = [cell.value for cells in book["抽凭表"] for cell in cells]
+        self.assertIn("购买材料", values)
+        self.assertNotIn("内部往来", values)
+        self.assertIn("人工选取", values)
+
+    def test_old_voucher_selection_is_rejected_when_source_changes(self):
+        dialog = self.dialog()
+        accounts, rows = papers.report_scope(self.app.rows, dialog.current_paper)
+        entry = JournalRow(1, "2026-01-01", "合成-1", "1", "购买材料", "1002", Decimal(100))
+        old = PaperData(rows=rows, codes=tuple(row.code for row in accounts), journal=JournalRows([entry]),
+                        source_path="old")
+        dialog.sample_source = gui.paper_source_key(old)
+        dialog.sample_selection = ((entry, "人工选取"),)
+        dialog.paper_data = replace(old, source_path="new")
+        with patch.object(gui.filedialog, "asksaveasfilename", return_value=str(Path(self.folder.name) / "result.xlsx")):
+            dialog._export_pack()
+        self.assertIsNone(dialog.sample_selection)
+        self.assertIn("重新选择抽凭", dialog.state.get())
 
     def test_sheet_suggestions_apply_only_checked_items(self):
         parent = self.dialog()
@@ -366,6 +413,7 @@ class PaperUiTests(unittest.TestCase):
 
     def test_confirmed_request_sends_exactly_the_previewed_context(self):
         dialog = self.dialog()
+        dialog.focus_text.insert("1.0", "关注期末跨期")
         self.app.store = SimpleNamespace(data={"ai_enabled": True})
         client = Mock(model="synthetic", base_url="https://model.invalid/v1")
         client.paper_text.return_value = {"intent": "audit", "answer": '{"audit_notes":["待补合成证据"]}'}
@@ -376,6 +424,7 @@ class PaperUiTests(unittest.TestCase):
             client.paper_text.assert_not_called()
             dialog._poll()
         payload = preview.call_args.args[0]
+        self.assertEqual(payload["context"]["facts"]["focus"], "关注期末跨期")
         client.paper_text.assert_called_once_with({key: value for key, value in payload.items() if key != "purpose"})
         client.converse.assert_not_called()
         client.converse_with_skills.assert_not_called()

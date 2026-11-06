@@ -31,6 +31,11 @@ def journal(day="2026-06-30", month=6, summary="期末暂估付款", voucher="�
 class PaperResponseTests(unittest.TestCase):
     def test_prompt_uses_paragraphs_and_only_reference_documents(self):
         request = self.request()
+        self.assertIn("高级审计经理", request["system"])
+        self.assertIn("职业怀疑", request["system"])
+        self.assertIn("未取得证据", request["system"])
+        self.assertIn("扩大样本", request["system"])
+        self.assertIn("账内观察", request["system"])
         self.assertNotIn('"1、..."', request["question"])
         self.assertEqual(request["context"]["facts"]["analysis_rows"][0]["rate"], "25.00%")
         self.assertTrue(all("SKILL.md" not in item["locator"] for item in request["context"]["knowledge_refs"]))

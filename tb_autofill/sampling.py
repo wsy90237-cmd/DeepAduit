@@ -71,9 +71,22 @@ def cutoff(journal, year, month, limit=12):
         if len(picked) >= limit:
             break
     return picked
-RISK_WORDS = ("调整", "冲销", "红字", "结转", "暂估", "往来", "借款", "其他", "重分类", "更正")
+RISK_WORDS = ("调整", "冲销", "红字", "结转", "暂估", "借款", "重分类", "更正")
 MONEY_WORDS = ("银行", "现金", "库存现金")
 RELATED_WORDS = ("应收", "应付", "预付", "预收", "其他应收", "其他应付")
+BUSINESS_WORDS = ("销售", "收入", "采购", "购买", "成本", "费用", "货款", "工程款", "服务费",
+                  "工资", "薪酬", "租金", "水电", "运费", "劳务", "材料", "商品", "税费")
+INTERNAL_WORDS = ("内部往来", "内部转账", "内部划转", "内部调拨")
+
+
+def _business_hint(row):
+    text = str(getattr(row, "summary", "") or "") + str(getattr(row, "contra", "") or "")
+    return any(word in text for word in BUSINESS_WORDS)
+
+
+def _internal_hint(row):
+    text = str(getattr(row, "summary", "") or "")
+    return any(word in text for word in INTERNAL_WORDS)
 
 
 def _amount(row):
@@ -95,6 +108,10 @@ def reasons(row, *, amount_rank=None, total=0):
         found.append("整数金额")
     if any(word in text for word in RISK_WORDS):
         found.append("摘要含" + next(word for word in RISK_WORDS if word in text))
+    if _business_hint(row):
+        found.append("存在经营收支线索，待核实")
+    if _internal_hint(row):
+        found.append("摘要标注内部往来，待人工判断")
     if any(word in contra for word in MONEY_WORDS):
         found.append("涉及货币资金")
     elif any(word in contra for word in RELATED_WORDS):
@@ -102,7 +119,7 @@ def reasons(row, *, amount_rank=None, total=0):
     month = getattr(row, "month", 0) or 0
     if month in (12, 1):
         found.append(f"{month} 月发生（期末/期初）")
-    return "、".join(found)
+    return "、".join(found) or "按风险排序补充样本"
 
 
 def _score(row, amount_rank, total):
@@ -116,6 +133,14 @@ def _score(row, amount_rank, total):
         score += 15
     if any(word in str(getattr(row, "contra", "") or "") for word in MONEY_WORDS):
         score += 8
+    if _business_hint(row):
+        score += 45
+    if _internal_hint(row):
+        score -= 60
+    elif not _business_hint(row) and ("往来" in str(getattr(row, "summary", "") or "") or
+                                      any(word in str(getattr(row, "contra", "") or "")
+                                          for word in ("其他应收", "其他应付"))):
+        score -= 20
     if (getattr(row, "month", 0) or 0) in (12, 1):
         score += 10
     if amount_rank < 3:
@@ -123,16 +148,21 @@ def _score(row, amount_rank, total):
     return score
 
 
-def pick(journal, limit=SAMPLE_SIZE):
-    """规则抽样：返回 [(JournalRow, 抽取理由)]，按得分降序，最多 limit 笔。"""
+def _ranked(journal):
     rows = [row for row in journal or [] if _amount(row) > 0 and not is_profit_closing(row)]
-    if not rows:
-        return []
     ordered = sorted(rows, key=_amount, reverse=True)
     ranks = {id(row): index for index, row in enumerate(ordered)}
     total = sum((_amount(row) for row in rows), Decimal("0"))
     scored = sorted(rows, key=lambda row: (_score(row, ranks[id(row)], total), _amount(row)),
                     reverse=True)
+    return scored, ranks, total
+
+
+def pick(journal, limit=SAMPLE_SIZE):
+    """规则抽样：返回 [(JournalRow, 抽取理由)]，按得分降序，最多 limit 笔。"""
+    if limit <= 0:
+        return []
+    scored, ranks, total = _ranked(journal)
     chosen, seen = [], set()
     for row in scored:
         key = (str(getattr(row, "date", "")), str(getattr(row, "voucher", "")),
@@ -147,9 +177,8 @@ def pick(journal, limit=SAMPLE_SIZE):
 
 
 def candidates(journal, limit=40):
-    """给模型的候选清单：金额大的前 limit 笔，编号从 1 开始。"""
-    rows = sorted([row for row in journal or [] if _amount(row) > 0 and not is_profit_closing(row)],
-                  key=_amount, reverse=True)[:limit]
+    """给模型的候选清单：按规则排序，编号从 1 开始。"""
+    rows = _ranked(journal)[0][:max(0, limit)]
     return [{"no": index, "date": str(getattr(row, "date", "")),
              "voucher": str(getattr(row, "voucher", "")),
              "summary": str(getattr(row, "summary", "")),
@@ -164,9 +193,10 @@ def pick_with_ai(client, subject_name, journal, limit=SAMPLE_SIZE):
     if not pool or client is None:
         return pick(journal, limit), "规则抽样"
     question = (
-        f"以下是「{subject_name}」本期序时账中金额最大的 {len(pool)} 笔分录。"
+        f"以下是「{subject_name}」本期序时账中按规则排序的 {len(pool)} 笔分录。"
         f"请从风险角度挑出最应该抽查的 {limit} 笔（考虑大额、整数金额、期末月份、"
-        "调整/冲销/暂估等异常摘要、涉及货币资金或关联往来），只输出 JSON："
+        "调整/冲销/暂估等异常摘要，优先关注具体收入、成本和费用业务；"
+        "摘要标注内部往来的分录降低优先级，但不得假定交易性质或声称已经检查），只输出 JSON："
         '{"picks":[{"no":1,"reason":"为什么挑它"}]}。不要编造不存在的编号。'
     )
     try:

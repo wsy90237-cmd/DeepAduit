@@ -851,7 +851,7 @@ def _extra_sheet(book, meta, spec, *, index_no, page, rows_data=()):
     return sheet
 
 
-def _self_checks(consistent, gap, picks, prepared_by, reviewed_by, *, has_detail=True, is_pl=False):
+def _self_checks(consistent, gap, picks, prepared_by, reviewed_by, *, has_detail=True, is_pl=False, journal_available=False):
     """复核自检项：只看格式、索引与勾稽，不评价证据是否充分。"""
     return (
         ("底稿目录、导引表与各工作表名称一致", "已核对", "生成时按同一索引号命名"),
@@ -860,8 +860,8 @@ def _self_checks(consistent, gap, picks, prepared_by, reviewed_by, *, has_detail
          (f"{'发生额' if is_pl else '四栏'}绝对差异合计 {gap:,.2f} 元" if gap is not None else "来源不完整，尚未完成核对")
          if has_detail else "直接列示一级记录，不构成独立明细核对"),
         ("账面/未审与审定核对口径已区分", "待复核", "账面核对可先进行，审定比较须取得独立依据"),
-        ("抽凭样本已按风险抽取并写明理由",
-         f"已抽取 {len(picks)} 笔" if picks else "未读取序时账",
+        ("抽凭样本及理由",
+         f"已抽取 {len(picks)} 笔" if picks else "未选取样本" if journal_available else "未读取序时账",
          "检查结论须核对原始凭证后填写"),
         ("编制人、复核人已填列",
          "已填列" if prepared_by and reviewed_by else "待补", "由工作台签字人带入"),
@@ -1033,6 +1033,8 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
         spec = paper_sheets.by_name(title) or dxn_templates.spec_for(title, name)
         if spec and all(spec[0] != item[0] for item in extras):
             extras.append(spec)
+    if any(spec[0] == "分析程序表" for spec in extras):
+        extras = [spec for spec in extras if spec[0] != "费用明细及分析表"]
     extras = tuple(extras)
     analysis_accounts = list({row.code: row for row in [*grouped, *leaves]}.values())
     movements = paper_sheets.movement_rows(analysis_accounts)
@@ -1063,6 +1065,8 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
             picks, pick_source = sampler(name, journal)
         else:
             picks, pick_source = sampling.pick(journal), "规则抽样"
+        if any(row not in journal for row, _reason in picks):
+            raise ValueError("抽凭样本不属于当前序时账，请重新选择。")
         picks = [(row, reason) for row, reason in picks if not sampling.is_profit_closing(row)]
     for offset, spec in enumerate(extras, 8):
         title = spec[0]
@@ -1070,6 +1074,11 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
             data = [(number, str(getattr(row, "date", "")), row.voucher, row.summary, row.code,
                      row.contra, row.debit, row.credit, reason, None)
                     for number, (row, reason) in enumerate(picks, 1)]
+            sample_source = pick_source or ("无可供选择的序时账分录" if journal is not None else "未读取序时账")
+            note = spec[2] + f" 样本来源：{sample_source}。"
+            if journal is not None and not getattr(journal, "complete", True):
+                note += " 序时账已截取，抽样总体不完整。"
+            spec = (spec[0], spec[1], note, spec[3], spec[4])
         elif title in ("分析程序表", "费用明细及分析表"):
             data = []
             for item in movements:
@@ -1102,7 +1111,8 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
     if pick_source:
         meta["pick_source"] = pick_source
     meta["review_page"] = 8 + len(extras)
-    checks = list(_self_checks(consistent, gap, picks, prepared_by, reviewed_by, has_detail=has_detail, is_pl=is_pl))
+    checks = list(_self_checks(consistent, gap, picks, prepared_by, reviewed_by, has_detail=has_detail, is_pl=is_pl,
+                               journal_available=journal is not None))
     for check in meta["auxiliary_checks"]:
         checks.append((f"客商明细与科目 {check.get('account_code', '')} 核对",
                        {"matched": "相符", "difference": "差异", "missing": "待补来源", "ambiguous": "维度歧义"}.get(check.get("status"), "待核实"),

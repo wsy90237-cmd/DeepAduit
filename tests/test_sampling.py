@@ -25,6 +25,15 @@ def journal(count=15):
 
 
 class RulePickTests(unittest.TestCase):
+    def test_operating_transactions_precede_explicit_internal_transfers(self):
+        internal = JournalRow(6, "2025-06-15", "合成-1", "1", "内部往来转账", "100201", Decimal(2000), contra="其他应收款")
+        business = JournalRow(6, "2025-06-15", "合成-2", "1", "销售货款", "100201", Decimal(10), contra="应收账款")
+        picked = sampling.pick([internal, business], limit=1)
+        self.assertEqual(picked[0][0], business)
+        self.assertIn("经营收支线索", picked[0][1])
+        self.assertEqual(sampling.candidates([internal, business], limit=1)[1], [business])
+        self.assertIn(internal, [row for row, _reason in sampling.pick([internal, business])])
+
     def test_profit_closing_is_excluded_from_all_sampling_paths(self):
         closing = JournalRow(12, "2025-12-31", "结-1", "1", "结转本期损益", "6602", credit=Decimal("5000"), contra="本年利润")
         legitimate = JournalRow(12, "2025-12-31", "记-2", "1", "结转销售成本", "6602", debit=Decimal("100"), contra="库存商品")

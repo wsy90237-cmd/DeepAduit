@@ -207,6 +207,24 @@ class ReportPaperDataTests(unittest.TestCase):
         book = self.build([row("1001", "库存现金", "0")], sheet_drop=["分析程序表", "抽凭表"])
         self.assertTrue({"分析程序表", "抽凭表"} <= set(book.sheetnames))
 
+    def test_expense_analysis_is_not_duplicated_even_if_suggested(self):
+        source = replace(row("6602", "管理费用", "0", is_profit_loss=True), period_amount=Decimal(20))
+        book = self.build([source], sheet_add=["费用明细及分析表"])
+        self.assertIn("分析程序表", book.sheetnames)
+        self.assertNotIn("费用明细及分析表", book.sheetnames)
+
+    def test_manual_sampler_cannot_insert_an_unrelated_journal_row(self):
+        source = row("1001", "库存现金", "0")
+        entry = JournalRow(1, "2026-01-01", "SYN-1", "1", "合成分录", source.code, Decimal(1))
+        unrelated = replace(entry, voucher="SYN-2")
+        with self.assertRaisesRegex(ValueError, "不属于当前序时账"):
+            self.build([source], journal=JournalRows([entry]), sampler=lambda _name, _rows: ([(unrelated, "人工")], "人工"))
+
+    def test_empty_available_journal_is_not_reported_as_unread(self):
+        book = self.build([row("1001", "库存现金", "0")], journal=JournalRows())
+        text = " ".join(str(cell.value) for cells in book["抽凭表"] for cell in cells if cell.value is not None)
+        self.assertIn("无可供选择的序时账分录", text)
+
     def test_unspecified_journal_uses_paper_data_but_explicit_none_excludes_it(self):
         source = row("1001", "库存现金", "0")
         journal = JournalRows([JournalRow(1, "2026-01-01", "SYN-1", "1", "SYNTHETIC-JOURNAL",

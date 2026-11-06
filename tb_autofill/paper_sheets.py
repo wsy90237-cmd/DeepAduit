@@ -31,8 +31,8 @@ BASE = (
     ("抽凭表", (("序号", 6, NUM), ("日期", 13, DATE), ("凭证号", 14, TEXT), ("摘要", 28, TEXT),
                 ("科目编码", 12, TEXT), ("对方科目", 18, TEXT), ("借方", 15, MONEY),
                 ("贷方", 15, MONEY), ("抽取理由", 26, TEXT), ("检查结论", 20, TEXT)),
-     "按金额、整数金额、期末前后、异常摘要等风险特征从序时账抽取 10 笔；接入模型时由模型挑选并说明理由。"
-     "检查结论须核对原始凭证后填写。", 10, None),
+     "规则结合经营收支线索、金额、期末时间及异常摘要提供初选，明确标注的内部往来降低优先级；"
+     "项目组可调整样本，交易性质和检查结论须核对原始凭证后填写。", 10, None),
 )
 
 SPECS = {
@@ -227,6 +227,8 @@ def for_category(category, state=None):
     state = state or {}
     selected = list(BASE)
     for spec in SPECS.get(category, ()):
+        if spec[0] == "费用明细及分析表":
+            continue
         need = spec[4]
         if need and not state.get(need):
             continue

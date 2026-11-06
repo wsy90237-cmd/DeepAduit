@@ -72,6 +72,10 @@ def has_value(value):
     return value is not None and str(value).strip() != ""
 
 
+def paper_source_key(data):
+    return (data.source_path, data.source_tables, data.source_fingerprint, data.source_missing_tables)
+
+
 class SubjectPicker(tk.Toplevel):
     """主体选择弹窗：列出完整名称与期间，支持关键字过滤，避免下拉框截断。"""
 
@@ -186,6 +190,101 @@ class SheetSuggestionDialog(tk.Toplevel):
         self.destroy()
 
 
+class VoucherPicker(tk.Toplevel):
+    """由项目组复核规则初选，可排除内部往来或补选其他分录。"""
+
+    def __init__(self, parent, journal, selected=None):
+        super().__init__(parent)
+        self.title("选择抽凭样本")
+        self.transient(parent)
+        self.geometry("1080x580")
+        self.minsize(800, 420)
+        self.result = None
+        rows = [row for row in journal if row.amount > 0 and not sampling.is_profit_closing(row)]
+        self.default = dict(sampling.pick(rows))
+        self.rows = [*self.default, *(row for row in rows if row not in self.default)]
+        self.selected = set(row for row, _reason in selected) if selected is not None else set(self.default)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+        note = "规则初选可调整；按凭证号、摘要或对方科目搜索，点击首列勾选。内部往来由项目组判断。"
+        if not getattr(journal, "complete", True):
+            note += " 当前序时账已截取，样本总体不完整。"
+        tk.Label(self, text=note, bg=CARD, fg=SEC, font=(FONT, 9), anchor="w", wraplength=1000,
+                 justify="left").grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+        self.query = tk.StringVar()
+        ttk.Entry(self, textvariable=self.query).grid(row=1, column=0, sticky="ew", padx=12, pady=4)
+        holder = tk.Frame(self, bg=CARD)
+        holder.grid(row=2, column=0, sticky="nsew", padx=12)
+        holder.columnconfigure(0, weight=1)
+        holder.rowconfigure(0, weight=1)
+        cols = ("chosen", "date", "voucher", "summary", "contra", "amount", "reason")
+        self.tree = ttk.Treeview(holder, columns=cols, show="headings", selectmode="browse")
+        for key, title, width in (("chosen", "选", 45), ("date", "日期", 100), ("voucher", "凭证号", 100),
+                                  ("summary", "摘要", 260), ("contra", "对方科目", 160),
+                                  ("amount", "金额", 120), ("reason", "初选理由", 200)):
+            self.tree.heading(key, text=title)
+            self.tree.column(key, width=width, minwidth=40, anchor="e" if key == "amount" else "w")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vertical = ttk.Scrollbar(holder, orient="vertical", command=self.tree.yview)
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal = ttk.Scrollbar(holder, orient="horizontal", command=self.tree.xview)
+        horizontal.grid(row=1, column=0, sticky="ew")
+        self.tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.tree.bind("<Button-1>", self._click)
+        self.tree.bind("<space>", self._space)
+        self.query.trace_add("write", lambda *_args: self._refresh())
+        actions = tk.Frame(self, bg=CARD)
+        actions.grid(row=3, column=0, sticky="ew", padx=12, pady=12)
+        self.count = tk.StringVar()
+        ttk.Button(actions, text="使用所选样本", style="Accent.TButton", command=self._accept).pack(side="left")
+        ttk.Button(actions, text="恢复规则初选", command=self._reset).pack(side="left", padx=8)
+        ttk.Button(actions, text="取消", command=self.destroy).pack(side="right")
+        tk.Label(actions, textvariable=self.count, bg=CARD, fg=SEC, font=(FONT, 9)).pack(side="left", padx=8)
+        self._refresh()
+        self.grab_set()
+
+    def _refresh(self):
+        query = self.query.get().strip().casefold()
+        self.tree.delete(*self.tree.get_children())
+        for index, row in enumerate(self.rows):
+            if query and query not in " ".join((row.voucher, row.summary, row.contra, row.code)).casefold():
+                continue
+            self.tree.insert("", "end", iid=str(index), values=("☑" if row in self.selected else "☐",
+                row.date, row.voucher, row.summary, row.contra, fmt_amount(row.amount), self.default.get(row, "")))
+        self.count.set(f"已选 {len(self.selected)} 笔 / 可选 {len(self.rows)} 笔")
+
+    def _toggle(self, iid):
+        row = self.rows[int(iid)]
+        if row in self.selected:
+            self.selected.remove(row)
+        else:
+            self.selected.add(row)
+        values = list(self.tree.item(iid, "values"))
+        values[0] = "☑" if row in self.selected else "☐"
+        self.tree.item(iid, values=values)
+        self.count.set(f"已选 {len(self.selected)} 笔 / 可选 {len(self.rows)} 笔")
+
+    def _click(self, event):
+        iid = self.tree.identify_row(event.y)
+        if iid and self.tree.identify_column(event.x) == "#1":
+            self._toggle(iid)
+
+    def _space(self, _event):
+        selected = self.tree.selection()
+        if selected:
+            self._toggle(selected[0])
+        return "break"
+
+    def _reset(self):
+        self.selected = set(self.default)
+        self._refresh()
+
+    def _accept(self):
+        self.result = [(row, "人工选取" + ("；" + self.default[row] if row in self.default else ""))
+                       for row in self.rows if row in self.selected]
+        self.destroy()
+
+
 class PaperDialog(tk.Toplevel):
     """生成底稿草稿：选科目与类型，模型结合本机账套事实与内置知识库起草。"""
 
@@ -207,13 +306,16 @@ class PaperDialog(tk.Toplevel):
         self.draft = None
         self.journal_rows, self.journal_code = None, ""
         self.paper_data = None
+        self.sample_selection = None
+        self.sample_source = None
         self._synced_code = ""
         self.running = False
 
         shell = tk.Frame(self, bg=CARD)
         shell.pack(fill="both", expand=True, padx=16, pady=12)
         shell.columnconfigure(1, weight=1)
-        shell.rowconfigure(5, weight=1)
+        shell.rowconfigure(3, weight=1)
+        self.shell = shell
 
         tk.Label(shell, text="报表项目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w")
         self.state = tk.StringVar(value="选择科目后生成；金额取自本机账套。")
@@ -241,26 +343,33 @@ class PaperDialog(tk.Toplevel):
         self.journal_check.pack(side="left")
         self.suggest_btn = ttk.Button(kind_row, text="AI 建议专项表", command=self._suggest_sheets)
         self.suggest_btn.pack(side="left", padx=(12, 0))
+        self.sample_btn = ttk.Button(kind_row, text="选择抽凭", command=self._select_samples)
+        self.sample_btn.pack(side="left", padx=(8, 0))
         self.sheet_add, self.sheet_drop = [], []
 
         tk.Label(shell, text="包含的账套科目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=3, column=0, sticky="nw", pady=(8, 0))
         children = tk.Frame(shell, bg=CARD)
-        children.grid(row=3, column=1, sticky="ew", padx=8, pady=(8, 0))
+        children.grid(row=3, column=1, sticky="nsew", padx=8, pady=(8, 0))
         children.columnconfigure(0, weight=1)
+        children.rowconfigure(0, weight=1)
         self.children_tree = ttk.Treeview(children, columns=("name", "ending"), show="tree headings",
                                           selectmode="browse", height=6)
         for column, title, width in (("#0", "科目编码", 150), ("name", "报表项目科目 / 明细", 300), ("ending", "期末账面余额", 140)):
             self.children_tree.heading(column, text=title)
             self.children_tree.column(column, width=width, anchor="e" if column == "ending" else "w")
-        self.children_tree.grid(row=0, column=0, sticky="ew")
+        self.children_tree.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(children, orient="vertical", command=self.children_tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.children_tree.configure(yscrollcommand=scroll.set)
 
-        tk.Label(shell, text="关注点", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=4, column=0, sticky="nw", pady=(8, 0))
-        self.focus_text = tk.Text(shell, height=2, wrap="word", font=(FONT, 9), relief="flat",
+        tk.Label(shell, text="关注点（可选）", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=4, column=0, sticky="nw", pady=(8, 0))
+        focus_area = tk.Frame(shell, bg=CARD)
+        focus_area.grid(row=4, column=1, sticky="ew", padx=8, pady=(8, 0))
+        self.focus_text = tk.Text(focus_area, height=2, wrap="word", font=(FONT, 9), relief="flat",
                                   highlightthickness=1, highlightbackground=BORDER, padx=8, pady=6)
-        self.focus_text.grid(row=4, column=1, sticky="ew", padx=8, pady=(8, 0))
+        self.focus_text.pack(fill="x")
+        tk.Label(focus_area, text="例如：关注期末跨期、异常往来或大额变动；留空则按账套事实分析。",
+                 bg=CARD, fg=SEC, font=(FONT, 8), anchor="w").pack(fill="x", pady=(3, 0))
 
         self.view = tk.Text(shell, wrap="word", font=(FONT, 9), relief="flat", state="disabled",
                             highlightthickness=1, highlightbackground=BORDER, padx=12, pady=10)
@@ -268,6 +377,9 @@ class PaperDialog(tk.Toplevel):
         bar = ttk.Scrollbar(shell, orient="vertical", command=self.view.yview)
         bar.grid(row=5, column=2, sticky="ns", pady=(10, 0))
         self.view.configure(yscrollcommand=bar.set)
+        self.view.grid_remove()
+        bar.grid_remove()
+        self.view_bar = bar
 
         actions = tk.Frame(shell, bg=CARD)
         actions.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
@@ -290,6 +402,8 @@ class PaperDialog(tk.Toplevel):
         self._source_snapshot = (self.app._context_revision, self.app.loaded_subject, ledger_digest(rows))
         self.draft, self.journal_rows, self.journal_code = None, None, ""
         self.paper_data = None
+        self.sample_selection = None
+        self.sample_source = None
         self.sheet_add, self.sheet_drop = [], []
         self._synced_code = ""
         self.view.configure(state="normal")
@@ -353,6 +467,8 @@ class PaperDialog(tk.Toplevel):
             self._synced_code = key
             self.draft, self.journal_rows, self.journal_code, self.paper_data = None, None, "", None
             self.sheet_add, self.sheet_drop = [], []
+            self.sample_selection = None
+            self.sample_source = None
             self.view.configure(state="normal")
             self.view.delete("1.0", "end")
             self.view.configure(state="disabled")
@@ -395,6 +511,9 @@ class PaperDialog(tk.Toplevel):
     def _preview_request(self, payload, model, destination):
         """在当前底稿窗口预览真实请求，不再弹出独立小窗。"""
         previous = self.view.get("1.0", "end-1c")
+        self.shell.rowconfigure(5, weight=1)
+        self.view.grid()
+        self.view_bar.grid()
         self.view.configure(state="normal")
         self.view.delete("1.0", "end")
         self.view.insert("1.0", f"发送用途：{payload['purpose']}\n目的服务：{destination} · {model}\n\n"
@@ -409,6 +528,7 @@ class PaperDialog(tk.Toplevel):
         self.preview_bar.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         self.run_btn.configure(state="disabled")
         self.suggest_btn.configure(state="disabled")
+        self.sample_btn.configure(state="disabled")
         self.export_btn.configure(state="disabled")
         self.code_box.configure(state="disabled")
         self.state.set("请在下方查看本次发送范围和目的服务。")
@@ -416,12 +536,16 @@ class PaperDialog(tk.Toplevel):
         confirmed = self._preview_choice.get() == "send"
         self._preview_choice = None
         self.preview_bar.grid_remove()
+        self.view.grid_remove()
+        self.view_bar.grid_remove()
+        self.shell.rowconfigure(5, weight=0)
         self.view.configure(state="normal")
         self.view.delete("1.0", "end")
         self.view.insert("1.0", previous)
         self.view.configure(state="disabled")
         self.run_btn.configure(state="normal")
         self.suggest_btn.configure(state="normal")
+        self.sample_btn.configure(state="normal")
         self.export_btn.configure(state="normal")
         self.code_box.configure(state="readonly")
         return confirmed
@@ -433,7 +557,7 @@ class PaperDialog(tk.Toplevel):
             note = "账套来源已变化，旧草稿已失效，请重新读取并复核。"
         except OSError as exc:
             note = str(exc)
-        self.paper_data, self.draft = None, None
+        self.paper_data, self.draft, self.sample_selection, self.sample_source = None, None, None, None
         self.state.set(note)
         return False
 
@@ -459,7 +583,8 @@ class PaperDialog(tk.Toplevel):
             data = self.paper_data or self._read_paper_data(
                 self.app.loaded_subject, scoped, accounts, self.app.install_var.get().strip(), False)
             self.paper_data = data
-            available = sorted(set(paper_sheets.names()) | set(dxn_templates.sheet_names(paper.name)))
+            available = sorted((set(paper_sheets.names()) | set(dxn_templates.sheet_names(paper.name)))
+                               - {"费用明细及分析表"})
             current = [spec[0] for spec in paper_sheets.for_category(
                 paper_pack.category(paper.index_no, paper.name), paper_sheets.facts(data.rows, data.journal))]
             client = ai_module.DeepSeekClient.from_store(self.store)
@@ -495,6 +620,45 @@ class PaperDialog(tk.Toplevel):
         self.sheet_add = [item["name"] for action, item in dialog.result if action == "add"]
         self.sheet_drop = [item["name"] for action, item in dialog.result if action == "remove"]
         self.state.set(f"已采纳 {len(dialog.result)} 条专项表建议。")
+
+    def _select_samples(self):
+        if self.running or self.app.busy or not self._ensure_fresh_choices():
+            return
+        code, paper = self._synced_code, self.current_paper
+        try:
+            if not code or paper is None:
+                raise ValueError("请先确认报表项目。")
+            accounts, rows = papers.report_scope(self.app.rows, paper, getattr(self.app, "paper_library", ()))
+            data = self.paper_data
+            if data is not None and not self._ensure_paper_source(data):
+                return
+            if data is None or data.journal is None:
+                self.state.set("正在读取序时账以选择抽凭样本…")
+                self.update_idletasks()
+                data = self._read_paper_data(self.app.loaded_subject, rows, accounts,
+                                             self.app.install_var.get().strip(), True)
+                self.paper_data = data
+            if data.journal is None:
+                raise ValueError("未取得序时账，无法选择抽凭样本。")
+            if len(set(data.journal)) != len(data.journal):
+                raise ValueError("序时账存在完全重复的分录，请先核实来源。")
+        except (ValueError, OSError) as exc:
+            self.state.set(str(exc))
+            return
+        if self.sample_selection is not None and self.sample_source != paper_source_key(data):
+            self.sample_selection, self.sample_source = None, None
+            self.state.set("账套来源已变化，旧抽凭选择已清除。")
+        dialog = VoucherPicker(self, data.journal, self.sample_selection)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            self.state.set("已取消，保留原有抽凭选择。")
+            return
+        if not self._ensure_fresh_choices() or code != self._synced_code or not self._ensure_paper_source(data):
+            self.state.set("账套来源或报表项目已变化，请重新选择抽凭。")
+            return
+        self.sample_selection = tuple(dialog.result)
+        self.sample_source = paper_source_key(data)
+        self.state.set(f"已选择 {len(self.sample_selection)} 笔抽凭样本；导出后请复核。")
 
     def _read_paper_data(self, subject, rows, accounts, install_path, want_journal):
         if subject is None:
@@ -717,6 +881,13 @@ class PaperDialog(tk.Toplevel):
         if not self._ensure_paper_source(data):
             return
         journal = data.journal
+        selected = self.sample_selection
+        if selected is not None and (self.sample_source != paper_source_key(data) or journal is None or
+                                     any(row not in journal for row, _reason in selected)):
+            self.sample_selection, self.sample_source = None, None
+            self.state.set("序时账与所选样本不一致，请重新选择抽凭。")
+            return
+        sampler = (lambda _name, _journal: (list(selected), "人工选择")) if selected is not None else None
         self.journal_rows, self.journal_code = journal, code
         narrative = self.draft if self.draft and self.draft.get("kind") == "pack" else {}
         try:
@@ -728,7 +899,7 @@ class PaperDialog(tk.Toplevel):
                 when=datetime.now().strftime("%Y-%m-%d"),
                 procedures=paper_pack.procedures(prefix, paper.name if paper else ""),
                 narrative=narrative, journal=journal, paper_data=data,
-                sheet_add=self.sheet_add, sheet_drop=self.sheet_drop)
+                sheet_add=self.sheet_add, sheet_drop=self.sheet_drop, sampler=sampler)
         except (OSError, ValueError) as exc:
             messagebox.showerror("无法导出", str(exc), parent=self)
             return
