@@ -57,7 +57,7 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertEqual(row[6], "")
         zero = TargetField("期末", "B2", "库存现金", "ending", value=0)
         row = gui.App._row_values(None, MatchResult(zero, amount=Decimal(0), status="matched"))
-        self.assertEqual((row[5], row[6], row[7]), ("0", "0", "0"))
+        self.assertEqual((row[5], row[6], row[7]), ("0.00", "0.00", "0.00"))
 
 
 if __name__ == "__main__":

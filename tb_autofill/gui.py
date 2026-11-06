@@ -63,7 +63,7 @@ STATUS_TAG = {
 def fmt_amount(value):
     try:
         amount = money(value)
-        return "" if amount is None else f"{amount:,}"
+        return "" if amount is None else f"{amount:,.2f}"
     except ValueError:
         return str(value)
 
@@ -148,6 +148,44 @@ class SubjectPicker(tk.Toplevel):
         self.wait_window(self)
 
 
+class SheetSuggestionDialog(tk.Toplevel):
+    """逐条勾选模型建议；关闭窗口时不改变已有选择。"""
+
+    def __init__(self, parent, suggestions):
+        super().__init__(parent)
+        self.title("选择要采纳的建议")
+        self.transient(parent)
+        self.geometry("760x480")
+        self.minsize(600, 360)
+        self.result = None
+        self.items = [(action, item) for action in ("add", "remove") for item in suggestions.get(action, [])]
+        self.choices = [tk.BooleanVar(value=False) for _ in self.items]
+        holder = tk.Frame(self, bg=CARD)
+        holder.pack(fill="both", expand=True, padx=16, pady=12)
+        canvas = tk.Canvas(holder, bg=CARD, highlightthickness=0)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        content = tk.Frame(canvas, bg=CARD)
+        window = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
+        for variable, (action, item) in zip(self.choices, self.items):
+            text = f"{'增加' if action == 'add' else '删除'}：{item['name']}\n{item['reason']}"
+            tk.Checkbutton(content, text=text, variable=variable, bg=CARD, fg=TX, anchor="w",
+                           justify="left", wraplength=640, font=(FONT, 9)).pack(fill="x", pady=4)
+        actions = tk.Frame(self, bg=CARD)
+        actions.pack(fill="x", padx=16, pady=(0, 12))
+        ttk.Button(actions, text="采纳勾选项", style="Accent.TButton", command=self._accept).pack(side="left")
+        ttk.Button(actions, text="取消", command=self.destroy).pack(side="right")
+        self.grab_set()
+
+    def _accept(self):
+        self.result = [(action, item) for variable, (action, item) in zip(self.choices, self.items) if variable.get()]
+        self.destroy()
+
+
 class PaperDialog(tk.Toplevel):
     """生成底稿草稿：选科目与类型，模型结合本机账套事实与内置知识库起草。"""
 
@@ -198,8 +236,8 @@ class PaperDialog(tk.Toplevel):
         kind_row = tk.Frame(shell, bg=CARD)
         kind_row.grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
         self.with_journal = tk.BooleanVar(value=True)
-        self.journal_check = ttk.Checkbutton(kind_row, text="含序时账明细",
-                                             variable=self.with_journal)
+        self.journal_check = ttk.Checkbutton(kind_row, text="自动读取序时账",
+                                             variable=self.with_journal, state="disabled")
         self.journal_check.pack(side="left")
         self.suggest_btn = ttk.Button(kind_row, text="AI 建议专项表", command=self._suggest_sheets)
         self.suggest_btn.pack(side="left", padx=(12, 0))
@@ -240,6 +278,8 @@ class PaperDialog(tk.Toplevel):
         self.export_btn.pack(side="left", padx=8)
         ttk.Button(actions, text="关闭", command=self._close).pack(side="right")
         tk.Label(actions, textvariable=self.state, bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=12)
+        self.preview_bar = tk.Frame(shell, bg=CARD)
+        self._preview_choice = None
 
         self._reload_choices()
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -341,9 +381,8 @@ class PaperDialog(tk.Toplevel):
 
     def _confirm_request(self, request, client, code, paper_data=None):
         source = self._source_snapshot
-        dialog = PayloadDialog(self, {"purpose": "报表项目整册底稿辅助制作", **request}, client.model, client.base_url)
-        self.wait_window(dialog)
-        if not dialog.confirmed:
+        payload = {"purpose": "报表项目整册底稿辅助制作", **request}
+        if not self._preview_request(payload, client.model, client.base_url):
             self.state.set("已取消发送，未请求模型。")
             return False
         if not self._ensure_fresh_choices() or source != self._source_snapshot or code != self._synced_code:
@@ -352,6 +391,40 @@ class PaperDialog(tk.Toplevel):
         if paper_data is not None and not self._ensure_paper_source(paper_data):
             return False
         return True
+
+    def _preview_request(self, payload, model, destination):
+        """在当前底稿窗口预览真实请求，不再弹出独立小窗。"""
+        previous = self.view.get("1.0", "end-1c")
+        self.view.configure(state="normal")
+        self.view.delete("1.0", "end")
+        self.view.insert("1.0", f"发送用途：{payload['purpose']}\n目的服务：{destination} · {model}\n\n"
+                         "以下为本次将发送的完整内容：\n" + json.dumps(payload, ensure_ascii=False, indent=2))
+        self.view.configure(state="disabled")
+        self._preview_choice = tk.StringVar(value="")
+        for widget in self.preview_bar.winfo_children():
+            widget.destroy()
+        ttk.Button(self.preview_bar, text="确认发送", style="Accent.TButton",
+                   command=lambda: self._preview_choice.set("send")).pack(side="left")
+        ttk.Button(self.preview_bar, text="取消", command=lambda: self._preview_choice.set("cancel")).pack(side="left", padx=8)
+        self.preview_bar.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.run_btn.configure(state="disabled")
+        self.suggest_btn.configure(state="disabled")
+        self.export_btn.configure(state="disabled")
+        self.code_box.configure(state="disabled")
+        self.state.set("请在下方查看本次发送范围和目的服务。")
+        self.wait_variable(self._preview_choice)
+        confirmed = self._preview_choice.get() == "send"
+        self._preview_choice = None
+        self.preview_bar.grid_remove()
+        self.view.configure(state="normal")
+        self.view.delete("1.0", "end")
+        self.view.insert("1.0", previous)
+        self.view.configure(state="disabled")
+        self.run_btn.configure(state="normal")
+        self.suggest_btn.configure(state="normal")
+        self.export_btn.configure(state="normal")
+        self.code_box.configure(state="readonly")
+        return confirmed
 
     def _ensure_paper_source(self, data):
         try:
@@ -411,12 +484,17 @@ class PaperDialog(tk.Toplevel):
                 messagebox.showinfo("无需调整", "模型认为现有专项表已够用。", parent=self)
             self.state.set(result.get("note") or "模型未提出增删建议。")
             return
-        if messagebox.askyesno("AI 建议专项表", "\n".join(lines) + "\n\n是否采纳？", parent=self):
-            self.sheet_add = [item["name"] for item in result.get("add") or []]
-            self.sheet_drop = [item["name"] for item in result.get("remove") or []]
-            self.state.set("已采纳模型建议：" + "；".join(lines))
-        else:
-            self.state.set("未采纳模型建议，按默认专项表导出。")
+        dialog = SheetSuggestionDialog(self, result)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            self.state.set("已取消，保留原有专项表选择。")
+            return
+        if not self._ensure_fresh_choices() or code != self._synced_code or not self._ensure_paper_source(data):
+            self.state.set("账套来源或报表项目已变化，请重新获取专项表建议。")
+            return
+        self.sheet_add = [item["name"] for action, item in dialog.result if action == "add"]
+        self.sheet_drop = [item["name"] for action, item in dialog.result if action == "remove"]
+        self.state.set(f"已采纳 {len(dialog.result)} 条专项表建议。")
 
     def _read_paper_data(self, subject, rows, accounts, install_path, want_journal):
         if subject is None:
@@ -432,6 +510,9 @@ class PaperDialog(tk.Toplevel):
         return data
 
     def _close(self):
+        if self._preview_choice is not None:
+            self._preview_choice.set("cancel")
+            return
         if self.running:
             messagebox.showinfo("任务进行中", "请等待当前底稿任务结束后关闭，以确保临时副本正确清理。", parent=self)
             return
@@ -471,7 +552,7 @@ class PaperDialog(tk.Toplevel):
             self.state.set(str(exc))
             return
         focus = self.focus_text.get("1.0", "end").strip()
-        want_journal = self.scope == "paper" and bool(self.with_journal.get())
+        want_journal = self.scope == "paper"
         paper, subject = self.current_paper, self.app.loaded_subject
         subject_label, install_path = self.app._subject_label(), self.app.install_var.get().strip()
         self.running = True
@@ -482,6 +563,8 @@ class PaperDialog(tk.Toplevel):
         def work():
             try:
                 data = self._read_paper_data(subject, rows, accounts, install_path, want_journal)
+                if data.journal is None:
+                    raise ValueError("未取得序时账，无法结合凭证生成审计说明；请检查账套来源后重试。")
                 texts = [item.text for item in paper_pack.procedures(paper.index_no, paper.name)]
                 request = papers.pack_request(rows=data.rows, paper=paper, procedures=texts,
                                               subject_label=subject_label, focus=focus, journal=data.journal,
@@ -612,11 +695,11 @@ class PaperDialog(tk.Toplevel):
             data = self.paper_data
             if data is not None and not self._ensure_paper_source(data):
                 return
-            if data is None or (self.with_journal.get() and data.journal is None):
+            if data is None or data.journal is None:
                 self.state.set("正在从一致副本准备整册科目、客商及月度发生额…")
                 self.update_idletasks()
                 data = self._read_paper_data(self.app.loaded_subject, scoped_rows, accounts,
-                                              self.app.install_var.get().strip(), bool(self.with_journal.get()))
+                                              self.app.install_var.get().strip(), True)
                 self.paper_data = data
         except (ValueError, OSError) as exc:
             self.state.set(str(exc))
@@ -633,7 +716,7 @@ class PaperDialog(tk.Toplevel):
             return
         if not self._ensure_paper_source(data):
             return
-        journal = data.journal if self.with_journal.get() else None
+        journal = data.journal
         self.journal_rows, self.journal_code = journal, code
         narrative = self.draft if self.draft and self.draft.get("kind") == "pack" else {}
         try:
@@ -768,7 +851,7 @@ class ReviewDialog(tk.Toplevel):
             if result is not None and codes:
                 check = matching.resolve_match(result.target, [self.rows_by_code[c] for c in codes],
                                                method="ai", rows=self.app.rows)
-                amount = "" if check.amount is None else f"{check.amount:,}"
+                amount = fmt_amount(check.amount)
             self.tree.insert("", "end", iid=decision["target_id"],
                              values=("☐", decision["action"], target.get("label", ""),
                                      ", ".join(decision["source_codes"]) or "—", amount,
@@ -1196,6 +1279,22 @@ class App(tk.Tk):
         self.tree.bind("<Button-1>", self._on_click)
         self.tree.bind("<space>", self._on_space)
         self.tree.bind("<Double-1>", lambda _event: self._show_detail())
+        self.reason_detail = tk.StringVar(value="选中一行查看完整原因；双击可查看来源详情。")
+        detail = tk.Label(body, textvariable=self.reason_detail, bg=CARD, fg=TX, font=(FONT, 9),
+                          anchor="w", justify="left", wraplength=1100)
+        detail.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        self.tree.bind("<<TreeviewSelect>>", self._show_reason)
+
+    def _show_reason(self, _event=None):
+        selected = self.tree.selection()
+        if not selected:
+            self.reason_detail.set("选中一行查看完整原因；双击可查看来源详情。")
+            return
+        try:
+            result = self.results[int(selected[0])]
+        except (ValueError, IndexError):
+            return
+        self.reason_detail.set(f"{result.target.label}：{result.reason or '暂无说明'}")
 
     def _build_actions(self):
         bar = tk.Frame(self.workspace, bg=BG)
@@ -1862,7 +1961,7 @@ class App(tk.Tk):
             fmt_amount(target.value) if not target.is_formula else "公式",
             fmt_amount(result.difference),
             "; ".join(f"{row.code} {row.name}" for row in result.sources),
-            (result.method + " · " if result.method else "") + (result.reason or ""),
+            result.reason or "",
         )
 
     def _refresh_tree(self):

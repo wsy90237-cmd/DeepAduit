@@ -116,12 +116,12 @@ def build_shell(app):
     app.nav_buttons = {}
     app.nav_stripes = {}
     app.active_page = "overview"
-    for number, (key, title) in enumerate(PAGES.items(), 1):
+    for key, title in PAGES.items():
         row = tk.Frame(sidebar, bg=NAV)
         row.pack(fill="x", padx=10, pady=1)
         stripe = tk.Frame(row, bg=NAV, width=3)
         stripe.pack(side="left", fill="y")
-        button = tk.Button(row, text=f"{number:02}   {title}", anchor="w", relief="flat", bd=0,
+        button = tk.Button(row, text=title, anchor="w", relief="flat", bd=0,
                            bg=NAV, fg=NAV_TXT, activebackground=ACCENT_SOFT, activeforeground=ACCENT,
                            font=(FONT, 9), padx=13, pady=9, cursor="hand2", takefocus=True,
                            command=lambda key=key: navigate(app, key))

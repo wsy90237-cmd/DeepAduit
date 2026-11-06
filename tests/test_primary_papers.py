@@ -198,6 +198,31 @@ class PaperUiTests(unittest.TestCase):
         self.assertEqual(dialog._synced_code, "1-010")
         self.assertIs(dialog.draft, value)
 
+    def test_inline_preview_confirms_the_displayed_request(self):
+        dialog = self.dialog()
+        captured = {}
+        def confirm():
+            captured["text"] = dialog.view.get("1.0", "end-1c")
+            dialog._preview_choice.set("send")
+        dialog.after(20, confirm)
+        payload = {"purpose": "合成测试", "context": {"example": "仅合成数据"}}
+        self.assertTrue(dialog._preview_request(payload, "合成模型", "https://model.invalid"))
+        self.assertIn("仅合成数据", captured["text"])
+        self.assertIn("https://model.invalid", captured["text"])
+
+    def test_sheet_suggestions_apply_only_checked_items(self):
+        parent = self.dialog()
+        suggestion = gui.SheetSuggestionDialog(parent, {"add": [{"name": "甲表", "reason": "甲"}],
+                                                        "remove": [{"name": "乙表", "reason": "乙"}]})
+        suggestion.choices[1].set(True)
+        suggestion._accept()
+        self.assertEqual(suggestion.result, [("remove", {"name": "乙表", "reason": "乙"})])
+
+    def test_money_display_uses_two_decimals_without_changing_value(self):
+        value = Decimal("123.4567")
+        self.assertEqual(gui.fmt_amount(value), "123.46")
+        self.assertEqual(value, Decimal("123.4567"))
+
     def test_report_selection_only_shows_related_accounts(self):
         root = replace(ledger()[0], code="5001", name="开发成本", path="开发成本")
         child = replace(root, code="500101", name="合成项目", path="开发成本/合成项目", level=2)
@@ -244,8 +269,8 @@ class PaperUiTests(unittest.TestCase):
             dialog._export()
         book = load_workbook(path)
         self.addCleanup(book.close)
-        catalog_codes = {row[0].value for row in book["底稿目录"]}
-        self.assertTrue({child.code for child in children} <= catalog_codes)
+        detail_codes = {str(row[1].value).replace(".", "") for row in book["1-010 明细表"] if row[1].value}
+        self.assertTrue({child.code for child in children} <= detail_codes)
 
     def test_export_contains_entire_cash_report_including_cash_and_bank(self):
         dialog = self.dialog()
@@ -255,10 +280,8 @@ class PaperUiTests(unittest.TestCase):
         book = load_workbook(path)
         self.addCleanup(book.close)
         catalog = " ".join(str(cell.value) for row in book["底稿目录"] for cell in row if cell.value is not None)
-        self.assertIn("库存现金", catalog)
-        self.assertIn("银行存款", catalog)
-        self.assertIn("合成银行甲", catalog)
-        self.assertIn("合成银行乙", catalog)
+        self.assertNotIn("合成银行甲", catalog)
+        self.assertIn("账项明细表", catalog)
         detail = book["1-010 明细表"]
         codes = [row[1].value for row in detail if row[0].value and str(row[0].value).startswith("1:K")]
         self.assertEqual(codes, ["1001", "1002.01", "1002.02"])
@@ -267,7 +290,7 @@ class PaperUiTests(unittest.TestCase):
         self.assertEqual(book["1-010 审定表"]["D10"].value, 100)
         self.assertIsNone(book["1-010 审定表"]["K9"].value)
 
-    def test_journal_checkbox_controls_cached_vouchers_in_actual_export(self):
+    def test_export_always_includes_available_cached_journal(self):
         dialog = self.dialog()
         accounts, rows = papers.report_scope(self.app.rows, dialog.current_paper)
         journal = JournalRows([JournalRow(1, "2026-01-01", "SYN-1", "1", "SYNTHETIC-CACHED-VOUCHER",
@@ -282,7 +305,7 @@ class PaperUiTests(unittest.TestCase):
             book = load_workbook(path)
             try:
                 values = [cell.value for sheet in book for cells in sheet for cell in cells]
-                self.assertEqual("SYNTHETIC-CACHED-VOUCHER" in values, enabled)
+                self.assertIn("SYNTHETIC-CACHED-VOUCHER", values)
             finally:
                 book.close()
 
@@ -326,8 +349,7 @@ class PaperUiTests(unittest.TestCase):
         request = {"question": "合成问题", "context": {"facts": {"subject": {"code": "1002"}}}}
         dialog.queue.put(("preview", (request, None, "1002", client)))
         dialog.running = True
-        with patch.object(gui, "PayloadDialog", return_value=SimpleNamespace(confirmed=False)), \
-                patch.object(dialog, "wait_window"):
+        with patch.object(dialog, "_preview_request", return_value=False):
             dialog._poll()
         client.converse.assert_not_called()
         self.assertIsNone(dialog.draft)
@@ -335,10 +357,10 @@ class PaperUiTests(unittest.TestCase):
     def test_changed_source_during_preview_starts_no_request(self):
         dialog = self.dialog()
         client = Mock(model="synthetic", base_url="https://model.invalid/v1")
-        def change(_dialog):
+        def change(*_args):
             self.app._context_revision += 1
-        with patch.object(gui, "PayloadDialog", return_value=SimpleNamespace(confirmed=True)), \
-                patch.object(dialog, "wait_window", side_effect=change):
+            return True
+        with patch.object(dialog, "_preview_request", side_effect=change):
             self.assertFalse(dialog._confirm_request({"question": "合成问题", "context": {}}, client, "1002"))
         client.converse.assert_not_called()
 
@@ -347,14 +369,13 @@ class PaperUiTests(unittest.TestCase):
         self.app.store = SimpleNamespace(data={"ai_enabled": True})
         client = Mock(model="synthetic", base_url="https://model.invalid/v1")
         client.paper_text.return_value = {"intent": "audit", "answer": '{"audit_notes":["待补合成证据"]}'}
-        with patch.object(gui, "PayloadDialog", return_value=SimpleNamespace(confirmed=True)) as preview, \
-                patch.object(dialog, "wait_window"), \
+        with patch.object(dialog, "_preview_request", return_value=True) as preview, \
                 patch.object(gui.ai_module.DeepSeekClient, "from_store", return_value=client), \
                 patch.object(gui.threading, "Thread", side_effect=lambda target, daemon: SimpleNamespace(start=target)):
             dialog._generate()
             client.paper_text.assert_not_called()
             dialog._poll()
-        payload = preview.call_args.args[1]
+        payload = preview.call_args.args[0]
         client.paper_text.assert_called_once_with({key: value for key, value in payload.items() if key != "purpose"})
         client.converse.assert_not_called()
         client.converse_with_skills.assert_not_called()

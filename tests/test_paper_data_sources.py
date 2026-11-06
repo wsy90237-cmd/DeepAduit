@@ -70,6 +70,15 @@ class OccurrenceTests(unittest.TestCase):
         self.assertEqual(result.previous_period_amount, Decimal(9))
         self.assertEqual(result.previous_monthly_amounts[:3], (Decimal(4), Decimal(5), None))
 
+    def test_full_year_comparison_uses_previous_year_occurrences(self):
+        current = replace(subject(12), year=2025)
+        rows = dxn._aggregate([record(month, amount="2") for month in range(1, 13)], current)
+        previous = [record(month, amount="3") for month in range(1, 13)]
+        result = dxn._paper_occurrences(rows, previous, [], current)[0]
+        self.assertEqual(result.period_amount, Decimal(24))
+        self.assertEqual(result.previous_period_amount, Decimal(36))
+        self.assertEqual(result.previous_monthly_amounts, (Decimal(3),) * 12)
+
     def test_annual_summary_is_not_a_midyear_same_period_comparison(self):
         rows = dxn._aggregate([record(amount=None), record(2, amount=None)], subject())
         result = dxn._paper_occurrences(rows, [], [{"kmbh": "6602", "ws_fse": "100", "sn_ws_fse": "90"}], subject())[0]

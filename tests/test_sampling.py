@@ -25,6 +25,16 @@ def journal(count=15):
 
 
 class RulePickTests(unittest.TestCase):
+    def test_profit_closing_is_excluded_from_all_sampling_paths(self):
+        closing = JournalRow(12, "2025-12-31", "结-1", "1", "结转本期损益", "6602", credit=Decimal("5000"), contra="本年利润")
+        legitimate = JournalRow(12, "2025-12-31", "记-2", "1", "结转销售成本", "6602", debit=Decimal("100"), contra="库存商品")
+        rows = [closing, legitimate]
+        self.assertEqual([row for row, _ in sampling.pick(rows)], [legitimate])
+        self.assertEqual(sampling.candidates(rows)[1], [legitimate])
+        self.assertEqual([row for row, _ in sampling.cutoff(rows, 2025, 12)], [legitimate])
+        picks, _ = sampling.pick_with_ai(FakeClient('{"picks":[{"no":1}]}'), "费用", rows)
+        self.assertEqual([row for row, _ in picks], [legitimate])
+
     def test_returns_at_most_ten(self):
         self.assertLessEqual(len(sampling.pick(journal(30))), sampling.SAMPLE_SIZE)
 
@@ -173,6 +183,7 @@ class CombinedPackTests(unittest.TestCase):
         codes = [sheet.cell(row, 2).value for row in range(8, 40) if sheet.cell(row, 2).value]
         self.assertEqual(len(codes), len(book.sheetnames) - 2)   # 去掉 dxnsjtempsheet 与目录
         self.assertEqual(len(codes), len(set(codes)))
+        self.assertEqual(sheet["D8"].hyperlink.target, "#'1-010 审定表'!A1")
 
     def test_sheet_add_and_drop(self):
         names = self.build(sheet_drop=["货币资金截止性测试"], sheet_add=["存货盘点表"]).sheetnames

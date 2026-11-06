@@ -46,9 +46,9 @@ class ReportPaperDataTests(unittest.TestCase):
         detail = book["资产明细及折旧摊销表"]
         self.assertEqual([detail.cell(8, column).value for column in range(2, 6)], [100, 20, 5, 75])
         self.assertEqual(detail["E9"].value, 75)
-        catalog = " ".join(str(cell.value) for cells in book["底稿目录"] for cell in cells)
-        self.assertIn("1602 累计折旧", catalog)
-        self.assertIn("1603 固定资产减值准备", catalog)
+        detail = " ".join(str(cell.value) for cells in book["1-280 明细表"] for cell in cells)
+        self.assertIn("累计折旧", detail)
+        self.assertIn("固定资产减值准备", detail)
 
     def test_intangible_amortization_reverse_balance_increases_net_value(self):
         rows = [row("1701", "无形资产", "100"), row("1702", "累计摊销", "20", "借")]
@@ -83,7 +83,7 @@ class ReportPaperDataTests(unittest.TestCase):
         child = replace(root, code="660201", name="办公费", path="管理费用/办公费", level=2)
         book = self.build([root, child])
         values = [cell.value for sheet in book if sheet.sheet_state == "visible" for cells in sheet for cell in cells]
-        self.assertIn("本期账面发生额（元）", values)
+        self.assertIn("本期发生额", values)
         self.assertNotIn("期末账面余额（元）", values)
         self.assertNotIn("期初余额", values)
         self.assertNotIn("期末余额", values)

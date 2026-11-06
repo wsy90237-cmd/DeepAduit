@@ -19,6 +19,13 @@ SAMPLE_SIZE = 10
 CUTOFF_WORDS = ("跨期", "暂估", "冲回", "补记", "期后", "提前", "延后", "未开票", "验收", "发货", "调整")
 
 
+def is_profit_closing(row):
+    """只排除明确的损益结转，不把一般成本结转当成损益结转。"""
+    summary = str(getattr(row, "summary", "") or "")
+    contra = str(getattr(row, "contra", "") or "")
+    return "本年利润" in contra or bool(re.search(r"结转.{0,12}(?:损益|利润)|(?:损益|利润).{0,12}结转", summary))
+
+
 def cutoff(journal, year, month, limit=12):
     """在截止日前后七天按风险挑分录；仅提供疑点，不判断业务归属期间。"""
     if limit <= 0 or not 1900 <= year <= 2200 or not 1 <= month <= 12:
@@ -26,6 +33,8 @@ def cutoff(journal, year, month, limit=12):
     end = date(year, month, calendar.monthrange(year, month)[1])
     candidates = []
     for row in journal or []:
+        if is_profit_closing(row):
+            continue
         reasons = []
         try:
             posted = date.fromisoformat(str(row.date)[:10])
@@ -116,7 +125,7 @@ def _score(row, amount_rank, total):
 
 def pick(journal, limit=SAMPLE_SIZE):
     """规则抽样：返回 [(JournalRow, 抽取理由)]，按得分降序，最多 limit 笔。"""
-    rows = [row for row in journal or [] if _amount(row) > 0]
+    rows = [row for row in journal or [] if _amount(row) > 0 and not is_profit_closing(row)]
     if not rows:
         return []
     ordered = sorted(rows, key=_amount, reverse=True)
@@ -139,7 +148,7 @@ def pick(journal, limit=SAMPLE_SIZE):
 
 def candidates(journal, limit=40):
     """给模型的候选清单：金额大的前 limit 笔，编号从 1 开始。"""
-    rows = sorted([row for row in journal or [] if _amount(row) > 0],
+    rows = sorted([row for row in journal or [] if _amount(row) > 0 and not is_profit_closing(row)],
                   key=_amount, reverse=True)[:limit]
     return [{"no": index, "date": str(getattr(row, "date", "")),
              "voucher": str(getattr(row, "voucher", "")),

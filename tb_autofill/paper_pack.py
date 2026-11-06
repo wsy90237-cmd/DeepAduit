@@ -345,7 +345,9 @@ def sample_journal(journal, limit=SAMPLE_LIMIT):
     """凭证抽查样本：金额绝对值降序，口径固定为“大额优先”。"""
     if not journal:
         return []
-    ordered = sorted(journal, key=lambda row: (-abs(row.amount or Decimal("0")), str(row.date), row.voucher))
+    from .sampling import is_profit_closing
+    ordered = sorted((row for row in journal if not is_profit_closing(row)),
+                     key=lambda row: (-abs(row.amount or Decimal("0")), str(row.date), row.voucher))
     return ordered[:limit]
 
 

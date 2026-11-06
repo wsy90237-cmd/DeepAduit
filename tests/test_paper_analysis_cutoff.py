@@ -34,6 +34,9 @@ class PaperResponseTests(unittest.TestCase):
         self.assertNotIn('"1、..."', request["question"])
         self.assertEqual(request["context"]["facts"]["analysis_rows"][0]["rate"], "25.00%")
         self.assertTrue(all("SKILL.md" not in item["locator"] for item in request["context"]["knowledge_refs"]))
+        self.assertEqual(request["context"]["facts"]["workpaper_indexes"]["账项明细表"], "1-010-1")
+        self.assertIn("序时账", request["question"])
+        self.assertIn('"conclusion"', request["question"])
 
     def test_model_receives_actual_book_mismatch_instead_of_an_assumed_success(self):
         rows = ledger()
@@ -84,6 +87,19 @@ class PaperResponseTests(unittest.TestCase):
         for text in ("余额为 987654321.12 元。", "已核对完成 [K999]"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 papers.pack_result({"audit_notes": [text]}, self.request())
+
+    def test_unverified_model_conclusion_does_not_claim_a_completed_audit(self):
+        result = papers.pack_result({"audit_notes": ["需核实凭证附件。"],
+                                     "conclusion": "经审计，未见异常，余额可以确认。"}, self.request())
+        self.assertNotIn("余额可以确认", result["conclusion"])
+        self.assertIn("待核实", result["conclusion"])
+
+    def test_known_workpaper_index_is_not_treated_as_an_invented_amount(self):
+        rows = ledger("1601", "固定资产")
+        request = papers.pack_request(rows=rows, code="1601", paper=audit_index.resolve("1601", "固定资产")[0],
+                                      procedures=["核对明细"], journal=[journal()])
+        result = papers.pack_result({"audit_notes": ["明细表见索引 1-280-1，凭证附件待检查。"]}, request)
+        self.assertIn("1-280-1", result["guide_notes"][0])
 
 
 class PaperFillTests(unittest.TestCase):

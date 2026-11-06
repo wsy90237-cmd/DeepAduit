@@ -872,50 +872,25 @@ def _self_checks(consistent, gap, picks, prepared_by, reviewed_by, *, has_detail
 
 
 def _catalog(book, meta, index_no, entries):
-    columns = 6
-    sheet = Sheet(book, "底稿目录", (6, 14, 36, 30, 8, 30))
+    columns = 5
+    sheet = Sheet(book, "底稿目录", (6, 14, 36, 30, 8))
     row = sheet.header_block(meta, columns=columns, title=f"{meta['name']}实质性底稿目录",
                              index_no=index_no, page=1)
-    for column, text in enumerate(("序号", "索引号", "底稿名称", "对应工作表名称", "页次", "备注"), 1):
+    for column, text in enumerate(("序号", "索引号", "底稿名称", "工作表", "页次"), 1):
         sheet.cell(row, column, text, font=HEAD_FONT, align=CENTER, fill=HEAD_FILL)
     row += 1
     for number, (code, title, sheet_name, note) in enumerate(entries, 1):
-        for column, value in enumerate((number, code, title, sheet_name, number + 1, note), 1):
-            sheet.cell(row, column, value, align=LEFT if column in (3, 4, 6) else CENTER, height=22)
+        for column, value in enumerate((number, code, title, sheet_name, number + 1), 1):
+            cell = sheet.cell(row, column, value, align=LEFT if column in (3, 4) else CENTER, height=22)
+            if column == 4:
+                escaped = sheet_name.replace("'", "''")
+                cell.hyperlink = f"#'{escaped}'!A1"
         row += 1
     sheet.merge(row, 1, 2, "合计", font=HEAD_FONT, align=CENTER, fill=TOTAL_FILL, height=22)
     sheet.cell(row, 3, f"共 {len(entries)} 份底稿", align=LEFT, fill=TOTAL_FILL)
-    for column in (4, 5, 6):
+    for column in (4, 5):
         sheet.cell(row, column, "—", align=CENTER, fill=TOTAL_FILL)
-    row += 2
-    for text in (
-            "1、本目录与工作簿中同名工作表一一对应，索引号沿用《审计业务索引号及底稿名称清单》；",
-            "2、审定表与明细表的取数标记沿用鼎信诺底稿写法（A 列 1:K<科目编号>）；",
-            ("3、本期与上期发生额取自独立发生额字段，逐月发生额不使用借贷累计额或结转余额代替；"
-             if meta.get("is_pl") else "3、期初、期末及借贷发生额取自账套；有已选客商维度时按该维度填列明细；"),
-            "4、报表数与上期审定数需有独立的 TB 或审定依据；账面期初不能代替上期审定数；",
-            "5、本册为草稿，未经注册会计师复核不得归档。"):
-        sheet.merge(row, 1, columns, text, font=SMALL_FONT, height=22)
-        row += 1
-    for primary in meta.get("accounts") or []:
-        row += 1
-        level_label = "一级科目" if primary.level == 1 else "报表备抵组成科目"
-        sheet.merge(row, 1, columns, f"{level_label}：{primary.code} {primary.name}", font=HEAD_FONT, height=24)
-        row += 1
-        children = [line for line in detail_rows(meta["rows"], primary) if line is not primary]
-        sheet.merge(row, 1, columns, f"包含的二级科目（{len(children)} 项，明细见账项明细表）",
-                    font=HEAD_FONT, height=24)
-        row += 1
-        sheet.merge(row, 1, 2, "二级科目编码", font=HEAD_FONT, fill=HEAD_FILL, height=24)
-        sheet.merge(row, 3, 5, "二级科目名称", font=HEAD_FONT, fill=HEAD_FILL)
-        sheet.cell(row, 6, "本期账面发生额（元）" if meta.get("is_pl") else "期末账面余额（元）", font=HEAD_FONT, fill=HEAD_FILL)
-        for child in children:
-            row += 1
-            sheet.merge(row, 1, 2, child.code)
-            sheet.merge(row, 3, 5, child.name)
-            sheet.cell(row, 6, period_amount(child) if meta.get("is_pl") else child.ending, money=True, align=RIGHT)
-        if not children:
-            sheet.merge(row + 1, 1, columns, "未设置二级科目，本册直接列示一级科目账面数。", font=SMALL_FONT)
+    sheet.merge(row + 2, 1, columns, "科目与金额明细见账项明细表；本册为待复核草稿。", font=SMALL_FONT, height=22)
     sheet.page_setup()
     return sheet
 
@@ -1018,8 +993,8 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
     notes = narrative.get("guide_notes") or baseline_notes(
         name="、".join(account.name for account in grouped), accounts=grouped, total=total, is_pl=is_pl, consistent=consistent,
         gap=gap, pending=pending, has_detail=has_detail)
-    conclusion = narrative.get("conclusion") or ("待定：本期发生额来源不完整，尚未完成明细核对，不能据此判断无异常。"
-                                                if consistent is None else default_conclusion(consistent, pending, has_detail=has_detail))
+    conclusion = ("待定：本期发生额来源不完整，尚未完成明细核对，不能据此判断无异常。"
+                  if consistent is None else default_conclusion(consistent, pending, has_detail=has_detail))
     meta = {
         "project": project, "name": name, "period": period, "cutoff": cutoff,
         "prepared_by": prepared_by, "reviewed_by": reviewed_by,
@@ -1088,6 +1063,7 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
             picks, pick_source = sampler(name, journal)
         else:
             picks, pick_source = sampling.pick(journal), "规则抽样"
+        picks = [(row, reason) for row, reason in picks if not sampling.is_profit_closing(row)]
     for offset, spec in enumerate(extras, 8):
         title = spec[0]
         if title == "抽凭表":
@@ -1105,7 +1081,7 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
                 data.append((f"{item['code']} {item['name']}", item["current"], item["previous"], item["change"],
                              float(item["rate"]) if item["rate"] is not None else None, explanation))
             spec = (spec[0], (("项目", 30, TEXT), ("本期发生额" if is_pl else "期末账面数", 20, MONEY),
-                             ("上期发生额（待补）" if is_pl else "年初账面数", 20, MONEY),
+                             ("上期发生额" if is_pl else "年初账面数", 20, MONEY),
                              ("变动额", 20, MONEY), ("变动率", 14, TEXT), ("AI 变动分析与核查重点", 55, TEXT)),
                     "金额及变动由本地账套计算；年初账面数不冒充上期审定数。AI 仅填写观察、待核实原因与核查重点。",
                     spec[3], spec[4])
