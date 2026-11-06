@@ -220,7 +220,7 @@ def summarize(facts: dict, limit: int = 6) -> str:
     return "；".join(lines)
 
 
-def fact_amounts(facts: dict) -> set:
+def fact_amounts(facts: dict, *, include_counts=True) -> set:
     """事实中出现过的全部金额与计数，用于核对 AI 引用的数字。
 
     底稿事实比 TB 事实多出科目本级、下级与序时账摘要，这些金额同样来自本机数据，
@@ -243,8 +243,9 @@ def fact_amounts(facts: dict) -> set:
             add(item.get(key))
     for key in ("debit", "credit"):
         add((facts.get("totals") or {}).get(key))
-    for value in (facts.get("counts") or {}).values():
-        add(value)
+    if include_counts:
+        for value in (facts.get("counts") or {}).values():
+            add(value)
     subject = facts.get("subject") or {}
     for key in ("opening", "debit", "credit", "ending", "current_period", "previous_period"):
         add(subject.get(key))
@@ -268,13 +269,15 @@ def fact_amounts(facts: dict) -> set:
     for item in facts.get("cutoff_samples") or []:
         for key in ("debit", "credit"):
             add(item.get(key))
-    add((facts.get("ledger_scope") or {}).get("rows"))
+    add((facts.get("book_check") or {}).get("absolute_difference_sum"))
+    if include_counts:
+        add((facts.get("ledger_scope") or {}).get("rows"))
     journal = facts.get("journal") or {}
-    for key in ("debit", "credit", "count"):
+    for key in (("debit", "credit", "count") if include_counts else ("debit", "credit")):
         add(journal.get(key))
     for group in ("monthly", "top_contra", "samples"):
         for item in journal.get(group) or []:
-            for key in ("debit", "credit", "amount", "count"):
+            for key in (("debit", "credit", "amount", "count") if include_counts else ("debit", "credit", "amount")):
                 add(item.get(key))
     tie = journal.get("tie") or {}
     for key in ("ledger_debit", "ledger_credit"):
@@ -343,25 +346,66 @@ _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 # 多级科目编码（如 5001.01.01.01.01）：至少两个点，且不嵌在千分位数字中
 _CODE = re.compile(r"(?<![\d,.])\d{2,}(?:\.\d+){2,}(?![\d,.])")
 _YEAR = re.compile(r"^(19|20)\d{2}$")
+_MONEY_UNIT = re.compile(r"^\s*(亿元|万元|千元|元|万|亿)")
+_AMOUNT_PREFIX = re.compile(r"(?:金额|余额|发生额|变动额|差额|差异|合计|借方|贷方|增加|减少|支付|收款)"
+                            r"(?:为|了|是|约为|约|[:：=]|\s)*$")
+_SCALE = {"元": Decimal(1), "千元": Decimal(1000), "万元": Decimal(10000),
+          "万": Decimal(10000), "亿元": Decimal(100000000), "亿": Decimal(100000000)}
+
+
+def fact_rates(facts: dict) -> set:
+    """只接受本地计算并发送给模型的变动率。"""
+    values = set()
+    for item in [*(facts.get("analysis_rows") or []), *(facts.get("movements") or [])]:
+        text = str(item.get("rate") or "").strip()
+        if text.endswith("%"):
+            try:
+                values.add(abs(Decimal(text[:-1].replace(",", ""))))
+            except ArithmeticError:
+                pass
+    return values
 
 
 def suspicious_numbers(text: str, amounts, codes=(), tolerance: Decimal = Decimal("0.5"),
-                       extra=()) -> list:
+                       extra=(), *, strict=False, rates=()) -> list:
     """回答里出现但事实中不存在的金额。
 
     先跳过科目编码区间与名称内嵌数字，再做金额比对；百分比、年份与计数不计。
     """
     content = text or ""
     known_codes = {str(code) for code in codes} | {str(token) for token in extra}
-    spans = [match.span() for match in _CODE.finditer(content)]
+    spans = [] if strict else [match.span() for match in _CODE.finditer(content)]
+    if strict:
+        normalized_codes = {re.sub(r"\D", "", str(code)) for code in codes}
+        for match in _CODE_ANY.finditer(content):
+            tail = content[match.end():]
+            prefix = content[max(0, match.start() - 8):match.start()]
+            code_context = prefix.endswith(("（", "(")) or bool(re.search(r"科目(?:编码|编号)?[：:\s]*$", prefix))
+            if (code_context and re.sub(r"\D", "", match.group()) in normalized_codes
+                    and not _MONEY_UNIT.match(tail) and not tail.lstrip().startswith("%")):
+                spans.append(match.span())
     flagged = []
     for match in _NUMBER.finditer(content):
         if any(start <= match.start() < end for start, end in spans):
             continue
         raw = match.group(0).rstrip(",.")
         token = raw.replace(",", "")
-        tail = content[match.end():match.end() + 1]
-        if tail == "%" or _YEAR.match(token) or token in known_codes:
+        suffix = content[match.end():]
+        tail = suffix[:1]
+        unit = _MONEY_UNIT.match(suffix) if strict else None
+        prefix = content[max(0, match.start() - 16):match.start()]
+        amount_context = (strict and not suffix.lstrip().startswith(("年", "月", "日", "笔", "个", "项", "期"))
+                          and (_AMOUNT_PREFIX.search(prefix) or prefix.endswith(("¥", "￥"))))
+        if strict and suffix.lstrip().startswith("%"):
+            if not any(abs(abs(Decimal(token)) - rate) <= Decimal("0.005") for rate in rates):
+                flagged.append(raw + "%")
+            continue
+        if unit or amount_context:
+            value = abs(Decimal(token)) * (_SCALE[unit.group(1)] if unit else 1)
+            if not any(abs(value - known) <= tolerance for known in amounts):
+                flagged.append(raw + (unit.group(1) if unit else ""))
+            continue
+        if tail == "%" or _YEAR.match(token) or token in known_codes or (strict and token.lstrip("-") in known_codes):
             continue
         if raw.count(",") == 0 and token.lstrip("-").replace(".", "", 1).isdigit() and abs(Decimal(raw)) < 100:
             continue

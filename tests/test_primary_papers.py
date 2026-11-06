@@ -401,6 +401,54 @@ class PaperUiTests(unittest.TestCase):
         client.converse.assert_not_called()
         self.assertIsNone(dialog.draft)
 
+    def test_unverified_model_numbers_offer_export_of_local_facts(self):
+        dialog = self.dialog()
+        accounts, rows = papers.report_scope(self.app.rows, dialog.current_paper)
+        data = PaperData(rows=rows, codes=tuple(row.code for row in accounts), journal=JournalRows())
+        dialog.queue.put(("unverified", ("以下数字未能与本次事实核对：987654.32元。", data, dialog._synced_code)))
+        dialog.running = True
+        with patch.object(gui.messagebox, "showwarning") as warning:
+            dialog._poll()
+        self.assertEqual(dialog.draft["kind"], "local")
+        self.assertIn("987654.32元", warning.call_args.args[1])
+        path = Path(self.folder.name) / "local-facts.xlsx"
+        with patch.object(gui.filedialog, "asksaveasfilename", return_value=str(path)):
+            dialog._export()
+        book = load_workbook(path)
+        self.addCleanup(book.close)
+        values = [cell.value for sheet in book for row in sheet for cell in row if cell.value is not None]
+        self.assertIn(999, values)
+        self.assertFalse(any("987654.32" in str(value) for value in values))
+
+    def test_unverified_model_response_falls_back_without_sending_again(self):
+        dialog = self.dialog()
+        self.app.store = SimpleNamespace(data={"ai_enabled": True})
+        client = Mock(model="synthetic", base_url="https://model.invalid/v1")
+        client.paper_text.return_value = {"intent": "audit", "audit_notes": ["余额为 987654.32元。"]}
+        with patch.object(dialog, "_preview_request", return_value=True), \
+                patch.object(gui.ai_module.DeepSeekClient, "from_store", return_value=client), \
+                patch.object(gui.threading, "Thread", side_effect=lambda target, daemon: SimpleNamespace(start=target)), \
+                patch.object(gui.messagebox, "showwarning") as warning:
+            dialog._generate()
+            dialog._poll()
+            dialog._poll()
+        client.paper_text.assert_called_once()
+        warning.assert_called_once()
+        self.assertEqual(dialog.draft["kind"], "local")
+
+    def test_unverified_response_preserves_prior_draft_for_same_source(self):
+        dialog = self.dialog()
+        accounts, rows = papers.report_scope(self.app.rows, dialog.current_paper)
+        data = PaperData(rows=rows, codes=tuple(row.code for row in accounts), journal=JournalRows())
+        prior = {"kind": "pack", "guide_notes": ["之前的合成说明"]}
+        dialog.paper_data, dialog.draft = data, prior
+        dialog.queue.put(("unverified", ("数字待核实", data, dialog._synced_code)))
+        dialog.running = True
+        with patch.object(gui.messagebox, "showwarning"):
+            dialog._poll()
+        self.assertIs(dialog.draft, prior)
+        self.assertIn("此前草稿已保留", dialog.state.get())
+
     def test_changed_source_during_preview_starts_no_request(self):
         dialog = self.dialog()
         client = Mock(model="synthetic", base_url="https://model.invalid/v1")

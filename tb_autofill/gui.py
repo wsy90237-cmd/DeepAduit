@@ -769,11 +769,29 @@ class PaperDialog(tk.Toplevel):
                 try:
                     answer = client.paper_text(request)
                     self.queue.put(("ok", (papers.pack_result(answer, request), data, code)))
+                except papers.UnverifiedNarrativeError as exc:
+                    self.queue.put(("unverified", (str(exc), data, code)))
                 except Exception as exc:
                     self.queue.put(("error", str(exc)))
 
             threading.Thread(target=send, daemon=True).start()
             self.after(150, self._poll)
+            return
+        if status == "unverified":
+            detail, data, code = value
+            if code != self._synced_code or not self._ensure_paper_source(data):
+                self.state.set("账套来源或报表项目已变化，请重新读取后复核。")
+                return
+            previous = self.draft is not None and self.paper_data is not None and (
+                paper_source_key(self.paper_data) == paper_source_key(data))
+            self.paper_data = data
+            self.journal_rows, self.journal_code = data.journal, code
+            if not previous:
+                self.draft = {"kind": "local"}
+            result = "此前草稿已保留" if previous else "已准备本地事实草稿，可直接导出"
+            self.state.set(f"AI 文字未采纳；{result}。")
+            messagebox.showwarning("AI 内容待核实", f"{detail}\n\nAI 文字未写入底稿；{result}。"
+                                   "本地账套数字仍可用于导出，原因及审计结论请人工复核。", parent=self)
             return
         value, data, code = value
         if self.scope == "paper" and code != self._synced_code:

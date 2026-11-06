@@ -147,6 +147,22 @@ class SuspiciousNumberTests(unittest.TestCase):
         text = "期末余额 1,230,000.40。"
         self.assertEqual(analysis.suspicious_numbers(text, self.amounts, self.codes), [])
 
+    def test_strict_validation_recognizes_known_dotted_code_but_not_a_fake_amount(self):
+        options = dict(strict=True, tolerance=Decimal("0.005"))
+        self.assertEqual(analysis.suspicious_numbers("职工薪酬（6602.07）待核实。", {Decimal("100")}, {"660207"}, **options), [])
+        self.assertEqual(analysis.suspicious_numbers("发生额 6602.07元。", {Decimal("100")}, {"660207"}, **options), ["6602.07元"])
+
+    def test_strict_validation_checks_small_amounts_rates_and_display_rounding(self):
+        options = dict(strict=True, tolerance=Decimal("0.005"), rates={Decimal("25.00")})
+        self.assertEqual(analysis.suspicious_numbers("金额 100.00元，变动率 25.00%。", {Decimal("100.004")}, (), **options), [])
+        self.assertEqual(analysis.suspicious_numbers("金额 99.00元，变动率 26.00%。", {Decimal("100")}, (), **options), ["99.00元", "26.00%"])
+        self.assertEqual(analysis.suspicious_numbers("金额 100.40元。", {Decimal("100")}, (), **options), ["100.40元"])
+        self.assertEqual(analysis.suspicious_numbers("余额为 99.00。", {Decimal("100")}, (), **options), ["99.00"])
+        self.assertEqual(analysis.suspicious_numbers("金额 2025元。", {Decimal("100")}, (), **options), ["2025元"])
+
+    def test_fact_difference_is_available_to_the_validator(self):
+        self.assertIn(Decimal("74"), analysis.fact_amounts({"book_check": {"absolute_difference_sum": "74"}}, include_counts=False))
+
 
 if __name__ == "__main__":
     unittest.main()

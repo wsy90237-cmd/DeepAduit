@@ -106,6 +106,29 @@ class PaperResponseTests(unittest.TestCase):
         result = papers.pack_result({"audit_notes": ["明细表见索引 1-280-1，凭证附件待检查。"]}, request)
         self.assertIn("1-280-1", result["guide_notes"][0])
 
+    def test_known_dotted_account_code_does_not_block_fact_based_draft(self):
+        rows = ledger("6602", "管理费用", pl=True)
+        rows[1] = replace(rows[1], code="660207", name="职工薪酬", path="管理费用/职工薪酬")
+        request = papers.pack_request(rows=rows, code="6602", paper=audit_index.resolve("6602", "管理费用")[0],
+                                      procedures=["核对明细"])
+        result = papers.pack_result({"audit_notes": ["职工薪酬（6602.07）的变动原因待核实。"]}, request)
+        self.assertIn("6602.07", result["guide_notes"][0])
+
+    def test_unverified_amount_reports_the_number(self):
+        with self.assertRaises(papers.UnverifiedNarrativeError) as error:
+            papers.pack_result({"audit_notes": ["余额增加 999.40元。"]}, self.request())
+        self.assertIn("999.40元", str(error.exception))
+
+    def test_procedure_and_review_numbers_are_also_checked(self):
+        for extra in ({"procedures": [{"status": "差异 999.40元"}]}, {"review": "差异 999.40元"}):
+            with self.subTest(extra=extra), self.assertRaises(papers.UnverifiedNarrativeError):
+                papers.pack_result({"audit_notes": ["待核实。"], **extra}, self.request())
+
+    def test_model_percentage_must_match_a_locally_computed_rate(self):
+        self.assertTrue(papers.pack_result({"audit_notes": ["变动率为 25.00%。"]}, self.request()))
+        with self.assertRaises(papers.UnverifiedNarrativeError):
+            papers.pack_result({"audit_notes": ["变动率为 26.00%。"]}, self.request())
+
 
 class PaperFillTests(unittest.TestCase):
     def setUp(self):
