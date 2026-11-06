@@ -121,8 +121,25 @@ class PaperResponseTests(unittest.TestCase):
 
     def test_procedure_and_review_numbers_are_also_checked(self):
         for extra in ({"procedures": [{"status": "差异 999.40元"}]}, {"review": "差异 999.40元"}):
-            with self.subTest(extra=extra), self.assertRaises(papers.UnverifiedNarrativeError):
-                papers.pack_result({"audit_notes": ["待核实。"], **extra}, self.request())
+            with self.subTest(extra=extra):
+                result = papers.pack_result({"audit_notes": ["待核实。"], **extra}, self.request())
+                self.assertIn("999.40元", result["validation_warnings"][0])
+                self.assertNotIn("999.40", str(result["procedure_notes"]) + result["review_conclusion"])
+
+    def test_valid_sentences_survive_and_unverified_sentences_are_marked(self):
+        result = papers.pack_result({"audit_notes": ["账面余额125.00元。另有999.40元待查。"],
+                                     "analysis": [{"code": "1002", "note": "需核实收款。涉及987654.32元。"}]}, self.request())
+        self.assertIn("账面余额125.00元", result["guide_notes"][0])
+        self.assertNotIn("999.40", result["guide_notes"][0])
+        self.assertIn("未采纳", result["guide_notes"][0])
+        self.assertIn("需核实收款", result["analysis_notes"]["1002"])
+        self.assertIn("1002", result["analysis_missing"])
+        self.assertEqual(len(result["validation_warnings"]), 2)
+
+    def test_report_share_is_calculated_locally(self):
+        facts = self.request()["context"]["facts"]
+        self.assertEqual(facts["analysis_rows"][0]["share_of_report"], "100.00%")
+        self.assertTrue(papers.pack_result({"audit_notes": ["占比100.00%。"]}, self.request()))
 
     def test_model_percentage_must_match_a_locally_computed_rate(self):
         self.assertTrue(papers.pack_result({"audit_notes": ["变动率为 25.00%。"]}, self.request()))
@@ -159,6 +176,14 @@ class PaperFillTests(unittest.TestCase):
         self.assertIsNone(sheet["C8"].value)
         self.assertIsNone(sheet["D8"].value)
         self.assertIn("未提供上期发生额", sheet["F8"].value)
+
+    def test_unverified_content_is_listed_in_exported_review(self):
+        result = papers.pack_result({"audit_notes": ["账面余额125.00元。另有999.40元待查。"]},
+                                    PaperResponseTests().request())
+        book, index = self.build(narrative=result)
+        sheet = book[f"9720-{index} 复核自检清单"]
+        self.assertTrue(any("999.40元" in str(cell.value) for row in sheet for cell in row))
+        self.assertTrue(any("未采纳" in str(cell.value) for row in sheet for cell in row))
 
     def test_each_account_type_uses_a_comparable_book_measure(self):
         for code, name, direction, pl, expected_term in (

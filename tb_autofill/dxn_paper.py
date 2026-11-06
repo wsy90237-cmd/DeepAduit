@@ -783,7 +783,7 @@ def _review_sheet(book, meta, checks, *, index_no, conclusion):
     for number, (text, result, note) in enumerate(checks, 1):
         for column, value in enumerate((number, text, result, note), 1):
             sheet.cell(row, column, value, align=LEFT if column in (2, 4) else CENTER,
-                       height=max(24, 15 * (len(text) // 40 + 1)))
+                       height=max(24, 15 * (max(len(text), len(str(note))) // 36 + 1)))
         row += 1
     row += 1
     sheet.merge(row, 1, 4, f"复核结论：{conclusion or '待项目合伙人复核后填写。'}", font=HEAD_FONT,
@@ -1123,6 +1123,8 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
                        "损益明细按月份列示；借贷累计额和结转后余额不能代替独立的本期、上期发生额。"))
     if paper_data is not None:
         checks.extend(("取数范围与缺口", "待核实", str(warning)) for warning in paper_data.warnings)
+    checks.extend(("AI 内容核对", "待核实", str(warning))
+                  for warning in narrative.get("validation_warnings", ()))
     _review_sheet(book, meta, checks,
                   index_no=index_no, conclusion=conclusion)
     target = Path(path)

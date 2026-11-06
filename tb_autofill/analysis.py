@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, ROUND_HALF_UP
 
 from .models import LedgerRow, money
 
@@ -318,7 +318,41 @@ def fact_tokens(facts: dict) -> set:
     for item in [*(journal.get("samples") or []), *(facts.get("cutoff_samples") or [])]:
         for key in ("summary", "contra", "voucher"):
             harvest(item.get(key))
+    for item in journal.get("top_contra") or []:
+        harvest(item.get("name"))
     return tokens
+
+
+def fact_code_names(facts: dict) -> dict:
+    """科目编码和实际名称成对识别，避免把无括号的科目编码误当金额。"""
+    names = {}
+    for group in ("accounts", "children", "analysis_rows", "movements"):
+        for item in facts.get(group) or []:
+            code = re.sub(r"\D", "", str(item.get("code") or ""))
+            name = str(item.get("name") or "").strip()
+            if code and name:
+                names.setdefault(code, set()).add(name)
+    return names
+
+
+def fact_counts(facts: dict) -> set:
+    """只收集本次范围内明确提供的笔数与条数。"""
+    values = set()
+    def add(value):
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            values.add(value)
+    for key in ("counts", "ledger_scope", "auxiliary_scope", "account_scope"):
+        for value in (facts.get(key) or {}).values():
+            add(value)
+    journal = facts.get("journal") or {}
+    add(journal.get("count"))
+    for group in ("monthly", "top_contra"):
+        for item in journal.get(group) or []:
+            add(item.get("count"))
+    for group in ("accounts", "children", "analysis_rows", "cutoff_samples", "procedures"):
+        if isinstance(facts.get(group), (list, tuple)):
+            add(len(facts[group]))
+    return values
 
 
 _CODE_ANY = re.compile(r"(?<![\d,.])\d{3,}(?:\.\d+)+(?![\d,.])")
@@ -347,6 +381,7 @@ _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 _CODE = re.compile(r"(?<![\d,.])\d{2,}(?:\.\d+){2,}(?![\d,.])")
 _YEAR = re.compile(r"^(19|20)\d{2}$")
 _MONEY_UNIT = re.compile(r"^\s*(亿元|万元|千元|元|万|亿)")
+_COUNT_UNIT = re.compile(r"^\s*(笔|个|项|条|户)")
 _AMOUNT_PREFIX = re.compile(r"(?:金额|余额|发生额|变动额|差额|差异|合计|借方|贷方|增加|减少|支付|收款)"
                             r"(?:为|了|是|约为|约|[:：=]|\s)*$")
 _SCALE = {"元": Decimal(1), "千元": Decimal(1000), "万元": Decimal(10000),
@@ -357,17 +392,18 @@ def fact_rates(facts: dict) -> set:
     """只接受本地计算并发送给模型的变动率。"""
     values = set()
     for item in [*(facts.get("analysis_rows") or []), *(facts.get("movements") or [])]:
-        text = str(item.get("rate") or "").strip()
-        if text.endswith("%"):
-            try:
-                values.add(abs(Decimal(text[:-1].replace(",", ""))))
-            except ArithmeticError:
-                pass
+        for key in ("rate", "share_of_report"):
+            text = str(item.get(key) or "").strip()
+            if text.endswith("%"):
+                try:
+                    values.add(abs(Decimal(text[:-1].replace(",", ""))))
+                except ArithmeticError:
+                    pass
     return values
 
 
 def suspicious_numbers(text: str, amounts, codes=(), tolerance: Decimal = Decimal("0.5"),
-                       extra=(), *, strict=False, rates=()) -> list:
+                       extra=(), *, strict=False, rates=(), counts=(), code_names=None) -> list:
     """回答里出现但事实中不存在的金额。
 
     先跳过科目编码区间与名称内嵌数字，再做金额比对；百分比、年份与计数不计。
@@ -379,9 +415,13 @@ def suspicious_numbers(text: str, amounts, codes=(), tolerance: Decimal = Decima
         normalized_codes = {re.sub(r"\D", "", str(code)) for code in codes}
         for match in _CODE_ANY.finditer(content):
             tail = content[match.end():]
-            prefix = content[max(0, match.start() - 8):match.start()]
-            code_context = prefix.endswith(("（", "(")) or bool(re.search(r"科目(?:编码|编号)?[：:\s]*$", prefix))
-            if (code_context and re.sub(r"\D", "", match.group()) in normalized_codes
+            prefix = content[max(0, match.start() - 24):match.start()]
+            code = re.sub(r"\D", "", match.group())
+            names = (code_names or {}).get(code, ())
+            adjacent_name = any(tail.lstrip().startswith(name) or prefix.rstrip().endswith(name) for name in names)
+            code_context = (prefix.endswith(("（", "(")) or
+                            bool(re.search(r"科目(?:编码|编号)?[：:\s]*$", prefix)) or adjacent_name)
+            if (code_context and not _AMOUNT_PREFIX.search(prefix) and code in normalized_codes
                     and not _MONEY_UNIT.match(tail) and not tail.lstrip().startswith("%")):
                 spans.append(match.span())
     flagged = []
@@ -393,6 +433,7 @@ def suspicious_numbers(text: str, amounts, codes=(), tolerance: Decimal = Decima
         suffix = content[match.end():]
         tail = suffix[:1]
         unit = _MONEY_UNIT.match(suffix) if strict else None
+        count_unit = _COUNT_UNIT.match(suffix) if strict else None
         prefix = content[max(0, match.start() - 16):match.start()]
         amount_context = (strict and not suffix.lstrip().startswith(("年", "月", "日", "笔", "个", "项", "期"))
                           and (_AMOUNT_PREFIX.search(prefix) or prefix.endswith(("¥", "￥"))))
@@ -400,9 +441,24 @@ def suspicious_numbers(text: str, amounts, codes=(), tolerance: Decimal = Decima
             if not any(abs(abs(Decimal(token)) - rate) <= Decimal("0.005") for rate in rates):
                 flagged.append(raw + "%")
             continue
+        if count_unit:
+            if abs(Decimal(token)) not in counts:
+                flagged.append(raw + count_unit.group(1))
+            continue
         if unit or amount_context:
-            value = abs(Decimal(token)) * (_SCALE[unit.group(1)] if unit else 1)
-            if not any(abs(value - known) <= tolerance for known in amounts):
+            display = abs(Decimal(token))
+            scale = _SCALE[unit.group(1)] if unit else Decimal(1)
+            value = display * scale
+            matched = any(abs(value - known) <= tolerance for known in amounts)
+            decimals = len(token.partition(".")[2]) if "." in token else 0
+            if not matched and scale != 1 and (decimals >= 2 or "约" in prefix[-6:]):
+                quantum = Decimal(1).scaleb(-decimals)
+                try:
+                    matched = any((known / scale).quantize(quantum, rounding=mode) == display
+                                  for known in amounts for mode in (ROUND_HALF_UP, ROUND_HALF_EVEN))
+                except InvalidOperation:
+                    matched = False
+            if not matched:
                 flagged.append(raw + (unit.group(1) if unit else ""))
             continue
         if tail == "%" or _YEAR.match(token) or token in known_codes or (strict and token.lstrip("-") in known_codes):

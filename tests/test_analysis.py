@@ -163,6 +163,17 @@ class SuspiciousNumberTests(unittest.TestCase):
     def test_fact_difference_is_available_to_the_validator(self):
         self.assertIn(Decimal("74"), analysis.fact_amounts({"book_check": {"absolute_difference_sum": "74"}}, include_counts=False))
 
+    def test_scaled_amounts_counts_and_account_names_are_checked(self):
+        options = dict(strict=True, tolerance=Decimal("0.005"), counts={1000},
+                       code_names={"600102": {"资产出租业务"}})
+        amounts = {Decimal("333333.33")}
+        codes = {"600102"}
+        self.assertEqual(analysis.suspicious_numbers("金额33.33万元，共1000笔。6001.02资产出租业务。",
+                                                     amounts, codes, **options), [])
+        self.assertEqual(analysis.suspicious_numbers("金额33.34万元，共1001笔。金额6001.02元。",
+                                                     amounts, codes, **options),
+                         ["33.34万元", "1001笔", "6001.02元"])
+
 
 if __name__ == "__main__":
     unittest.main()

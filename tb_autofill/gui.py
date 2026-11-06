@@ -817,7 +817,15 @@ class PaperDialog(tk.Toplevel):
         self.view.configure(state="disabled")
         self.export_btn.configure(state="normal")
         journal = value.get("journal") or {}
-        if value.get("analysis_missing") or not value.get("analysis_notes"):
+        validation_warnings = value.get("validation_warnings") or []
+        if validation_warnings:
+            self.state.set(f"AI 说明已生成；{len(validation_warnings)} 处内容待核实，已在底稿标注。")
+            details = "\n".join(validation_warnings[:8])
+            if len(validation_warnings) > 8:
+                details += f"\n另有 {len(validation_warnings) - 8} 处，详见底稿复核自检清单。"
+            messagebox.showwarning("部分 AI 内容待核实", "已保留可核对的文字，下列内容未采纳：\n\n" + details +
+                                   "\n\n请结合账套和审计证据复核全部说明。", parent=self)
+        elif value.get("analysis_missing") or not value.get("analysis_notes"):
             self.state.set(f"已收到 AI 说明，仍有 {len(value.get('analysis_missing') or [])} 项变动分析待补，请重试或核实后导出。")
         elif value.get("has_journal"):
             self.state.set(f"草稿已生成，含序时账 {journal.get('count', 0)} 笔；请复核后使用。")
