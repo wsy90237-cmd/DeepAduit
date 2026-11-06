@@ -84,6 +84,8 @@ Excel导出以只读方式打开原模板，再原生另存副本，以保留相
 
 ## 运行与测试
 
+本机统一开发目录为 `P:\exetoBe\软件开发\ZSZH-tb自动填写系统`；旧 `审计底稿软件` 目录是历史开发包，不再作为开发目录。
+
 需要 Windows 10/11 x64、Python 3.12+；推荐 3.13。Excel 另存依赖已安装的 Microsoft Excel 与 pywin32，WPS 未验证。
 
 本机源码试用：双击项目根目录的 `启动DeepAudit.cmd`，诊断入口为 `DeepAudit-trial.cmd`，使用当前源码与 `.venv` 的依赖。启动入口使用 ASCII 和 CRLF，避免 Windows 命令解释器误读；失败会提示临时日志位置。首次安装依赖仍按下方命令操作。
