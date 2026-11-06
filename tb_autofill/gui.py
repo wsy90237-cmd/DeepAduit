@@ -1360,7 +1360,7 @@ class App(tk.Tk):
         line.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         ttk.Label(line, text="主体单位", style="Card.TLabel").pack(side="left")
         self.subject_var = tk.StringVar()
-        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=20)
+        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=26)
         self.subject_box.pack(side="left", padx=8)
         self.subject_box.bind("<<ComboboxSelected>>", self._on_subject)
         self.subject_full = tk.StringVar()
