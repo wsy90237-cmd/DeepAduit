@@ -2,6 +2,7 @@
 
 import argparse
 import ctypes
+import time
 from decimal import Decimal
 from pathlib import Path
 import sys
@@ -17,6 +18,7 @@ from tb_autofill.models import LedgerRow, Subject
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--page", choices=workspace.PAGES, default="overview")
+    parser.add_argument("--shot", help="截取当前页面到指定 PNG 后退出，用于设计核对")
     args = parser.parse_args()
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -56,7 +58,25 @@ def main():
         reference.write_text("合成示例，不是有效准则：复核库存现金时核对期初期末、科目方向、金额单位及支持证据。", encoding="utf-8")
         app.library.import_file(reference)
         app.after(600, lambda: workspace.navigate(app, args.page))
+        if args.shot:
+            app.after(1500, lambda: _capture(app, Path(args.shot)))
         app.mainloop()
+
+
+def _capture(app, target):
+    """在进程内截图：与 Tk 使用同一套坐标，避免跨进程 DPI 与遮挡问题。"""
+    from PIL import ImageGrab
+    app.lift()
+    app.focus_force()
+    for _ in range(3):
+        app.update_idletasks()
+        app.update()
+    time.sleep(0.5)
+    x, y = app.winfo_rootx(), app.winfo_rooty()
+    width, height = app.winfo_width(), app.winfo_height()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    ImageGrab.grab(bbox=(x, y, x + width, y + height)).save(target)
+    app.destroy()
 
 
 if __name__ == "__main__":

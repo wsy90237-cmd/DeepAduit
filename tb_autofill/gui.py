@@ -19,24 +19,23 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import APP_NAME, __version__, ai as ai_module
 from . import (analysis, auditlog, audit_index, dxn, dxn_paper, fields, knowledge, matching,
-               paper_pack, paper_sheets, papers, sampling, settings, workbook, dxn_templates,
-               workspace)
+               paper_pack, paper_sheets, papers, sampling, settings, theme, workbook,
+               dxn_templates, workspace)
 from .models import Subject, ledger_digest, money
 from .connections import ModelDialog as AISettingsDialog
 
 VERSION = __version__
 PAD = 8
 
-FONT = "Microsoft YaHei UI"
-BG = "#ffffff"
-CARD = "#ffffff"
-BORDER = "#dbe7fb"
-TX = "#18263b"
-SEC = "#68778d"
-MUTED = "#9aa1ac"
-ACC = "#2563eb"
-ACC_D = "#1d4ed8"
-ACC_SOFT = "#eff6ff"
+FONT = theme.FAMILY["body"]
+BG = theme.PAPER
+CARD = theme.SURFACE
+BORDER = theme.HAIRLINE
+TX = theme.INK
+SEC = theme.MUTED
+MUTED = theme.MUTED
+ACC = theme.ACCENT
+ACC_SOFT = theme.ACCENT_SOFT
 
 STATUS_LABEL = {
     "matched": "已匹配",
@@ -298,8 +297,8 @@ class PaperDialog(tk.Toplevel):
         self.scope = scope
         self.title(self.SCOPE_TITLE.get(scope, "生成草稿"))
         self.transient(app)
-        self.geometry("880x640")
-        self.minsize(760, 520)
+        self.geometry("900x700")
+        self.minsize(780, 560)
         self.app = app
         self.store = app.store
         self.queue = queue.Queue()
@@ -311,8 +310,15 @@ class PaperDialog(tk.Toplevel):
         self._synced_code = ""
         self.running = False
 
-        shell = tk.Frame(self, bg=CARD)
-        shell.pack(fill="both", expand=True, padx=16, pady=12)
+        self.configure(bg=BG)
+        heading = tk.Frame(self, bg=BG)
+        heading.pack(fill="x", padx=24, pady=(20, 0))
+        tk.Label(heading, text="制作底稿草稿", bg=BG, fg=TX,
+                 font=(theme.FAMILY["display"], 18, "bold")).pack(anchor="w")
+        tk.Label(heading, text="金额取自本机账套，模型只写文字。",
+                 bg=BG, fg=SEC, font=(theme.FAMILY["body"], 8)).pack(anchor="w", pady=(3, 0))
+        shell = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        shell.pack(fill="both", expand=True, padx=24, pady=(14, 18))
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(3, weight=1)
         self.shell = shell
@@ -1129,8 +1135,9 @@ class HoverTip:
         window = tk.Toplevel(self.widget)
         window.wm_overrideredirect(True)
         window.wm_geometry(f"+{x}+{y}")
-        tk.Label(window, text=text, bg="#1f2937", fg="#ffffff", font=(FONT, 9),
-                 padx=8, pady=4, justify="left", wraplength=520).pack()
+        tk.Label(window, text=text, bg=theme.INK, fg="#F2F5F7",
+                 font=(theme.FAMILY["body"], 9), padx=9, pady=5, justify="left",
+                 wraplength=520).pack()
         self.window = window
 
     def _hide(self, _event=None):
@@ -1228,44 +1235,11 @@ class App(tk.Tk):
             self._pending_error = ""
 
     def _init_style(self):
+        """样式集中在 theme 中维护：纸面底色、发丝边框、单一深青强调色。"""
+        theme.install(self)
         style = ttk.Style(self)
-        style.theme_use("clam")
-        self.configure(bg=BG)
-        style.configure(".", font=(FONT, 9), background=BG, foreground=TX)
-        style.configure("TFrame", background=BG)
         style.configure("Card.TFrame", background=CARD)
-        style.configure("TLabel", background=BG, foreground=TX)
         style.configure("Card.TLabel", background=CARD, foreground=SEC)
-        style.configure("Card.TRadiobutton", background=CARD, foreground=TX, focuscolor=CARD)
-        style.map("Card.TRadiobutton", background=[("active", CARD)])
-        style.configure("Card.TCheckbutton", background=CARD, foreground=TX, focuscolor=CARD)
-        style.map("Card.TCheckbutton", background=[("active", CARD)])
-        style.configure("TEntry", fieldbackground="#ffffff", bordercolor=BORDER, lightcolor=BORDER,
-                        darkcolor=BORDER, insertcolor=TX, padding=5, relief="flat")
-        style.map("TEntry", bordercolor=[("focus", ACC)], lightcolor=[("focus", ACC)], darkcolor=[("focus", ACC)])
-        style.configure("TCombobox", fieldbackground="#ffffff", background="#ffffff", bordercolor=BORDER,
-                        lightcolor=BORDER, darkcolor=BORDER, arrowcolor=SEC, padding=4, relief="flat")
-        style.map("TCombobox", fieldbackground=[("readonly", "#ffffff")],
-                  bordercolor=[("focus", ACC)], lightcolor=[("focus", ACC)], darkcolor=[("focus", ACC)])
-        style.configure("TButton", background="#eff6ff", foreground=TX, borderwidth=0,
-                        focusthickness=0, padding=(12, 6), relief="flat")
-        style.map("TButton", background=[("pressed", "#dbeafe"), ("active", "#e0edff")],
-                  foreground=[("disabled", MUTED)])
-        style.configure("Accent.TButton", background=ACC, foreground="#ffffff", borderwidth=0, padding=(14, 6))
-        style.map("Accent.TButton", background=[("pressed", ACC_D), ("active", ACC_D)],
-                  foreground=[("disabled", "#e8eefb")])
-        style.configure("Ghost.TButton", background=CARD, foreground=ACC, borderwidth=0, padding=(8, 4))
-        style.map("Ghost.TButton", background=[("active", ACC_SOFT)])
-        style.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TX,
-                        borderwidth=0, rowheight=29, font=(FONT, 10))
-        style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
-        style.configure("Treeview.Heading", background="#eff6ff", foreground=SEC, relief="flat",
-                        font=(FONT, 9, "bold"), padding=(6, 6))
-        style.map("Treeview.Heading", background=[("active", "#dbeafe")])
-        style.map("Treeview", background=[("selected", ACC_SOFT)], foreground=[("selected", TX)])
-        for bar in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
-            style.configure(bar, background="#e6e9ee", troughcolor=BG, borderwidth=0, arrowsize=12)
-        style.configure("TProgressbar", background=ACC, troughcolor="#e6e9ee", borderwidth=0, thickness=5)
 
     def _build(self):
         self.chat_visible = False
@@ -1274,9 +1248,10 @@ class App(tk.Tk):
         # 表单区独立滚动：宽屏时 ①② 并排，窄屏时上下堆叠，余量全部留给结果表。
         self.form_scroll = workspace.ScrollArea(self.workspace, bg=BG, height=280)
         self.form_scroll.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
-        self.form_wide = self.winfo_screenwidth() >= 1280
-        # 两列布局需要最小可用宽度，否则卡片内容会被挤到相邻卡片上。
-        self.minsize(1180 if self.form_wide else 1000, 620)
+        # 表单固定单列堆叠：高分屏缩放后两列会把「填列期间」「识别并匹配」挤出卡片，
+        # 单列在全部分辨率下都能完整显示，纵向空间由表单滚动区消化。
+        self.form_wide = False
+        self.minsize(1000, 620)
         self.form_row = self.form_scroll.body
         if self.form_wide:
             self.form_row.columnconfigure(0, weight=3)
@@ -1331,16 +1306,37 @@ class App(tk.Tk):
         return self._card(index, title, parent=self.form_row, column=0)
 
     def _build_header(self):
-        bar = tk.Frame(self.content, bg=CARD)
+        """页头：衬线标题 + 一行上下文；右侧只放状态与两个文字按钮。"""
+        bar = tk.Frame(self.content, bg=BG)
         bar.grid(row=0, column=0, sticky="ew")
         tk.Frame(bar, bg=BORDER, height=1).pack(side="bottom", fill="x")
-        inner = tk.Frame(bar, bg=CARD)
-        inner.pack(fill="x", padx=16, pady=(10, 9))
-        tk.Label(inner, textvariable=self.page_title, bg=CARD, fg=TX, font=(FONT, 15, "bold")).pack(side="left")
-        ttk.Button(inner, text="对话", style="Ghost.TButton", command=self._toggle_chat).pack(side="right")
-        ttk.Button(inner, text="AI 设置", command=self._open_ai_settings).pack(side="right", padx=(0, 6))
+        inner = tk.Frame(bar, bg=BG)
+        inner.pack(fill="x", padx=30, pady=(18, 14))
+        inner.columnconfigure(0, weight=1)
+        left = tk.Frame(inner, bg=BG)
+        left.grid(row=0, column=0, sticky="ew")
+        tk.Label(left, textvariable=self.page_title, bg=BG, fg=TX,
+                 font=(theme.FAMILY["display"], 22, "bold"), anchor="w").pack(anchor="w")
+        tk.Label(left, textvariable=self.page_context, bg=BG, fg=SEC,
+                 font=(theme.FAMILY["body"], 9), anchor="w").pack(anchor="w", pady=(3, 0))
+
+        right = tk.Frame(inner, bg=BG)
+        right.grid(row=0, column=1, sticky="e", padx=(16, 0))
         self.ai_state = tk.StringVar(value="AI 未配置")
-        tk.Label(inner, textvariable=self.ai_state, bg=CARD, fg=SEC, font=(FONT, 9), anchor="e").pack(side="right", padx=6)
+        self.ai_chip = tk.Label(right, textvariable=self.ai_state, bg=BG, fg=MUTED,
+                                font=(theme.FAMILY["body"], 8))
+        self.ai_chip.pack(side="left", padx=(0, 14))
+        self.ai_state.trace_add("write", lambda *_args: self._sync_ai_chip())
+        ttk.Button(right, text="模型设置", style="Quiet.TButton",
+                   command=self._open_ai_settings).pack(side="left")
+        ttk.Button(right, text="对话", style="Quiet.TButton",
+                   command=self._toggle_chat).pack(side="left", padx=(2, 0))
+
+    def _sync_ai_chip(self):
+        """状态只用一个小圆点与文字，不抢主操作的注意力。"""
+        ready = "未配置" not in self.ai_state.get() and "未启用" not in self.ai_state.get()
+        self.ai_chip.configure(fg=theme.OK if ready else MUTED,
+                               text=("● " if ready else "○ ") + self.ai_state.get())
 
     def _build_source(self):
         _outer, body, _head = self._form_card("① 数据源", 0)
@@ -1468,11 +1464,11 @@ class App(tk.Tk):
         hscroll = ttk.Scrollbar(body, orient="horizontal", command=self.tree.xview)
         hscroll.grid(row=2, column=0, sticky="ew")
         self.tree.configure(yscrollcommand=scroll.set, xscrollcommand=hscroll.set)
-        self.tree.tag_configure("ok", background="#f7fcfa", foreground="#285d4c")
-        self.tree.tag_configure("warn", background="#fffaeb", foreground="#7a4d00")
-        self.tree.tag_configure("bad", background="#fdf1f0", foreground="#7a1c16")
-        self.tree.tag_configure("info", background="#f2f6fd", foreground="#1b3a6b")
-        self.tree.tag_configure("muted", background="#f7f8fa", foreground="#4b5563")
+        self.tree.tag_configure("ok", background=theme.OK_SOFT, foreground=theme.OK)
+        self.tree.tag_configure("warn", background=theme.WARN_SOFT, foreground=theme.WARN)
+        self.tree.tag_configure("bad", background=theme.BAD_SOFT, foreground=theme.BAD)
+        self.tree.tag_configure("info", background=theme.INFO_SOFT, foreground=theme.INFO)
+        self.tree.tag_configure("muted", background=theme.PAPER, foreground=theme.INK_SOFT)
         self.tree.bind("<Button-1>", self._on_click)
         self.tree.bind("<space>", self._on_space)
         self.tree.bind("<Double-1>", lambda _event: self._show_detail())
@@ -1505,13 +1501,22 @@ class App(tk.Tk):
         ttk.Button(bar, text="退出", command=self._request_close).pack(side="right")
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=120)
         self.status_var = tk.StringVar(value="就绪")
+        state = tk.Frame(bar, bg=BG)
+        state.pack(side="right", padx=(0, 12))
+        self.status_dot = tk.Label(state, text="●", bg=BG, fg=theme.ACCENT,
+                                   font=(theme.FAMILY["body"], 7))
+        self.status_dot.pack(side="left")
+        tk.Label(state, textvariable=self.status_var, bg=BG, fg=SEC,
+                 font=(theme.FAMILY["body"], 8)).pack(side="left", padx=(5, 0))
 
     def _build_log(self):
         outer = tk.Frame(self.workspace, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
         outer.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 12))
         outer.columnconfigure(0, weight=1)
-        self.log = tk.Text(outer, height=2, wrap="none", state="disabled", font=("Consolas", 8),
-                           background=CARD, foreground=SEC, relief="flat", borderwidth=0, padx=10, pady=8)
+        self.log = tk.Text(outer, height=2, wrap="none", state="disabled",
+                           font=(theme.FAMILY["mono"], 8),
+                           background=theme.SURFACE_ALT, foreground=theme.INK_SOFT,
+                           relief="flat", borderwidth=0, padx=10, pady=8)
         self.log.grid(row=0, column=0, sticky="ew")
         scroll = ttk.Scrollbar(outer, orient="vertical", command=self.log.yview)
         scroll.grid(row=0, column=1, sticky="ns")
