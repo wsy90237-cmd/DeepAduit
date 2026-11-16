@@ -14,7 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tb_autofill import APP_NAME, __version__
+from tb_autofill import APP_NAME, __version__, brand
 
 DEPENDENCIES = ("openpyxl", "et_xmlfile", "xlrd", "PyMySQL", "pywin32", "pypdf")
 SKIP = {"__pycache__", "test", "tests", "demos", "site-packages", "idlelib", "turtledemo"}
@@ -123,7 +123,7 @@ def main():
     shutil.copytree(ROOT / "tb_autofill", output / "tb_autofill", ignore=ignore_runtime)
     (output / "tools").mkdir()
     shutil.copy2(ROOT / "tools/run_gui.py", output / "tools/run_gui.py")
-    for name in ("launch.py", "启动DeepAudit.cmd", "DeepAudit-trial.cmd", "requirements.txt"):
+    for name in brand.PACKAGE_FILES:
         shutil.copy2(ROOT / name, output / name)
     shutil.copy2(ROOT / "packaging/开发版说明.txt", output / "使用说明.txt")
     report = output / "SELFTEST.json"

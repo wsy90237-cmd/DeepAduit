@@ -9,10 +9,10 @@ from tkinter import messagebox, ttk
 from urllib.parse import urlsplit
 import webbrowser
 
-from . import ai, settings
+from . import APP_NAME, ai, settings, theme
 
-BG, FG = "#ffffff", "#18263b"
-FONT = ("Microsoft YaHei UI", 10)
+BG, FG = theme.PAPER, theme.INK
+FONT = (theme.FAMILY["body"], 10)
 
 
 class ModelDialog(tk.Toplevel):
@@ -37,10 +37,10 @@ class ModelDialog(tk.Toplevel):
         body.pack(fill="both", padx=24, pady=20)
         body.columnconfigure(1, weight=1)
 
-        tk.Label(body, text="模型服务", bg=BG, fg=FG, font=(FONT[0], 16, "bold")).grid(
+        tk.Label(body, text="模型服务", bg=BG, fg=FG, font=(theme.FAMILY["display"], 18, "bold")).grid(
             row=0, column=0, columnspan=3, sticky="w")
-        tk.Label(body, text="粘贴 API Key 后点一次「连接并保存」，其余自动完成。", bg=BG,
-                 fg="#68778d", font=(FONT[0], 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 16))
+        tk.Label(body, text="DeepSeek 或兼容接口", bg=BG,
+                 fg=theme.MUTED, font=(theme.FAMILY["body"], 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 16))
 
         self.key = tk.StringVar()
         self.endpoint = tk.StringVar(value=store.data.get("base_url", settings.DEFAULT_BASE_URL))
@@ -53,10 +53,10 @@ class ModelDialog(tk.Toplevel):
         self.key_entry.grid(row=2, column=1, sticky="ew")
         self.connect_button = ttk.Button(body, text="连接并保存", style="Accent.TButton", command=self._connect)
         self.connect_button.grid(row=2, column=2, padx=(10, 0))
-        tk.Label(body, text="Key 用 Windows DPAPI 加密保存在本机；只发送到下面的服务地址。",
-                 bg=BG, fg="#9aa1ac", font=(FONT[0], 8)).grid(row=3, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        tk.Label(body, text="Key 仅保存在本机。",
+                 bg=BG, fg=theme.MUTED, font=(theme.FAMILY["body"], 8)).grid(row=3, column=1, columnspan=2, sticky="w", pady=(4, 0))
 
-        self.status = tk.Label(body, textvariable=self.state, bg=BG, fg="#2563eb", font=(FONT[0], 9),
+        self.status = tk.Label(body, textvariable=self.state, bg=BG, fg=theme.ACCENT, font=(theme.FAMILY["body"], 9),
                                wraplength=520, justify="left")
         self.status.grid(row=4, column=0, columnspan=3, sticky="w", pady=(14, 6))
 
@@ -74,7 +74,7 @@ class ModelDialog(tk.Toplevel):
         ttk.Button(self.advanced, text="刷新模型列表", command=lambda: self._connect(refresh_only=True)).grid(
             row=1, column=2, padx=(8, 0), pady=(8, 0))
         tk.Label(self.advanced, text="兼容接口需支持 /models 与 JSON Chat Completions；换地址必须重新输入对应 Key。",
-                 bg=BG, fg="#9aa1ac", font=(FONT[0], 8)).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+                 bg=BG, fg=theme.MUTED, font=(theme.FAMILY["body"], 8)).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         footer = tk.Frame(body, bg=BG)
         footer.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(18, 0))
@@ -181,7 +181,7 @@ class ModelDialog(tk.Toplevel):
 
     def _say(self, text, *, error=False, warn=False):
         self.state.set(text)
-        self.status.configure(fg="#b42318" if error else "#7a4d00" if warn else "#0f766e")
+        self.status.configure(fg=theme.BAD if error else theme.WARN if warn else theme.OK)
 
     def _delete(self):
         if self.busy:
@@ -206,7 +206,7 @@ class ModelDialog(tk.Toplevel):
 class ImaDialog(tk.Toplevel):
     def __init__(self, master, store):
         super().__init__(master)
-        self.title("DeepAudit · ima 知识库连接")
+        self.title(f"{APP_NAME} · ima 知识库连接")
         self.transient(master)
         self.grab_set()
         self.resizable(False, False)

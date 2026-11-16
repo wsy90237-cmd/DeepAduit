@@ -13,7 +13,7 @@ import re
 ZERO = Decimal("0")
 from pathlib import Path
 
-from . import analysis, skills, paper_sheets, sampling
+from . import APP_NAME, analysis, skills, paper_sheets, sampling
 from .models import money
 
 KINDS = {
@@ -836,13 +836,13 @@ def to_html(title, draft, *, subject_label=""):
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>{escape(title)}</title>
 <style>
-body{{font-family:"Microsoft YaHei UI","Segoe UI",sans-serif;color:#18263b;margin:32px auto;max-width:860px;line-height:1.7}}
-h1{{font-size:22px;margin:0 0 4px}} .meta{{color:#68778d;font-size:13px;margin-bottom:20px}}
+body{{font-family:"Microsoft YaHei UI","Segoe UI",sans-serif;color:#291C13;margin:32px auto;max-width:860px;line-height:1.7}}
+h1{{font-size:22px;margin:0 0 4px}} .meta{{color:#746859;font-size:13px;margin-bottom:20px}}
 .notice{{background:#fff7e6;border:1px solid #f0d9a8;color:#7a4d00;padding:10px 12px;border-radius:6px;font-size:13px;margin-bottom:18px}}
 table{{border-collapse:collapse;width:100%;font-size:13px;margin:14px 0}}
-th,td{{border:1px solid #dbe7fb;padding:6px 8px;text-align:left}} th{{background:#f5f9ff}}
-.src{{color:#9aa1ac;font-size:12px;margin-left:8px}} ul{{padding-left:20px}} li{{margin:4px 0}}
-footer{{margin-top:28px;color:#68778d;font-size:12px;border-top:1px solid #eef2f8;padding-top:12px}}
+th,td{{border:1px solid #E7DCC8;padding:6px 8px;text-align:left}} th{{background:#FCFAF4}}
+.src{{color:#746859;font-size:12px;margin-left:8px}} ul{{padding-left:20px}} li{{margin:4px 0}}
+footer{{margin-top:28px;color:#746859;font-size:12px;border-top:1px solid #E7DCC8;padding-top:12px}}
 </style></head><body>
 <h1>{escape(draft.get('kind_label','底稿草稿'))}</h1>
 <div class="meta">主体：{escape(subject_label or '—')} · 科目：{escape(draft['subject']['code'])} {escape(draft['subject']['name'])} · 方向：{escape(draft['subject']['direction'] or '—')}{level_note}</div>
@@ -852,7 +852,7 @@ footer{{margin-top:28px;color:#68778d;font-size:12px;border-top:1px solid #eef2f
 {_journal_block(draft)}
 {''.join(paragraphs)}
 <h3>引用知识条目</h3><ul>{refs or '<li>本次无命中的内置知识条目</li>'}</ul>
-<footer>DeepAudit 生成时间：{escape(draft.get('generated_at', ''))} · 金额来源：本机账套{'与序时账' if draft.get('has_journal') else ''} · 需人工复核</footer>
+<footer>{APP_NAME} 生成时间：{escape(draft.get('generated_at', ''))} · 金额来源：本机账套{'与序时账' if draft.get('has_journal') else ''} · 需人工复核</footer>
 </body></html>"""
 
 

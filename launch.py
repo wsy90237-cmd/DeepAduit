@@ -4,26 +4,22 @@ from pathlib import Path
 import tempfile
 from decimal import Decimal
 
-from tb_autofill import APP_NAME, __version__
+from tb_autofill import APP_NAME, PRODUCT_MODULES, __version__
 
 
 def _selftest(report=None):
     """Offline packaged checks use synthetic data and never read user settings."""
-    from tb_autofill import (ai, analysis, audit_index, auditlog, connections, dxn, dxn_paper,
-                             dxn_programs, fields, gui, knowledge, knowledge_ui, matching, models,
-                             paper_materials, paper_pack, paper_sheets, papers, sampling, settings,
-                             skills, workbook, workflow, workspace)
+    import importlib
+    from tb_autofill import audit_index, auditlog, brand, fields, gui, knowledge, matching, models, settings, workflow
     from openpyxl import Workbook
     from pypdf import PdfReader, PdfWriter
     import tkinter as tk
-    modules = (ai, analysis, audit_index, auditlog, connections, dxn, dxn_paper, dxn_programs,
-               fields, gui, knowledge, knowledge_ui, matching, models, paper_materials, paper_pack,
-               paper_sheets, papers, sampling, settings, skills, workbook, workflow, workspace)
+    modules = tuple(importlib.import_module(f"tb_autofill.{name}") for name in PRODUCT_MODULES)
     result = matching.resolve_match(models.TargetField("Synthetic", "B2", "库存现金", "ending"),
                                     [models.LedgerRow("1001", "库存现金", ending=Decimal("100"))])
     if result.amount != 100 or not result.selected:
         raise RuntimeError("金额保护自检失败")
-    with tempfile.TemporaryDirectory(prefix="deepaudit_selftest_") as folder:
+    with tempfile.TemporaryDirectory(prefix="attesta_selftest_") as folder:
         root = Path(folder)
         store = settings.SettingsStore(root / "synthetic-settings.json")
         synthetic_key = "selftest-non-secret-key"
@@ -71,7 +67,7 @@ def _selftest(report=None):
     icon_root.withdraw()
     try:
         for size in (32, 48, 256):
-            icon = tk.PhotoImage(master=icon_root, file=str(Path(gui.__file__).with_name("assets") / f"pixel-whale-{size}.png"))
+            icon = tk.PhotoImage(master=icon_root, file=str(brand.icon(size)))
             if (icon.width(), icon.height()) != (size, size):
                 raise RuntimeError("品牌图片自检失败")
     finally:

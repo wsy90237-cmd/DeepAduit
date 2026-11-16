@@ -1,10 +1,10 @@
-# DeepAudit 审计工作台
+# Attesta 审计工作台
 
-DeepAudit 面向企业年度财务报表审计。从鼎信诺科目余额的只读副本取数，按用户模板识别、匹配、复核和另存 TB；接入模型和财会知识，辅助复核 TB、附注、底稿及现有报告。金额由本地规则计算，AI 只提供建议。0.6.6 当前为开发版本，支持按报表项目整册制作底稿草稿及 Excel 导出（含备抵与客商辅助明细、损益 1—12 月发生额）；审计对话按提问选择项目及科目事实。附注、报告生成与完整证据勾稽仍待实现。
+Attesta 面向企业年度财务报表审计。从鼎信诺科目余额的只读副本取数，按用户模板识别、匹配、复核和另存 TB；接入模型和财会知识，辅助复核 TB、附注、底稿及现有报告。金额由本地规则计算，AI 只提供建议。0.7.0 当前为开发版本，支持按报表项目整册制作底稿草稿及 Excel 导出（含备抵与客商辅助明细、损益 1—12 月发生额）；审计对话按提问选择项目及科目事实。附注、报告生成与完整证据勾稽仍待实现。
 
 ## 工作空间
 
-界面采用暖白纸面、衬线标题与单一陶土色强调的克制版式：左侧只保留文字导航，金额与结论是页面上唯一抢眼的内容。设计令牌集中在 `tb_autofill/theme.py`，正文与次要文字的对比度均不低于 4.5:1，动效尊重系统「减少动画」设置。品牌资源与生成说明见 [品牌资源](docs/品牌资源.md)。
+界面采用品牌暖米色、衬线标题与单一橙色强调的克制版式：左侧只保留文字导航，工作台只显示项目、三项数字和一个随状态变化的主操作。设计令牌集中在 `tb_autofill/theme.py`，正文与次要文字的对比度均不低于 4.5:1，动效尊重系统「减少动画」设置。品牌资源与生成说明见 [品牌资源](docs/品牌资源.md)，页面规则见 [界面规范](docs/界面规范.md)。
 
 - **工作台**：查看当前主体、期间、模板和 TB 处理状态，维护编制人与复核人的本机设置，进入常用工作。
 - **账套与 TB**：读取账套、导入模板、确认来源、复核差额、另存 Excel、导出 CSV。
@@ -94,11 +94,11 @@ Excel导出以只读方式打开原模板，再原生另存副本，以保留相
 
 需要 Windows 10/11 x64、Python 3.12+；推荐 3.13。Excel 另存依赖已安装的 Microsoft Excel 与 pywin32，WPS 未验证。
 
-本机源码试用：双击项目根目录的 `启动DeepAudit.cmd`，诊断入口为 `DeepAudit-trial.cmd`，使用当前源码与 `.venv` 的依赖。启动入口使用 ASCII 和 CRLF，避免 Windows 命令解释器误读；失败会提示临时日志位置。首次安装依赖仍按下方命令操作。
+本机源码试用：双击项目根目录的 `启动Attesta.cmd`，诊断入口为 `Attesta-trial.cmd`，使用当前源码与 `.venv` 的依赖。启动入口使用 ASCII 和 CRLF，避免 Windows 命令解释器误读；失败会提示临时日志位置。首次安装依赖仍按下方命令操作。
 
-无需编译的开发包：源码提交后执行 `.venv\Scripts\python -B tools/build_dev.py`（可加 `--template-library <本地模板库>`、`--skip-templates`）。输出到 `dist/DeepAudit-<版本>-dev/`，包含可读源码、自带 Python、运行依赖、离线自检结果及 ZIP 校验值；同时把 `local-data/dxn-library-<日期>` 下的空白模板原件按标准目录带入包内 `templates/`，逐个文件比对 `ORIGINALS.sha256` 后汇总为 `templates/TEMPLATES.sha256`，`BUILDINFO.json` 记录清单哈希，使模板原件可复核、不依赖原软件安装路径。发布到 GitHub 的开发包使用 `--skip-templates` 构建，不含原厂模板原件（授权限制），模板结构目录仍随包提供，原件可按 `docs/dxn-template-coverage-2026-11-05.md` 在本机重新采集。解压后双击 `启动DeepAudit.cmd`，无需本机 Python 或 `.venv`；不包含账套、客户底稿、项目数据、API Key 或本机配置。此包用于内部开发，发布为明确标注的开发预览版本，正式客户 EXE 仍采用下述原生编译流程。
+无需编译的开发包：源码提交后执行 `.venv\Scripts\python -B tools/build_dev.py`（可加 `--template-library <本地模板库>`、`--skip-templates`）。输出到 `dist/Attesta-<版本>-dev/`，包含可读源码、自带 Python、运行依赖、离线自检结果及 ZIP 校验值；同时把 `local-data/dxn-library-<日期>` 下的空白模板原件按标准目录带入包内 `templates/`，逐个文件比对 `ORIGINALS.sha256` 后汇总为 `templates/TEMPLATES.sha256`，`BUILDINFO.json` 记录清单哈希，使模板原件可复核、不依赖原软件安装路径。发布到 GitHub 的开发包使用 `--skip-templates` 构建，不含原厂模板原件（授权限制），模板结构目录仍随包提供，原件可按 `docs/dxn-template-coverage-2026-11-05.md` 在本机重新采集。解压后双击 `启动Attesta.cmd`，无需本机 Python 或 `.venv`；不包含账套、客户底稿、项目数据、API Key 或本机配置。此包用于内部开发，发布为明确标注的开发预览版本，正式客户 EXE 仍采用下述原生编译流程。
 
-正式程序从 [GitHub Releases](https://github.com/wsy90237-cmd/DeepAduit/releases/latest) 下载，核对 `SHA256SUMS.txt` 后运行 `DeepAudit.exe`。本地离线副本统一保存在 `dist/DeepAudit-<版本>/`，只保留最新一版；源码试用入口不写固定版本号。
+正式程序从 [GitHub Releases](https://github.com/wsy90237-cmd/DeepAduit/releases/latest) 下载，核对 `SHA256SUMS.txt` 后运行 `Attesta.exe`。本地离线副本统一保存在 `dist/Attesta-<版本>/`，只保留最新一版；源码试用入口不写固定版本号。
 
 ```powershell
 python -m venv .venv
@@ -107,7 +107,7 @@ python -m venv .venv
 .venv\Scripts\python -m unittest discover -s tests -v
 ```
 
-开发预览使用隔离设置和合成数据：`python tools/preview_ui.py`。安装后的命令为 `deepaudit`，保留旧命令名兼容已有脚本。
+开发预览使用隔离设置和合成数据：`python tools/preview_ui.py`。安装后的命令为 `attesta`，保留旧命令 `deepaudit` 兼容已有脚本。
 
 ## 编译客户发布包
 
@@ -120,9 +120,9 @@ python -m venv .venv
 
 MSVC 需 Visual Studio 2022+ C++ 构建工具；本机没有 MSVC 可使用 `--compiler zig`，Nuitka 会下载其支持的编译器。源码保留开发能力，编译包用 isolated 模式，减少外部 Python 路径注入；这不等于无法逆向。
 
-只分发以下文件：`dist/DeepAudit.exe`、`SHA256SUMS.txt`、`INSTALL.txt`、`BUILDINFO.json`。不要分发开发包、源代码、C 代码、编译报告、构建目录、真实数据或日志。
+只分发以下文件：`dist/Attesta.exe`、`SHA256SUMS.txt`、`INSTALL.txt`、`BUILDINFO.json`。不要分发开发包、源代码、C 代码、编译报告、构建目录、真实数据或日志。
 
-构建脚本运行合成金额、DPAPI、日志截断、表头保护、本地知识、PDF 依赖和报告准备度自检，且要求指定的全部 26 个业务模块均为原生编译。源码未提交或构建期间源码发生变化时拒绝生成发布清单。版本只维护在 `tb_autofill/__init__.py`；标签与版本不符时拒绝构建。
+构建脚本运行合成金额、DPAPI、日志截断、表头保护、本地知识、PDF 依赖和报告准备度自检，且要求指定的全部 27 个业务模块均为原生编译。源码未提交或构建期间源码发生变化时拒绝生成发布清单。版本只维护在 `tb_autofill/__init__.py`；标签与版本不符时拒绝构建。
 
 GitHub Actions 先测试、MSVC 编译、自检并保存运行产物。确认构建成功后，将构建运行编号、源码提交及 EXE 的 SHA-256 写入 `packaging/publish.json`；发布流程再次自检、上传草稿并下载校验，再公开 GitHub Release。源码仓库目前公开，原生编译不提供源码保密保证。未配置代码签名证书，不能声称已签名。
 

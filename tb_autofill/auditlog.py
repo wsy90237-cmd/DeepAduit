@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from . import APP_NAME
+
 from contextlib import contextmanager
 import hashlib
 import json
@@ -88,7 +90,7 @@ class AuditLog:
     def _save_checkpoint(self, count, digest):
         import win32crypt
         raw = _canonical({"seq": count, "hash": digest}).encode("utf-8")
-        encrypted = win32crypt.CryptProtectData(raw, "DeepAudit audit checkpoint", None, None, None, 1)
+        encrypted = win32crypt.CryptProtectData(raw, f"{APP_NAME} audit checkpoint", None, None, None, 1)
         handle, name = tempfile.mkstemp(prefix=".audit-head-", dir=self.path.parent)
         try:
             with os.fdopen(handle, "wb") as stream:

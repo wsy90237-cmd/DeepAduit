@@ -18,7 +18,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import APP_NAME, __version__, ai as ai_module
-from . import (analysis, auditlog, audit_index, dxn, dxn_paper, fields, knowledge, matching,
+from . import (analysis, auditlog, audit_index, brand, dxn, dxn_paper, fields, knowledge, matching,
                paper_pack, paper_sheets, papers, sampling, settings, theme, workbook,
                dxn_templates, workspace)
 from .models import Subject, ledger_digest, money
@@ -1150,11 +1150,10 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME}  v{VERSION}")
-        assets = Path(__file__).with_name("assets")
-        self.whale_small = tk.PhotoImage(master=self, file=str(assets / "pixel-whale-32.png"))
-        self.whale_mark = tk.PhotoImage(master=self, file=str(assets / "pixel-whale-48.png"))
-        self.whale_icon = tk.PhotoImage(master=self, file=str(assets / "pixel-whale-256.png"))
-        self.iconphoto(True, self.whale_icon, self.whale_small)
+        self.brand_small = tk.PhotoImage(master=self, file=str(brand.icon(32)))
+        self.brand_mark = tk.PhotoImage(master=self, file=str(brand.icon(48)))
+        self.brand_icon = tk.PhotoImage(master=self, file=str(brand.icon(256)))
+        self.iconphoto(True, self.brand_icon, self.brand_small)
         # 适配小屏：按可用桌面留出标题栏与任务栏，底部操作区不再被裁掉。
         screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
         width = min(1480, max(1000, screen_w - 90))
@@ -1172,6 +1171,7 @@ class App(tk.Tk):
         self.loaded_subject = None
         self._context_revision = 0
         self._ai_subset = []
+        self.ai_state = tk.StringVar(value="未配置")
         self.library = knowledge.LocalLibrary()
         self.knowledge_refs = []
         self.review_document = None
@@ -1306,40 +1306,24 @@ class App(tk.Tk):
         return self._card(index, title, parent=self.form_row, column=0)
 
     def _build_header(self):
-        """页头：衬线标题 + 一行上下文；右侧只放状态与两个文字按钮。"""
+        """页头只有页面名和两个全局动作；上下文留在各页面的数据里。"""
         bar = tk.Frame(self.content, bg=BG)
         bar.grid(row=0, column=0, sticky="ew")
         tk.Frame(bar, bg=BORDER, height=1).pack(side="bottom", fill="x")
         inner = tk.Frame(bar, bg=BG)
         inner.pack(fill="x", padx=30, pady=(18, 14))
         inner.columnconfigure(0, weight=1)
-        left = tk.Frame(inner, bg=BG)
-        left.grid(row=0, column=0, sticky="ew")
-        tk.Label(left, textvariable=self.page_title, bg=BG, fg=TX,
-                 font=(theme.FAMILY["display"], 22, "bold"), anchor="w").pack(anchor="w")
-        tk.Label(left, textvariable=self.page_context, bg=BG, fg=SEC,
-                 font=(theme.FAMILY["body"], 9), anchor="w").pack(anchor="w", pady=(3, 0))
+        tk.Label(inner, textvariable=self.page_title, bg=BG, fg=TX,
+                 font=(theme.FAMILY["display"], 22, "bold"), anchor="w").grid(
+            row=0, column=0, sticky="w")
 
         right = tk.Frame(inner, bg=BG)
-        right.grid(row=0, column=1, sticky="e", padx=(16, 0))
-        self.ai_state = tk.StringVar(value="AI 未配置")
-        self.ai_chip = tk.Label(right, textvariable=self.ai_state, bg=BG, fg=MUTED,
-                                font=(theme.FAMILY["body"], 8))
-        self.ai_chip.pack(side="left", padx=(0, 14))
-        self.ai_state.trace_add("write", lambda *_args: self._sync_ai_chip())
-        ttk.Button(right, text="模型设置", style="Quiet.TButton",
-                   command=self._open_ai_settings).pack(side="left")
+        right.grid(row=0, column=1, sticky="e")
         ttk.Button(right, text="对话", style="Quiet.TButton",
-                   command=self._toggle_chat).pack(side="left", padx=(2, 0))
-
-    def _sync_ai_chip(self):
-        """状态只用一个小圆点与文字，不抢主操作的注意力。"""
-        ready = "未配置" not in self.ai_state.get() and "未启用" not in self.ai_state.get()
-        self.ai_chip.configure(fg=theme.OK if ready else MUTED,
-                               text=("● " if ready else "○ ") + self.ai_state.get())
+                   command=self._toggle_chat).pack(side="left")
 
     def _build_source(self):
-        _outer, body, _head = self._form_card("① 数据源", 0)
+        _outer, body, _head = self._form_card("数据源", 0)
         body.columnconfigure(1, weight=1)
 
         ttk.Label(body, text="安装目录", style="Card.TLabel").grid(row=0, column=0, sticky="w")
@@ -1381,7 +1365,7 @@ class App(tk.Tk):
                  font=(FONT, 8)).pack(side="left", padx=10)
 
     def _build_template(self):
-        _outer, body, _head = self._form_card("② 模板与期间", 1)
+        _outer, body, _head = self._form_card("模板与期间", 1)
         body.columnconfigure(1, weight=1)
 
         ttk.Label(body, text="模板文件", style="Card.TLabel").grid(row=0, column=0, sticky="w")
@@ -1420,7 +1404,7 @@ class App(tk.Tk):
                      font=(FONT, 8)).pack(side="left", padx=10)
 
     def _build_result(self):
-        outer, body, _head = self._card(1, "③ 识别结果")
+        outer, body, _head = self._card(1, "识别结果")
         outer.grid_configure(sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
@@ -1452,7 +1436,7 @@ class App(tk.Tk):
                   "actual": 88, "diff": 76, "sources": 132, "reason": 180}
         anchors = {"sel": "center", "status": "center", "cell": "center", "period": "center",
                    "amount": "e", "actual": "e", "diff": "e"}
-        self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse", height=7)
         for key in columns:
             self.tree.heading(key, text=headings[key])
             self.tree.column(key, width=widths[key], minwidth=widths[key] - 20,
@@ -1472,32 +1456,32 @@ class App(tk.Tk):
         self.tree.bind("<Button-1>", self._on_click)
         self.tree.bind("<space>", self._on_space)
         self.tree.bind("<Double-1>", lambda _event: self._show_detail())
-        self.reason_detail = tk.StringVar(value="选中一行查看完整原因；双击可查看来源详情。")
-        detail = tk.Label(body, textvariable=self.reason_detail, bg=CARD, fg=TX, font=(FONT, 9),
-                          anchor="w", justify="left", wraplength=1100)
-        detail.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        self.reason_detail = tk.StringVar(value="")
+        self.detail_label = tk.Label(body, textvariable=self.reason_detail, bg=CARD, fg=TX,
+                                     font=(FONT, 9), anchor="w", justify="left", wraplength=1100)
         self.tree.bind("<<TreeviewSelect>>", self._show_reason)
 
     def _show_reason(self, _event=None):
         selected = self.tree.selection()
         if not selected:
-            self.reason_detail.set("选中一行查看完整原因；双击可查看来源详情。")
+            self.reason_detail.set("")
+            self.detail_label.grid_remove()
             return
         try:
             result = self.results[int(selected[0])]
         except (ValueError, IndexError):
             return
         self.reason_detail.set(f"{result.target.label}：{result.reason or '暂无说明'}")
+        self.detail_label.grid(row=3, column=0, sticky="ew", pady=(6, 0))
 
     def _build_actions(self):
         bar = tk.Frame(self.workspace, bg=BG)
         bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(10, 0))
-        self.report_btn = ttk.Button(bar, text="导出报告", command=self._export_report, state="disabled")
+        self.report_btn = ttk.Button(bar, text="导出核对表", command=self._export_report, state="disabled")
         self.report_btn.pack(side="left")
         self.write_btn = ttk.Button(bar, text="另存 Excel", style="Accent.TButton",
                                     command=self._write_excel, state="disabled")
         self.write_btn.pack(side="left", padx=8)
-        ttk.Button(bar, text="校验日志", command=self._verify_audit).pack(side="left")
         ttk.Button(bar, text="退出", command=self._request_close).pack(side="right")
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=120)
         self.status_var = tk.StringVar(value="就绪")
@@ -1510,17 +1494,25 @@ class App(tk.Tk):
                  font=(theme.FAMILY["body"], 8)).pack(side="left", padx=(5, 0))
 
     def _build_log(self):
-        outer = tk.Frame(self.workspace, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
-        outer.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 12))
-        outer.columnconfigure(0, weight=1)
-        self.log = tk.Text(outer, height=2, wrap="none", state="disabled",
-                           font=(theme.FAMILY["mono"], 8),
-                           background=theme.SURFACE_ALT, foreground=theme.INK_SOFT,
-                           relief="flat", borderwidth=0, padx=10, pady=8)
-        self.log.grid(row=0, column=0, sticky="ew")
-        scroll = ttk.Scrollbar(outer, orient="vertical", command=self.log.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
-        self.log.configure(yscrollcommand=scroll.set)
+        """运行日志保留在内存中，按需打开；主界面只显示一行状态。"""
+        self.log = tk.Text(self, height=1, wrap="none", state="disabled",
+                           font=(theme.FAMILY["mono"], 8))
+
+    def _open_log(self):
+        window = tk.Toplevel(self)
+        window.title(f"{APP_NAME} · 运行日志")
+        window.geometry("760x420")
+        window.configure(bg=BG)
+        window.transient(self)
+        text = tk.Text(window, wrap="none", font=(theme.FAMILY["mono"], 9),
+                       bg=CARD, fg=TX, relief="flat", padx=14, pady=12)
+        text.pack(fill="both", expand=True, padx=14, pady=14)
+        scroll = ttk.Scrollbar(window, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.insert("1.0", self.log.get("1.0", "end").strip() or "暂无运行记录。")
+        text.configure(state="disabled")
+        ttk.Button(window, text="关闭", command=window.destroy).pack(anchor="e", padx=14, pady=(0, 12))
+        window.bind("<Escape>", lambda _event: window.destroy())
 
     # ---------- 对话面板 ----------
 
@@ -1534,7 +1526,7 @@ class App(tk.Tk):
 
         head = tk.Frame(outer, bg=CARD)
         head.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(12, 6))
-        tk.Label(head, image=self.whale_small, bg=CARD, bd=0).pack(side="left", padx=(0, 7))
+        tk.Label(head, image=self.brand_small, bg=CARD, bd=0).pack(side="left", padx=(0, 7))
         tk.Label(head, text="审计对话", bg=CARD, fg=ACC, font=(FONT, 9, "bold")).pack(side="left")
         ttk.Button(head, text="×", style="Ghost.TButton", width=2,
                    command=self._toggle_chat).pack(side="right")
@@ -2332,7 +2324,7 @@ class App(tk.Tk):
 
     def _sync_ai_state(self):
         if self.store is None:
-            self.ai_state.set("AI：设置不可用")
+            self.ai_state.set("设置不可用")
             self.ai_btn.configure(state="disabled")
             return
         has_key = self.store.has_key
@@ -2340,13 +2332,13 @@ class App(tk.Tk):
         model = self.store.data.get("model", "—")
         model = model if len(model) <= 18 else model[:17] + "…"
         if has_key and enabled:
-            self.ai_state.set(f"AI 已启用 · {model}")
+            self.ai_state.set(f"已启用 · {model}")
             self.ai_btn.configure(state="normal")
         elif has_key:
-            self.ai_state.set("AI 已配置 · 未启用")
+            self.ai_state.set("已配置 · 未启用")
             self.ai_btn.configure(state="disabled")
         else:
-            self.ai_state.set("AI：未配置（可离线使用）")
+            self.ai_state.set("未配置模型")
             self.ai_btn.configure(state="disabled")
 
     def _open_ai_settings(self):

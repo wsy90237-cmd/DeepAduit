@@ -1,9 +1,9 @@
-DeepAudit 开发版（未编译，Windows 10/11 x64）
+Attesta 开发版（未编译，Windows 10/11 x64）
 
-解压整个文件夹到可写目录，再双击“启动DeepAudit.cmd”。不要在 ZIP 内直接运行，也不要只复制启动文件。
+解压整个文件夹到可写目录，再双击“启动Attesta.cmd”。不要在 ZIP 内直接运行，也不要只复制启动文件。
 本包自带 Python 和运行依赖，不需要安装 Python、创建 .venv 或下载编译器。
-遇到问题运行 DeepAudit-trial.cmd；启动异常会提示日志位置（系统临时目录的 deepaudit-gui.log）。
-运行离线自检：DeepAudit-trial.cmd --selftest
+遇到问题运行 Attesta-trial.cmd；启动异常会提示日志位置（系统临时目录的 attesta-gui.log）。
+运行离线自检：Attesta-trial.cmd --selftest
 
 底稿按报表项目整册制作：一册包含该报表项目在账套中归集的全部科目与明细，如货币资金含库存现金、
 银行存款、其他货币资金，固定资产含原值、累计折旧及对应减值。往来明细按实际选中的客商维度列示，

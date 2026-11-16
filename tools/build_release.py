@@ -12,13 +12,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tb_autofill import APP_NAME, __version__
+from tb_autofill import APP_NAME, PRODUCT_MODULES, __version__, brand
 
-NATIVE_MODULES = {f"tb_autofill.{name}" for name in (
-    'ai', 'analysis', 'audit_index', 'auditlog', 'connections', 'dxn', 'dxn_paper', 'dxn_programs',
-    'dxn_templates', 'fields', 'gui', 'knowledge', 'knowledge_ui', 'matching', 'models',
-    'paper_materials', 'paper_pack', 'paper_sheets', 'papers', 'sampling', 'settings', 'skills',
-    'theme', 'workbook', 'workflow', 'workspace')}
+NATIVE_MODULES = {f"tb_autofill.{name}" for name in PRODUCT_MODULES}
 try:
     from .inspect_release import inspect
 except ImportError:
@@ -35,7 +31,7 @@ def build_arguments(compiler, jobs):
                "--python-flag=no_docstrings", "--python-flag=no_asserts", "--file-reference-choice=runtime",
                "--nofollow-import-to=tests,unittest,pytest,tkinter.test,doctest,pydoc",
                "--assume-yes-for-downloads", f"--jobs={jobs}", "--lto=yes",
-               f"--output-dir={output}", "--output-filename=DeepAudit.exe",
+               f"--output-dir={output}", f"--output-filename={brand.EXECUTABLE}",
                f"--report={ROOT / 'build' / 'native-compilation-report.xml'}",
                f"--product-name={APP_NAME}", f"--file-description={APP_NAME} Audit Workspace",
                f"--file-version={__version__}", f"--product-version={__version__}"]
@@ -43,7 +39,7 @@ def build_arguments(compiler, jobs):
         options.append("--msvc=latest")
     elif compiler == "zig":
         options.append("--zig")
-    icon = ROOT / "packaging" / "deepaudit.ico"
+    icon = ROOT / "packaging" / "attesta.ico"
     if icon.is_file():
         options.append(f"--windows-icon-from-ico={icon}")
     return options + [str(ROOT / "launch.py")]
@@ -51,7 +47,7 @@ def build_arguments(compiler, jobs):
 
 def verify_native(executable):
     inspect(executable)
-    with tempfile.TemporaryDirectory(prefix="deepaudit_release_check_") as folder:
+    with tempfile.TemporaryDirectory(prefix="attesta_release_check_") as folder:
         report = Path(folder) / "selftest.json"
         subprocess.run([str(executable), "--selftest", f"--selftest-report={report}"], timeout=180, check=True)
         result = json.loads(report.read_text(encoding="utf-8"))
@@ -84,7 +80,7 @@ def main():
         raise SystemExit("正式构建要求工作区干净，请先完成提交")
     (ROOT / "build").mkdir(exist_ok=True)
     subprocess.run(build_arguments(args.compiler, args.jobs), cwd=ROOT, check=True)
-    executable = ROOT / "dist" / "DeepAudit.exe"
+    executable = ROOT / "dist" / brand.EXECUTABLE
     result = verify_native(executable)
     with executable.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -96,10 +92,10 @@ def main():
                 "sha256": digest, "native_modules": result["native_modules"],
                 "selftest": result["checks"], "pe": inspect(executable), "signed": False}
     (ROOT / "dist" / "BUILDINFO.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    (ROOT / "dist" / "SHA256SUMS.txt").write_text(f"{digest}  DeepAudit.exe\n", encoding="utf-8")
+    (ROOT / "dist" / "SHA256SUMS.txt").write_text(f"{digest}  {brand.EXECUTABLE}\n", encoding="utf-8")
     instructions = (ROOT / "packaging" / "安装说明.txt").read_text(encoding="utf-8")
     (ROOT / "dist" / "INSTALL.txt").write_text(instructions.replace("{VERSION}", __version__), encoding="utf-8")
-    print(f"DeepAudit {__version__}: {executable}\nSHA256 {digest}")
+    print(f"{APP_NAME} {__version__}: {executable}\nSHA256 {digest}")
 
 
 if __name__ == "__main__":

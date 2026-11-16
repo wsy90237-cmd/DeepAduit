@@ -3,7 +3,7 @@
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from . import __version__
+from . import APP_NAME, __version__
 
 
 def readiness(rows, results, subject=None, scan=None, references=()):
@@ -40,15 +40,15 @@ def export_readiness(path, state):
     rows = "".join("<tr>" + "".join(f"<td>{escape(str(item[key]))}</td>" for key in ("item", "status", "detail")) + "</tr>"
                    for item in state["checks"])
     references = "".join(f"<li>{escape(title)}</li>" for title in state["reference_titles"]) or "<li>未选用</li>"
-    page = ('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>DeepAudit 报告准备清单</title>'
-            '<style>body{font:15px system-ui;max-width:1100px;margin:40px auto;color:#18263b;padding:20px}'
-            'h1{color:#2563eb}table{border-collapse:collapse;width:100%}td,th{border:1px solid #dbe7fb;padding:14px;text-align:left}'
-            'th{background:#eff6ff}.note{padding:16px;background:#fff6df}small{color:#68778d}</style>'
-            f'<h1>DeepAudit · 报告准备清单</h1><p>{escape(state["engagement"])}</p>'
+    page = ('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>{APP_NAME} 报告准备清单</title>'
+            '<style>body{font:15px system-ui;max-width:1100px;margin:40px auto;color:#291C13;padding:20px}'
+            'h1{color:#B5520D}table{border-collapse:collapse;width:100%}td,th{border:1px solid #E7DCC8;padding:14px;text-align:left}'
+            'th{background:#FBE7D3}.note{padding:16px;background:#fff6df}small{color:#746859}</style>'
+            f'<h1>{APP_NAME} · 报告准备清单</h1><p>{escape(state["engagement"])}</p>'
             '<p class="note">本文件仅反映资料与功能准备状态，不是审计意见或已签发审计报告。</p>'
             f'<table><tr><th>环节</th><th>状态</th><th>依据 / 待办</th></tr>{rows}</table>'
             f'<h2>本次参考资料</h2><ul>{references}</ul>'
-            f'<p><small>DeepAudit {__version__} · {datetime.now().astimezone().isoformat(timespec="seconds")}</small></p></html>')
+            f'<p><small>{APP_NAME} {__version__} · {datetime.now().astimezone().isoformat(timespec="seconds")}</small></p></html>')
     with path.open("x", encoding="utf-8") as stream:
         stream.write(page)
     return path

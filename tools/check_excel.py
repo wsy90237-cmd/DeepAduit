@@ -21,7 +21,7 @@ def main():
     scan = fields.scan_template(template, ("opening", "ending"), "元")
     scan.source_digest = ledger_digest(rows)
     results = matching.match_fields(scan.fields, rows)
-    with tempfile.TemporaryDirectory(prefix="deepaudit_excel_check_") as folder:
+    with tempfile.TemporaryDirectory(prefix="attesta_excel_check_") as folder:
         output = Path(folder) / "synthetic-output.xlsx"
         workbook.write_results(scan, results, output, rows=rows)
         book = load_workbook(output, data_only=False)

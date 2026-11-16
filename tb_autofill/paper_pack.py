@@ -17,7 +17,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from . import dxn_programs, paper_materials
+from . import APP_NAME, dxn_programs, paper_materials
 from .models import money
 
 TITLE_FONT = Font(name="宋体", size=14, bold=True)
@@ -32,7 +32,7 @@ MONEY_FORMAT = "#,##0.00;[Red]-#,##0.00"
 PERCENT_FORMAT = "0.00%"
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
-DRAFT_NOTICE = "本册由 DeepAudit 依据本机账套自动生成，未附原始凭证与外部证据；结论与“已执行”栏须经注册会计师复核后方可归档。"
+DRAFT_NOTICE = f"本册由 {APP_NAME} 依据本机账套自动生成，未附原始凭证与外部证据；结论与“已执行”栏须经注册会计师复核后方可归档。"
 SAMPLE_LIMIT = 10          # 凭证抽查默认样本量，口径为金额绝对值降序
 UNDISCLOSED = "待补"
 

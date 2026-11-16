@@ -283,7 +283,7 @@ def _drop_type_nodes(data, drops):
 
 def _projected_scan_copy(path, drops):
     """Scan-only copy without heavy auxiliary pages; never touches the original."""
-    handle, name = tempfile.mkstemp(prefix="deepaudit_scan_", suffix=".xlsx")
+    handle, name = tempfile.mkstemp(prefix="attesta_scan_", suffix=".xlsx")
     os.close(handle)
     target = Path(name)
     rewritten = {"xl/workbook.xml": _drop_sheet_nodes,

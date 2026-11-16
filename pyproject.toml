@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "deepaudit"
-description = "DeepAudit 审计工作台：科目余额、TB 复核及附注与底稿工作流"
+name = "attesta"
+description = "Attesta 审计工作台：科目余额、TB 复核及附注与底稿工作流"
 requires-python = ">=3.12"
 dynamic = ["dependencies", "version"]
 
@@ -19,5 +19,6 @@ include = ["tb_autofill*"]
 tb_autofill = ["assets/*.png", "assets/*.json"]
 
 [project.gui-scripts]
-deepaudit = "tb_autofill.gui:main"
+attesta = "tb_autofill.gui:main"
+deepaudit = "tb_autofill.gui:main"  # 兼容旧命令
 zszh-tb-autofill = "tb_autofill.gui:main"

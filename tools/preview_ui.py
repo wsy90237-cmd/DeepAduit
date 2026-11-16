@@ -11,13 +11,14 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tb_autofill import auditlog, gui, knowledge, settings, workspace
+from tb_autofill import APP_NAME, auditlog, gui, knowledge, settings, workspace
 from tb_autofill.models import LedgerRow, Subject
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--page", choices=workspace.PAGES, default="overview")
+    parser.add_argument("--page", choices=(*workspace.PAGES, "settings"), default="overview",
+                        help="页面键；settings 为 security 的易记别名")
     parser.add_argument("--shot", help="截取当前页面到指定 PNG 后退出，用于设计核对")
     args = parser.parse_args()
     try:
@@ -25,7 +26,7 @@ def main():
     except Exception:
         pass
     store_class, log_class, library_class = settings.SettingsStore, auditlog.AuditLog, knowledge.LocalLibrary
-    with tempfile.TemporaryDirectory(prefix="deepaudit_preview_") as folder:
+    with tempfile.TemporaryDirectory(prefix="attesta_preview_") as folder:
         root = Path(folder)
         with patch.object(gui.App, "_autodetect", lambda self: None), \
                 patch.object(settings, "SettingsStore", lambda: store_class(root / "settings.json")), \
@@ -33,7 +34,7 @@ def main():
                 patch.object(knowledge, "LocalLibrary", lambda: library_class(root / "synthetic-knowledge.sqlite3")):
             app = gui.App()
         app.install_var.set("合成演示 · 不连接真实账套")
-        app.project_var.set("DeepAudit / 合成审计项目")
+        app.project_var.set(f"{APP_NAME} / 合成审计项目")
         subject = Subject("SYNTHETIC", "合成示例企业（虚构）", 2026, 6, "synthetic-only")
         app.current_subject = subject
         app.subject_var.set(subject.label)
@@ -57,25 +58,43 @@ def main():
         reference = root / "合成审计方法示例.md"
         reference.write_text("合成示例，不是有效准则：复核库存现金时核对期初期末、科目方向、金额单位及支持证据。", encoding="utf-8")
         app.library.import_file(reference)
-        app.after(600, lambda: workspace.navigate(app, args.page))
+        page = "security" if args.page == "settings" else args.page
+        app.after(600, lambda: workspace.navigate(app, page))
         if args.shot:
             app.after(1500, lambda: _capture(app, Path(args.shot)))
         app.mainloop()
 
 
 def _capture(app, target):
-    """在进程内截图：与 Tk 使用同一套坐标，避免跨进程 DPI 与遮挡问题。"""
-    from PIL import ImageGrab
-    app.lift()
-    app.focus_force()
+    """截图优先用 PrintWindow，窗口被其他程序遮挡时也能拿到完整界面。"""
+    from PIL import Image, ImageGrab
     for _ in range(3):
         app.update_idletasks()
         app.update()
-    time.sleep(0.5)
-    x, y = app.winfo_rootx(), app.winfo_rooty()
-    width, height = app.winfo_width(), app.winfo_height()
+    time.sleep(0.4)
     target.parent.mkdir(parents=True, exist_ok=True)
-    ImageGrab.grab(bbox=(x, y, x + width, y + height)).save(target)
+    try:
+        from ctypes import windll
+        import win32gui
+        import win32ui
+        hwnd = windll.user32.GetParent(app.winfo_id())
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        width, height = right - left, bottom - top
+        source = win32ui.CreateDCFromHandle(win32gui.GetWindowDC(hwnd))
+        memory = source.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(source, width, height)
+        memory.SelectObject(bitmap)
+        windll.user32.PrintWindow(hwnd, memory.GetSafeHdc(), 2)
+        info = bitmap.GetInfo()
+        Image.frombuffer("RGB", (info["bmWidth"], info["bmHeight"]),
+                         bitmap.GetBitmapBits(True), "raw", "BGRX", 0, 1).save(target)
+        win32gui.DeleteObject(bitmap.GetHandle())
+        memory.DeleteDC()
+        source.DeleteDC()
+    except Exception:
+        x, y = app.winfo_rootx(), app.winfo_rooty()
+        ImageGrab.grab(bbox=(x, y, x + app.winfo_width(), y + app.winfo_height())).save(target)
     app.destroy()
 
 

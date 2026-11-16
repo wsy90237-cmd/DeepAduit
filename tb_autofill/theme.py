@@ -12,26 +12,26 @@ from tkinter import font as tkfont
 from tkinter import ttk
 
 # ---------- 颜色令牌 ----------
-PAPER = "#F7F5F0"            # 暖白纸面
-PAPER_DEEP = "#EFECE4"
+PAPER = "#FEFAEF"            # 取自品牌图的暖米色
+PAPER_DEEP = "#F2EBDD"
 SURFACE = "#FFFFFF"
-SURFACE_ALT = "#FBFAF6"
-INK = "#1F1E1D"
-INK_SOFT = "#3B3A37"
-MUTED = "#716F69"
-HAIRLINE = "#E4E0D5"
-HAIRLINE_STRONG = "#D3CEC0"
+SURFACE_ALT = "#FCFAF4"
+INK = "#291C13"              # 品牌图近黑，不用纯黑
+INK_SOFT = "#3F332A"
+MUTED = "#746859"
+HAIRLINE = "#E7DCC8"
+HAIRLINE_STRONG = "#D6C7AC"
 
-ACCENT = "#B14E2C"           # 陶土色：只给主操作与当前项（白字对比度 5.2:1）
-ACCENT_DARK = "#98401F"
-ACCENT_SOFT = "#F6EAE4"
+ACCENT = "#B5520D"           # 橙色操作色：白字 5.0:1、米色底 4.7:1
+ACCENT_DARK = "#97420A"
+ACCENT_SOFT = "#FBE7D3"
 
-RAIL = "#FBFAF6"
-RAIL_HOVER = "#F1EEE6"
-RAIL_ACTIVE = "#F6EAE4"
+RAIL = "#FDFBF3"
+RAIL_HOVER = "#F5EEE1"
+RAIL_ACTIVE = "#FBE7D3"
 
-OK, WARN, BAD, INFO = "#3D7A5A", "#96701B", "#A33A2F", "#3E5F7A"
-OK_SOFT, WARN_SOFT, BAD_SOFT, INFO_SOFT = "#EDF4EF", "#F8F1DF", "#F8E9E6", "#EDF2F6"
+OK, WARN, BAD, INFO = "#2F7552", "#8D6414", "#A33A2F", "#3E5F7A"
+OK_SOFT, WARN_SOFT, BAD_SOFT, INFO_SOFT = "#EAF4EE", "#FBF1DD", "#FAE9E5", "#EBF1F7"
 
 STATUS = {"ok": OK, "warn": WARN, "bad": BAD, "info": INFO, "muted": MUTED}
 STATUS_SOFT = {"ok": OK_SOFT, "warn": WARN_SOFT, "bad": BAD_SOFT, "info": INFO_SOFT, "muted": PAPER_DEEP}
@@ -40,9 +40,10 @@ ROW_HEIGHT = 30
 
 _BODY = ("Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI")
 _DISPLAY = ("宋体", "Georgia", "Times New Roman")
+_LATIN = ("Georgia", "Times New Roman", "宋体")
 _MONO = ("Cascadia Mono", "Consolas", "Courier New")
 
-FAMILY = {"body": _BODY[0], "display": _DISPLAY[0], "mono": _MONO[0]}
+FAMILY = {"body": _BODY[0], "display": _DISPLAY[0], "latin": _LATIN[0], "mono": _MONO[0]}
 _REDUCED = None
 
 
@@ -58,6 +59,7 @@ def install(root):
     """解析本机字体并安装 ttk 样式；重复调用只更新一次。"""
     FAMILY["body"] = _pick(root, _BODY)
     FAMILY["display"] = _pick(root, _DISPLAY)
+    FAMILY["latin"] = _pick(root, _LATIN)
     FAMILY["mono"] = _pick(root, _MONO)
     root.configure(bg=PAPER)
     style = ttk.Style(root)
@@ -264,7 +266,7 @@ def glide(widget, *, axis="y", to=0, steps=6, interval=16):
 
 # ---------- 通用部件 ----------
 class StatTile(tk.Frame):
-    """指标块：大号数字 + 一行标签，用发丝线分隔，不套卡片。"""
+    """指标块：一个数字 + 一个短标签；说明文字只在调用方明确需要时才出现。"""
 
     def __init__(self, parent, title, value="—", hint=""):
         super().__init__(parent, bg=parent.cget("bg"))
@@ -273,12 +275,20 @@ class StatTile(tk.Frame):
         self.value = tk.Label(self, text=value, bg=self.cget("bg"), fg=INK,
                               font=(FAMILY["display"], 30, "bold"), anchor="w")
         self.value.pack(anchor="w", pady=(2, 0))
-        self.hint = tk.Label(self, text=hint, bg=self.cget("bg"), fg=MUTED,
-                             font=(FAMILY["body"], 8), anchor="w", justify="left",
-                             wraplength=230)
-        self.hint.pack(anchor="w")
+        self.hint = None
+        if hint:
+            self._hint_label(hint)
+
+    def _hint_label(self, hint):
+        if self.hint is None:
+            self.hint = tk.Label(self, text=hint, bg=self.cget("bg"), fg=MUTED,
+                                 font=(FAMILY["body"], 8), anchor="w", justify="left",
+                                 wraplength=230)
+            self.hint.pack(anchor="w")
+        else:
+            self.hint.configure(text=hint)
 
     def update_value(self, value, hint=None, tone=None):
         self.value.configure(text=str(value), fg=tone or INK)
-        if hint is not None:
-            self.hint.configure(text=str(hint))
+        if hint:
+            self._hint_label(hint)

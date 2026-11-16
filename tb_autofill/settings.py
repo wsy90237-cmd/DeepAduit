@@ -1,6 +1,8 @@
 import base64
 import json
 import os
+
+from . import APP_NAME
 from pathlib import Path
 import tempfile
 from urllib.parse import urlsplit, urlunsplit
@@ -44,7 +46,7 @@ def validate_key(value):
 
 def _seal(text):
     import win32crypt
-    return base64.b64encode(win32crypt.CryptProtectData(text.encode("utf-8"), "DeepAudit credential", None, None, None, 1)).decode("ascii")
+    return base64.b64encode(win32crypt.CryptProtectData(text.encode("utf-8"), f"{APP_NAME} credential", None, None, None, 1)).decode("ascii")
 
 
 def _unseal(text):
@@ -88,7 +90,7 @@ class SettingsStore:
         temporary = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            handle, name = tempfile.mkstemp(prefix=".deepaudit-settings-", dir=self.path.parent)
+            handle, name = tempfile.mkstemp(prefix=".attesta-settings-", dir=self.path.parent)
             temporary = Path(name)
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
                 handle = None

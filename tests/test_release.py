@@ -5,13 +5,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tb_autofill import __version__
+from tb_autofill import APP_NAME, PRODUCT_MODULES, __version__
 from tools import build_release
 from tools.build_release import NATIVE_MODULES, verify_native
 from tools.inspect_release import inspect
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_release_gate_uses_the_single_product_module_list(self):
+        self.assertEqual({f"tb_autofill.{name}" for name in PRODUCT_MODULES}, NATIVE_MODULES)
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
@@ -50,7 +53,7 @@ class ReleaseGateTests(unittest.TestCase):
     def test_selftest_cannot_pass_with_an_interpreted_business_module(self):
         def simulated_target(args, **kwargs):
             report = Path(args[2].split("=", 1)[1])
-            report.write_text(json.dumps({"version": __version__, "product": "DeepAudit",
+            report.write_text(json.dumps({"version": __version__, "product": APP_NAME,
                                          "native_modules": {"tb_autofill.matching": False}}), encoding="utf-8")
         with patch("tools.build_release.subprocess.run", side_effect=simulated_target):
             with self.assertRaisesRegex(RuntimeError, "原生编译"):
@@ -61,7 +64,7 @@ class ReleaseGateTests(unittest.TestCase):
                        {name: True for name in NATIVE_MODULES if name != 'tb_autofill.skills'}):
             def simulated_target(args, **kwargs):
                 report = Path(args[2].split('=', 1)[1])
-                report.write_text(json.dumps({'version': __version__, 'product': 'DeepAudit',
+                report.write_text(json.dumps({'version': __version__, 'product': APP_NAME,
                                               'native_modules': native}), encoding='utf-8')
             with self.subTest(native=native), patch('tools.build_release.subprocess.run', side_effect=simulated_target):
                 with self.assertRaisesRegex(RuntimeError, '原生编译'):
@@ -70,7 +73,7 @@ class ReleaseGateTests(unittest.TestCase):
     def test_complete_native_selftest_passes(self):
         def simulated_target(args, **kwargs):
             report = Path(args[2].split('=', 1)[1])
-            report.write_text(json.dumps({'version': __version__, 'product': 'DeepAudit',
+            report.write_text(json.dumps({'version': __version__, 'product': APP_NAME,
                                           'native_modules': dict.fromkeys(NATIVE_MODULES, True)}), encoding='utf-8')
         with patch('tools.build_release.subprocess.run', side_effect=simulated_target):
             self.assertEqual(set(verify_native(self.path)['native_modules']), NATIVE_MODULES)
@@ -86,7 +89,7 @@ class ReleaseGateTests(unittest.TestCase):
     def test_source_change_during_compilation_refuses_manifest(self):
         root = Path(self.folder.name)
         (root / 'dist').mkdir()
-        (root / 'dist/DeepAudit.exe').write_bytes(self.pe)
+        (root / 'dist/Attesta.exe').write_bytes(self.pe)
         result = {'native_modules': dict.fromkeys(NATIVE_MODULES, True), 'checks': []}
         with patch.object(build_release, 'ROOT', root), \
                 patch.object(build_release.sys, 'argv', ['build_release.py']), \

@@ -5,7 +5,7 @@ set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHON_EXE=%~dp0runtime\pythonw.exe"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=%~dp0.venv\Scripts\pythonw.exe"
 if not exist "%PYTHON_EXE%" (
-    echo DeepAudit runtime is missing. Extract the whole developer ZIP first.
+    echo Attesta runtime is missing. Extract the whole developer ZIP first.
     echo For a source checkout, install requirements.txt in .venv.
     pause
     exit /b 1

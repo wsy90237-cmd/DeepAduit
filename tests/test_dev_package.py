@@ -67,7 +67,7 @@ class DeveloperPackageTests(unittest.TestCase):
             self.assertTrue(build_dev.runtime_file(Path(name)), name)
 
     def test_launchers_are_ascii_and_use_windows_line_endings(self):
-        for name in ("启动DeepAudit.cmd", "DeepAudit-trial.cmd"):
+        for name in ("启动Attesta.cmd", "Attesta-trial.cmd"):
             data = (build_dev.ROOT / name).read_bytes()
             data.decode("ascii")
             self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
