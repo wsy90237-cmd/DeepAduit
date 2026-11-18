@@ -918,8 +918,17 @@ class PaperDialog(tk.Toplevel):
             return
         prefix = paper.index_no if paper else ""
         name = f"{prefix} {paper.name}-底稿.xlsx"
+        from . import evidence_ui
+        try:
+            project = evidence_ui.current_store(self.app)
+            initial = project.root / "底稿" if project else None
+            if initial is not None:
+                initial.mkdir(exist_ok=True)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("无法打开项目目录", str(exc), parent=self)
+            return
         path = filedialog.asksaveasfilename(title="导出整册 Excel 底稿（草稿，需复核）", defaultextension=".xlsx",
-                                            filetypes=[("Excel 工作簿", "*.xlsx")], initialfile=name)
+                                            filetypes=[("Excel 工作簿", "*.xlsx")], initialfile=name, initialdir=initial)
         if not path:
             return
         if not self._ensure_fresh_choices() or code != self._synced_code:
@@ -939,6 +948,10 @@ class PaperDialog(tk.Toplevel):
         self.journal_rows, self.journal_code = journal, code
         narrative = self.draft if self.draft and self.draft.get("kind") == "pack" else {}
         try:
+            evidence_rows = evidence_ui.paper_rows(self.app, prefix)
+            template = self.app.template_var.get().strip()
+            if template and Path(template).resolve() == Path(path).resolve():
+                raise ValueError("请为底稿选择新文件，保留原 TB 模板。")
             output = dxn_paper.build(
                 path, paper=paper, subject_label=self.app._subject_label(),
                 rows=data.rows, resolve=lambda code, name: audit_index.resolve(
@@ -947,7 +960,8 @@ class PaperDialog(tk.Toplevel):
                 when=datetime.now().strftime("%Y-%m-%d"),
                 procedures=paper_pack.procedures(prefix, paper.name if paper else ""),
                 narrative=narrative, journal=journal, paper_data=data,
-                sheet_add=self.sheet_add, sheet_drop=self.sheet_drop, sampler=sampler)
+                sheet_add=self.sheet_add, sheet_drop=self.sheet_drop, sampler=sampler,
+                evidence_rows=evidence_rows)
         except (OSError, ValueError) as exc:
             messagebox.showerror("无法导出", str(exc), parent=self)
             return
@@ -989,7 +1003,7 @@ class HoverTip:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(APP_NAME)
+        self.title(brand.WINDOW_TITLE)
         self.brand_small = tk.PhotoImage(master=self, file=str(brand.icon(32)))
         self.brand_mark = tk.PhotoImage(master=self, file=str(brand.icon(48)))
         self.brand_icon = tk.PhotoImage(master=self, file=str(brand.icon(256)))

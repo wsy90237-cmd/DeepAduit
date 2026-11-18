@@ -63,7 +63,7 @@ class SettingsStore:
             source = base / "settings.json"
         self.data = {"model": MODELS[0], "ai_enabled": False, "onboarding_done": False,
                      "base_url": DEFAULT_BASE_URL, "key_base_url": DEFAULT_BASE_URL,
-                     "last_connection_check": "", "prepared_by": "", "reviewed_by": ""}
+                     "last_connection_check": "", "prepared_by": "", "reviewed_by": "", "evidence_root": ""}
         if source.exists():
             try:
                 saved = json.loads(source.read_text(encoding="utf-8"))
@@ -80,6 +80,8 @@ class SettingsStore:
                 for name in ("prepared_by", "reviewed_by"):
                     value = self.data.get(name)
                     self.data[name] = value.strip()[:40] if isinstance(value, str) else ""
+                if not isinstance(self.data["evidence_root"], str):
+                    self.data["evidence_root"] = ""
                 if self.data["model"] not in MODELS and not valid_model(self.data["model"]):
                     self.data["model"] = MODELS[0]
             except (OSError, ValueError) as exc:
@@ -179,6 +181,19 @@ class SettingsStore:
             self.data = previous
             raise
         return cleaned
+
+    def save_evidence_root(self, path):
+        """保存本机项目资料共同根目录。"""
+        value = str(path or "").strip()
+        if value and (not Path(value).is_absolute() or any(ord(char) < 32 for char in value)):
+            raise SettingsError("项目资料目录必须是有效的绝对路径。")
+        previous = self.data
+        self.data = dict(previous, evidence_root=value)
+        try:
+            self._write()
+        except SettingsError:
+            self.data = previous
+            raise
 
     def delete_key(self):
         previous = dict(self.data)

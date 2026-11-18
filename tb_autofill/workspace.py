@@ -253,6 +253,9 @@ def _build_papers(app):
     actions.grid(row=0, column=0, sticky="ew", padx=30, pady=(34, 0))
     ttk.Button(actions, text="制作报表项目底稿", style="Accent.TButton",
                command=app._draft_paper).pack(side="left")
+    from . import evidence_ui
+    ttk.Button(actions, text="项目 PDF 与 OCR",
+               command=lambda: evidence_ui.open_project(app)).pack(side="left", padx=6)
     ttk.Button(actions, text="选择待复核底稿", style="Quiet.TButton",
                command=lambda: app._attach_review_document("底稿")).pack(side="left", padx=(8, 0))
     ttk.Button(actions, text="复核底稿文字", style="Quiet.TButton",

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
+import os
+import tempfile
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -926,12 +928,15 @@ _PAPER_JOURNAL = object()
 def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed_by="",
           when="", procedures=(), narrative=None, standard="企业会计准则（一般企业）",
           accounts=None, full=True, journal=_PAPER_JOURNAL, sampler=None,
-          sheet_add=(), sheet_drop=(), paper_data=None):
+          sheet_add=(), sheet_drop=(), paper_data=None, evidence_rows=()):
     """生成鼎信诺式底稿册：目录、审定表、明细表、审计程序、披露表。
 
     ``resolve(code, name)`` 返回本项目匹配的 ``Paper``（可为 None）；``accounts`` 缺省时按报表项目自动归集。
     ``journal`` 未传入时继承 ``paper_data`` 的凭证，显式 ``None`` 表示排除凭证。
     """
+    target = Path(path)
+    if target.suffix.lower() != ".xlsx":
+        raise ValueError("整册底稿须另存为 .xlsx 文件。")
     if not rows:
         raise ValueError("请先读取科目余额表。")
     if paper is None or not getattr(paper, "index_no", ""):
@@ -1048,6 +1053,8 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
                           ("应收" in name or "应付账款" in name or "其他应付款" in name or "预付款" in name or "预收" in name)))
     if has_auxiliary_check:
         entries.append((f"{index_no}-KH", f"{name}客商明细核对", "客商明细核对", "按已选客商维度核对，不叠加多个维度"))
+    if evidence_rows:
+        entries.append((f"{index_no}-ZJ", "证据核对与风险", "证据核对与风险", "逐项核对来源与后续程序"))
     _metadata_sheet(book, meta, index_no)
     _catalog(book, meta, index_no, entries)
     audit, audit_total = _audit_sheet(book, meta, grouped, is_pl=is_pl, index_no=index_no)
@@ -1127,8 +1134,16 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
                   for warning in narrative.get("validation_warnings", ()))
     _review_sheet(book, meta, checks,
                   index_no=index_no, conclusion=conclusion)
-    target = Path(path)
-    book.save(target)
+    if evidence_rows:
+        from .evidence_draft import add_sheet
+        add_sheet(book, evidence_rows)
+    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".xlsx", delete=False) as stage:
+        staged = Path(stage.name)
+    try:
+        book.save(staged)
+        os.replace(staged, target)
+    finally:
+        staged.unlink(missing_ok=True)
     return target
 
 
@@ -1138,7 +1153,7 @@ SUMMARY_NAME = "00 底稿总目录与待补资料.xlsx"
 
 
 def build_all(folder, *, subject_label, rows, resolve, papers=(), prepared_by="", reviewed_by="",
-              when="", procedures_for=None, journals=None, sampler=None):
+              when="", procedures_for=None, journals=None, sampler=None, evidence_for=None):
     """按报表项目批量生成整套底稿，并输出总目录与待补资料汇总。
 
     只为本次账套里真实存在的科目出册；空科目跳过，避免生成大量空表。
@@ -1162,9 +1177,10 @@ def build_all(folder, *, subject_label, rows, resolve, papers=(), prepared_by=""
         scoped = []
         for account in accounts:
             scoped.extend((journals or {}).get(account.code) or [])
+        evidence_rows = evidence_for(index_no) if evidence_for else ()
         build(path, paper=paper, subject_label=subject_label, rows=rows, resolve=resolve,
               prepared_by=prepared_by, reviewed_by=reviewed_by, when=when, procedures=procedures,
-              accounts=accounts, journal=scoped or None, sampler=sampler)
+              accounts=accounts, journal=scoped or None, sampler=sampler, evidence_rows=evidence_rows)
         materials = paper_materials.for_paper(index_no, name)
         pending = paper_materials.pending(materials)
         total = totals(accounts, presentation_direction(paper, accounts))
@@ -1174,7 +1190,7 @@ def build_all(folder, *, subject_label, rows, resolve, papers=(), prepared_by=""
             "is_pl": bool(getattr(accounts[0], "is_profit_loss", False))
             or index_no.startswith(("4-", "5-")),
             "programs": len(procedures), "pending": len(pending), "file": path.name,
-            "sheets": 7 + len(paper_sheets.for_category(_category_of(index_no, name))),
+            "sheets": 7 + len(paper_sheets.for_category(_category_of(index_no, name))) + bool(evidence_rows),
         })
         for item in materials:
             if not item["ready"]:
