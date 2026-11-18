@@ -459,16 +459,14 @@ def _has_relevant_value(item, rows):
     """候选在目标对应的余额或发生额度量中至少有一个已知非零值。"""
     label, parent = str(item.target.label or ""), str(item.target.parent or "")
     for row in rows:
-        value = _relevant_value(item, row)
-        if value in (None, 0):
-            continue
         name = str(row.name or "")
         if (name and label and (name in label or label in name)) or (parent and name == parent):
-            return True
+            if _relevant_value(item, row) not in (None, 0):
+                return True
     return False
 
 
-def review_payload(results, rows, *, limit=25, candidate_limit=8):
+def review_payload(results, rows, *, limit=25, candidate_limit=8, include_global_candidates=True):
     """把疑点与候选交给模型：漏匹配、歧义、匹配未勾选、覆盖风险。"""
     pending = [item for item in results
                if item.status != "protected" and (item.status != "matched" or not item.selected)]
@@ -485,7 +483,7 @@ def review_payload(results, rows, *, limit=25, candidate_limit=8):
                        "existing": None if item.target.value is None else str(item.target.value),
                        "account_evidence": account_evidence(item, rows, limit=candidate_limit)})
     candidates = []
-    for code, label in _candidate_labels(pending, rows, candidate_limit):
+    for code, label in (_candidate_labels(pending, rows, candidate_limit) if include_global_candidates else []):
         row = next((item for item in rows if item.code == code), None)
         if row is None:
             continue
@@ -604,19 +602,33 @@ def _candidate_labels(results, rows, limit):
     return [(row.code, row.name) for row in rows if row.code in seen]
 
 
-def review(client, results, rows, *, limit=25):
+def tb_draft_batches(results, rows, *, batch_size=12):
+    pending = [item for item in results if item.status in {"ambiguous", "unmatched"}
+               and item.target.basis == "book" and not item.target.is_formula
+               and (item.target.value is None or not str(item.target.value).strip())
+               and _has_relevant_value(item, rows)]
+    return [review_payload(pending[offset:offset + batch_size], rows, limit=batch_size, include_global_candidates=False)
+            for offset in range(0, len(pending), batch_size)]
+
+
+def review(client, results, rows, *, limit=25, payload=None, include_unconfirmed=False):
     """AI 复核：返回经本地校验的判断清单，金额不在此处计算。"""
     from .matching import resolve_match
-    payload = review_payload(results, rows, limit=limit)
+    if payload is None:
+        payload = review_payload(results, rows, limit=limit)
     if not payload["targets"]:
         return []
     response = client._request("/chat/completions", {
         "model": client.model, "stream": False, "thinking": {"type": "disabled"},
-        "temperature": 0.1, "max_tokens": 2048, "response_format": {"type": "json_object"},
+        "temperature": 0.1, "max_tokens": 4096 if include_unconfirmed else 2048,
+        "response_format": {"type": "json_object"},
         "messages": [{"role": "system", "content": REVIEW_SYSTEM},
                      {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]})
     try:
-        content = response["choices"][0]["message"]["content"]
+        choice = response["choices"][0]
+        if choice.get("finish_reason") not in (None, "stop"):
+            raise AIError("AI 返回不完整，未采纳任何判断。")
+        content = choice["message"]["content"]
         data = json.loads(content)
         if not isinstance(data, dict) or not isinstance(data.get("decisions"), list):
             raise ValueError("Expected a decision list")
@@ -644,6 +656,7 @@ def review(client, results, rows, *, limit=25):
         proposed = item.get("source_codes") or []
         chosen = [str(code) for code in proposed] if isinstance(proposed, list) else []
         reason = str(item.get("reason", ""))[:160]
+        unconfirmed = []
         if action == "fill" and (not chosen or len(chosen) > 3 or any(code not in allowed_codes for code in chosen)):
             action, reason = "hold", "AI 来源清单缺失、超限或包含候选外科目，未截断或部分采纳，转人工"
         if action == "fill":
@@ -657,10 +670,14 @@ def review(client, results, rows, *, limit=25):
             if action == "fill":
                 check = resolve_match(local_targets[target_id], picked, method="ai", rows=rows)
                 if check.status != "matched":
+                    if include_unconfirmed and check.status == "ambiguous":
+                        unconfirmed = chosen
                     action, reason = "hold", check.reason
-        checked.append({"target_id": target_id, "action": action,
-                        "source_codes": chosen if action == "fill" else [],
-                        "reason": reason})
+        decision = {"target_id": target_id, "action": action,
+                    "source_codes": chosen if action == "fill" else [], "reason": reason}
+        if unconfirmed:
+            decision["unconfirmed_codes"] = unconfirmed
+        checked.append(decision)
     return checked
 
 

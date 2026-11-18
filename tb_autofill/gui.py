@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import json
-from collections import Counter
 from copy import deepcopy
 import queue
 import threading
@@ -17,14 +15,13 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import APP_NAME, __version__, ai as ai_module
+from . import APP_NAME, ai as ai_module
 from . import (analysis, auditlog, audit_index, brand, dxn, dxn_paper, fields, knowledge, matching,
                paper_pack, paper_sheets, papers, sampling, settings, theme, workbook,
                dxn_templates, workspace)
 from .models import Subject, ledger_digest, money
 from .connections import ModelDialog as AISettingsDialog
 
-VERSION = __version__
 PAD = 8
 
 FONT = theme.FAMILY["body"]
@@ -73,6 +70,28 @@ def has_value(value):
 
 def paper_source_key(data):
     return (data.source_path, data.source_tables, data.source_fingerprint, data.source_missing_tables)
+
+
+def request_scope(context):
+    facts = context.get("facts") or {}
+    scope = []
+    for values, label in ((context.get("targets"), "TB 字段、匹配情况及金额"),
+                          (context.get("candidates"), "账套候选科目名称、编码及路径"),
+                          (facts.get("accounts"), "账套科目及金额"),
+                          (facts.get("movements"), "余额变动"),
+                          (facts.get("auxiliary"), "辅助核算记录"),
+                          (facts.get("cutoff_samples"), "截止性样本及凭证摘要"),
+                          (context.get("knowledge_refs"), "知识参考片段")):
+        if values:
+            scope.append(f"{label} {len(values)} 项")
+    if facts.get("journal"):
+        scope.append("序时账统计及凭证线索")
+    if facts.get("available_sheets") or facts.get("template_reference"):
+        scope.append("专项表清单及模板结构")
+    document = context.get("review_document")
+    if document:
+        scope.append(f"{document['role']}正文：{document['name']}（{len(document['text'])} 字符）")
+    return scope
 
 
 class SubjectPicker(tk.Toplevel):
@@ -317,7 +336,7 @@ class PaperDialog(tk.Toplevel):
                  font=(theme.FAMILY["display"], 18, "bold")).pack(anchor="w")
         tk.Label(heading, text="金额取自本机账套，模型只写文字。",
                  bg=BG, fg=SEC, font=(theme.FAMILY["body"], 8)).pack(anchor="w", pady=(3, 0))
-        shell = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        shell = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1, padx=14, pady=12)
         shell.pack(fill="both", expand=True, padx=24, pady=(14, 18))
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(3, weight=1)
@@ -395,8 +414,9 @@ class PaperDialog(tk.Toplevel):
                                      state="normal" if scope == "paper" else "disabled")
         self.export_btn.pack(side="left", padx=8)
         ttk.Button(actions, text="关闭", command=self._close).pack(side="right")
-        tk.Label(actions, textvariable=self.state, bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=12)
-        self.preview_bar = tk.Frame(shell, bg=CARD)
+        tk.Label(shell, textvariable=self.state, bg=CARD, fg=MUTED, font=(FONT, 8), anchor="w").grid(
+            row=8, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.preview_bar = theme.RoundCard(shell, pad=12, bg=theme.SURFACE_ALT)
         self._preview_choice = None
 
         self._reload_choices()
@@ -515,40 +535,36 @@ class PaperDialog(tk.Toplevel):
         return True
 
     def _preview_request(self, payload, model, destination):
-        """在当前底稿窗口预览真实请求，不再弹出独立小窗。"""
-        previous = self.view.get("1.0", "end-1c")
-        self.shell.rowconfigure(5, weight=1)
-        self.view.grid()
-        self.view_bar.grid()
-        self.view.configure(state="normal")
-        self.view.delete("1.0", "end")
-        self.view.insert("1.0", f"发送用途：{payload['purpose']}\n目的服务：{destination} · {model}\n\n"
-                         "以下为本次将发送的完整内容：\n" + json.dumps(payload, ensure_ascii=False, indent=2))
-        self.view.configure(state="disabled")
         self._preview_choice = tk.StringVar(value="")
-        for widget in self.preview_bar.winfo_children():
+        body = self.preview_bar.body
+        for widget in body.winfo_children():
             widget.destroy()
-        ttk.Button(self.preview_bar, text="确认发送", style="Accent.TButton",
-                   command=lambda: self._preview_choice.set("send")).pack(side="left")
-        ttk.Button(self.preview_bar, text="取消", command=lambda: self._preview_choice.set("cancel")).pack(side="left", padx=8)
+        context = payload.get("context") or {}
+        facts = context.get("facts") or {}
+        subject = facts.get("paper") or {}
+        name = subject.get("name") or (facts.get("subject") if isinstance(facts.get("subject"), str) else "")
+        scope = ([f"报表项目：{name}"] if name else []) + request_scope(context)
+        if facts.get("focus"):
+            scope.append("包含你填写的关注点")
+        tk.Label(body, text=f"{payload['purpose']}  ·  {model}", bg=theme.SURFACE_ALT, fg=TX,
+                 font=theme.font(10, weight="bold")).pack(anchor="w")
+        details = f"发送至：{destination}\n范围：" + "；".join(scope or ["当前底稿请求"])
+        tk.Label(body, text=details, bg=theme.SURFACE_ALT, fg=MUTED, justify="left",
+                 wraplength=680).pack(anchor="w", pady=(4, 8))
+        ttk.Button(body, text="发送并继续", style="Accent.TButton",
+                   command=lambda: self._preview_choice.set("send")).pack(side="right")
+        ttk.Button(body, text="取消", command=lambda: self._preview_choice.set("cancel")).pack(side="right", padx=8)
         self.preview_bar.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         self.run_btn.configure(state="disabled")
         self.suggest_btn.configure(state="disabled")
         self.sample_btn.configure(state="disabled")
         self.export_btn.configure(state="disabled")
         self.code_box.configure(state="disabled")
-        self.state.set("请在下方查看本次发送范围和目的服务。")
+        self.state.set("")
         self.wait_variable(self._preview_choice)
         confirmed = self._preview_choice.get() == "send"
         self._preview_choice = None
         self.preview_bar.grid_remove()
-        self.view.grid_remove()
-        self.view_bar.grid_remove()
-        self.shell.rowconfigure(5, weight=0)
-        self.view.configure(state="normal")
-        self.view.delete("1.0", "end")
-        self.view.insert("1.0", previous)
-        self.view.configure(state="disabled")
         self.run_btn.configure(state="normal")
         self.suggest_btn.configure(state="normal")
         self.sample_btn.configure(state="normal")
@@ -941,182 +957,6 @@ class PaperDialog(tk.Toplevel):
         self.state.set(f"已导出整册底稿（{'含' if narrative else '未含'}模型文字）：{output}")
 
 
-class ReviewDialog(tk.Toplevel):
-    """AI 复核：模型只判断来源范围，金额仍由本地按来源重算。"""
-
-    def __init__(self, app):
-        super().__init__(app)
-        self.title("AI 复核疑点")
-        self.transient(app)
-        self.geometry("980x560")
-        self.minsize(860, 480)
-        self.app, self.queue = app, queue.Queue()
-        self.decisions, self.targets, self.rows_by_code = [], {}, {}
-        self.running = False
-
-        shell = tk.Frame(self, bg=CARD)
-        shell.pack(fill="both", expand=True, padx=14, pady=12)
-        shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(1, weight=1)
-
-        head = tk.Frame(shell, bg=CARD)
-        head.grid(row=0, column=0, sticky="ew")
-        self.state = tk.StringVar(value="正在把疑点交给模型复核…")
-        tk.Label(head, textvariable=self.state, bg=CARD, fg=SEC, font=(FONT, 9)).pack(side="left")
-
-        holder = tk.Frame(shell, bg=CARD)
-        holder.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
-        holder.columnconfigure(0, weight=1)
-        holder.rowconfigure(0, weight=1)
-        columns = ("take", "action", "label", "sources", "amount", "reason")
-        titles = {"take": "采纳", "action": "判断", "label": "报表项目", "sources": "AI 指定来源",
-                  "amount": "本地重算", "reason": "理由"}
-        widths = {"take": 50, "action": 60, "label": 210, "sources": 190, "amount": 140, "reason": 320}
-        self.tree = ttk.Treeview(holder, columns=columns, show="headings", selectmode="browse", height=14)
-        for key in columns:
-            self.tree.heading(key, text=titles[key])
-            self.tree.column(key, width=widths[key],
-                             anchor="center" if key in {"take", "action", "amount"} else "w")
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        bar = ttk.Scrollbar(holder, orient="vertical", command=self.tree.yview)
-        bar.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=bar.set)
-        self.tree.bind("<Button-1>", self._toggle)
-
-        actions = tk.Frame(shell, bg=CARD)
-        actions.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        ttk.Button(actions, text="采纳所选", style="Accent.TButton", command=self._apply).pack(side="left")
-        ttk.Button(actions, text="全选 fill", command=lambda: self._check_all("fill")).pack(side="left", padx=8)
-        ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
-        tk.Label(actions, text="hold 表示需补证据；drop 表示不该填。采纳后金额仍由本地重算。",
-                 bg=CARD, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=12)
-        self._load()
-
-    def _load(self):
-        app = self.app
-        try:
-            client = ai_module.DeepSeekClient.from_store(app.store)
-        except (ai_module.AIError, settings.SettingsError) as exc:
-            self.state.set(str(exc))
-            return
-        self.context_revision = app._context_revision
-        results, rows = deepcopy(app.results), tuple(app.rows)
-        payload = ai_module.review_payload(results, rows, limit=25)
-        if not payload["targets"]:
-            self.state.set("没有需要复核的疑点。")
-            return
-        dialog = PayloadDialog(self, payload, client.model, client.base_url)
-        self.wait_window(dialog)
-        if not dialog.confirmed:
-            self.state.set("已取消发送，未请求模型。")
-            return
-        if app._context_revision != self.context_revision:
-            self.state.set("主体、期间或模板已变化，请重新复核。")
-            return
-        self.running = True
-        self.targets = {item["target_id"]: item for item in payload["targets"]}
-        self.rows_by_code = {row.code: row for row in rows}
-
-        def work():
-            try:
-                self.queue.put(("ok", ai_module.review(client, results, rows, limit=25)))
-            except Exception as exc:            # 网络、解析失败都回到界面
-                self.queue.put(("error", str(exc)))
-
-        threading.Thread(target=work, daemon=True).start()
-        self.after(150, self._poll)
-
-    def _poll(self):
-        if not self.running:
-            return
-        if self.app._context_revision != self.context_revision:
-            self.running = False
-            self.state.set("主体、期间或模板已变化，请重新复核。")
-            return
-        try:
-            status, value = self.queue.get_nowait()
-        except queue.Empty:
-            self.after(150, self._poll)
-            return
-        self.running = False
-        if status == "error":
-            self.state.set("复核失败：" + value)
-            return
-        self.decisions = value
-        if not value:
-            self.state.set("没有需要复核的疑点。")
-            return
-        for decision in value:
-            target = self.targets.get(decision["target_id"], {})
-            codes = [code for code in decision["source_codes"] if code in self.rows_by_code]
-            amount = ""
-            result = next((item for item in self.app.results if item.target.id == decision["target_id"]), None)
-            if result is not None and codes:
-                check = matching.resolve_match(result.target, [self.rows_by_code[c] for c in codes],
-                                               method="ai", rows=self.app.rows)
-                amount = fmt_amount(check.amount)
-            self.tree.insert("", "end", iid=decision["target_id"],
-                             values=("☐", decision["action"], target.get("label", ""),
-                                     ", ".join(decision["source_codes"]) or "—", amount,
-                                     decision["reason"]))
-        self.state.set(f"共 {len(value)} 条判断；勾选后点「采纳所选」。")
-        self._check_all("fill")
-
-    def _toggle(self, event):
-        row = self.tree.identify_row(event.y)
-        if not row or self.tree.identify_column(event.x) != "#1":
-            return
-        values = list(self.tree.item(row, "values"))
-        values[0] = "☐" if values[0] == "☑" else "☑"
-        self.tree.item(row, values=values)
-
-    def _check_all(self, action):
-        for iid in self.tree.get_children():
-            values = list(self.tree.item(iid, "values"))
-            values[0] = "☑" if values[1] == action else "☐"
-            self.tree.item(iid, values=values)
-
-    def _apply(self):
-        if self.app._context_revision != self.context_revision:
-            self.state.set("主体、期间或模板已变化，未采纳旧建议。")
-            return
-        applied = Counter()
-        for decision in self.decisions:
-            iid = decision["target_id"]
-            if iid not in self.tree.get_children():
-                continue
-            if self.tree.item(iid, "values")[0] != "☑":
-                continue
-            result = next((item for item in self.app.results if item.target.id == iid), None)
-            if result is None or result.status == "protected":
-                continue
-            if decision["action"] == "fill" and decision["source_codes"]:
-                codes = [code for code in decision["source_codes"] if code in self.rows_by_code]
-                check = matching.resolve_match(result.target, [self.rows_by_code[c] for c in codes],
-                                               method="ai", rows=self.app.rows)
-                result.sources, result.amount = check.sources, check.amount
-                result.status, result.method = check.status, check.method
-                blank = result.target.value is None or str(result.target.value).strip() == ""
-                zero_blank = check.amount == 0 and blank
-                result.reason = check.reason + "｜AI 复核：" + decision["reason"][:40]
-                result.selected = check.selected
-                if zero_blank:
-                    result.reason += "（余额为 0，未写入空白格）"
-                applied["fill" if check.status == "matched" else "hold"] += 1
-            elif decision["action"] == "drop":
-                result.selected = False
-                result.reason = "AI 复核建议放弃：" + decision["reason"][:60]
-                applied["drop"] += 1
-            else:
-                result.reason = "AI 复核保留待补：" + decision["reason"][:60]
-                applied["hold"] += 1
-        matching.validate_claims(self.app.results)
-        self.app._refresh_tree()
-        self.app._audit("ai_review_apply", **{key: int(value) for key, value in applied.items()})
-        self.state.set(f"已采纳：fill {applied['fill']} · drop {applied['drop']} · hold {applied['hold']}")
-        self.destroy()
-
-
 class HoverTip:
     """控件悬浮提示：长主体名、长路径被控件宽度截断时，仍能看到完整内容。"""
 
@@ -1149,7 +989,7 @@ class HoverTip:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"{APP_NAME}  v{VERSION}")
+        self.title(APP_NAME)
         self.brand_small = tk.PhotoImage(master=self, file=str(brand.icon(32)))
         self.brand_mark = tk.PhotoImage(master=self, file=str(brand.icon(48)))
         self.brand_icon = tk.PhotoImage(master=self, file=str(brand.icon(256)))
@@ -1170,7 +1010,6 @@ class App(tk.Tk):
         self.current_subject = None
         self.loaded_subject = None
         self._context_revision = 0
-        self._ai_subset = []
         self.ai_state = tk.StringVar(value="未配置")
         self.library = knowledge.LocalLibrary()
         self.knowledge_refs = []
@@ -1186,6 +1025,7 @@ class App(tk.Tk):
         self.paper_library = audit_index.bundled()
         self._init_style()
         self._build()
+        self.bind("<Map>", lambda event: theme.style_window_caption(self) if event.widget is self else None)
         self._bind_context_changes()
         self.protocol("WM_DELETE_WINDOW", self._request_close)
         self.after(80, self._pump)
@@ -1204,7 +1044,7 @@ class App(tk.Tk):
 
     def _invalidate_review(self, *, clear_ledger=False, clear_subject=False):
         self._context_revision += 1
-        self.scan, self.results, self._ai_subset = None, [], []
+        self.scan, self.results = None, []
         self._chat_clear()
         self.report_btn.configure(state="disabled")
         self.write_btn.configure(state="disabled")
@@ -1223,6 +1063,7 @@ class App(tk.Tk):
         if self.busy:
             messagebox.showinfo("任务进行中", "请等待当前任务完成后退出，以确保临时副本和输出文件正确关闭。")
             return
+        self._save_signers()
         self.destroy()
 
     def _load_settings(self):
@@ -1311,15 +1152,15 @@ class App(tk.Tk):
         bar.grid(row=0, column=0, sticky="ew")
         tk.Frame(bar, bg=BORDER, height=1).pack(side="bottom", fill="x")
         inner = tk.Frame(bar, bg=BG)
-        inner.pack(fill="x", padx=30, pady=(18, 14))
+        inner.pack(fill="x", padx=30, pady=12)
         inner.columnconfigure(0, weight=1)
         tk.Label(inner, textvariable=self.page_title, bg=BG, fg=TX,
-                 font=(theme.FAMILY["display"], 22, "bold"), anchor="w").grid(
+                 font=theme.font(17, weight="bold"), anchor="w").grid(
             row=0, column=0, sticky="w")
 
         right = tk.Frame(inner, bg=BG)
         right.grid(row=0, column=1, sticky="e")
-        ttk.Button(right, text="对话", style="Quiet.TButton",
+        ttk.Button(right, text="审计对话",
                    command=self._toggle_chat).pack(side="left")
 
     def _build_source(self):
@@ -1389,28 +1230,23 @@ class App(tk.Tk):
             ttk.Label(line, text="金额单位", style="Card.TLabel").pack(side="left", padx=(18, 0))
         ttk.Combobox(unit_row, textvariable=self.unit_var, state="readonly", width=6,
                      values=("自动", "元", "千元", "万元", "亿元")).pack(side="left", padx=8)
-        self.scan_state = tk.StringVar(value="")
-        if self.form_wide:
-            action = tk.Frame(body, bg=CARD)
-            action.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-            ttk.Button(action, text="识别并匹配", style="Accent.TButton",
-                       command=self._recognize).pack(side="left")
-            tk.Label(action, textvariable=self.scan_state, bg=CARD, fg=MUTED,
-                     font=(FONT, 8)).pack(side="left", padx=10)
-        else:
-            ttk.Button(line, text="识别并匹配", style="Accent.TButton",
-                       command=self._recognize).pack(side="left", padx=(14, 0))
-            tk.Label(line, textvariable=self.scan_state, bg=CARD, fg=MUTED,
-                     font=(FONT, 8)).pack(side="left", padx=10)
 
     def _build_result(self):
-        outer, body, _head = self._card(1, "识别结果")
+        outer, body, _head = self._card(1, "TB 填列草稿")
         outer.grid_configure(sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
 
         bar = tk.Frame(body, bg=CARD)
         bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        action = tk.Frame(bar, bg=CARD)
+        action.pack(fill="x", pady=(0, 10))
+        self.scan_state = tk.StringVar(value="")
+        self.ai_btn = ttk.Button(action, text="AI 制作 TB", style="Accent.TButton", command=self._draft_tb)
+        self.ai_btn.pack(side="left")
+        ttk.Button(action, text="仅本地匹配", command=self._recognize).pack(side="left", padx=8)
+        tk.Label(action, textvariable=self.scan_state, bg=CARD, fg=MUTED,
+                 font=theme.font(8)).pack(side="left", padx=4)
         controls = tk.Frame(bar, bg=CARD)
         controls.pack(fill="x")
         self.filter_var = tk.StringVar(value="全部")
@@ -1422,8 +1258,6 @@ class App(tk.Tk):
                               ("允许覆盖", self._allow_overwrite), ("指定来源", self._manual_source),
                               ("变动分析", self._analyze_movements)):
             ttk.Button(controls, text=text, command=command).pack(side="left", padx=(6, 0))
-        self.ai_btn = ttk.Button(controls, text="AI 复核", command=self._open_review)
-        self.ai_btn.pack(side="left", padx=(6, 0))
         self.stats = tk.StringVar(value="")
         tk.Label(bar, textvariable=self.stats, bg=CARD, fg=MUTED, font=(FONT, 8), anchor="w").pack(
             fill="x", pady=(7, 0))
@@ -1432,8 +1266,8 @@ class App(tk.Tk):
         headings = {"sel": "✓", "status": "状态", "cell": "单元格", "label": "报表项目", "period": "期间",
                     "amount": "应填值", "actual": "现有值", "diff": "差额", "sources": "来源科目",
                     "reason": "方法 / 原因"}
-        widths = {"sel": 28, "status": 62, "cell": 108, "label": 150, "period": 44, "amount": 88,
-                  "actual": 88, "diff": 76, "sources": 132, "reason": 180}
+        widths = {"sel": 28, "status": 68, "cell": 108, "label": 150, "period": 44, "amount": 116,
+                  "actual": 116, "diff": 116, "sources": 132, "reason": 180}
         anchors = {"sel": "center", "status": "center", "cell": "center", "period": "center",
                    "amount": "e", "actual": "e", "diff": "e"}
         self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse", height=7)
@@ -1517,11 +1351,12 @@ class App(tk.Tk):
     # ---------- 对话面板 ----------
 
     def _build_chat(self):
-        outer = tk.Frame(self, bg=CARD, highlightbackground="#cfd5dd", highlightthickness=1, bd=0)
+        outer = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(1, weight=1)
         self.chat_frame = outer
         self.chat_history = []
+        self._chat_pending = None
         self._chat_proposals = []
 
         head = tk.Frame(outer, bg=CARD)
@@ -1565,10 +1400,17 @@ class App(tk.Tk):
                                   highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACC)
         self.chat_input.grid(row=0, column=0, sticky="ew")
         self.chat_input.bind("<Return>", self._on_chat_return)
+        self.chat_scope = tk.StringVar(value="")
+        self.chat_scope_label = tk.Label(box, textvariable=self.chat_scope, bg=theme.SURFACE_ALT, fg=MUTED,
+                                         font=theme.font(8), wraplength=370, justify="left", anchor="w", padx=8, pady=8)
+        self.chat_scope_label.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.chat_scope_label.grid_remove()
         btns = tk.Frame(box, bg=CARD)
-        btns.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(btns, text="发送", style="Accent.TButton", command=self._chat_send).pack(side="right")
-        ttk.Button(btns, text="清空", command=self._chat_clear).pack(side="right", padx=8)
+        btns.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.chat_send_btn = ttk.Button(btns, text="准备发送", style="Accent.TButton", command=self._chat_send)
+        self.chat_send_btn.pack(side="right")
+        self.chat_clear_btn = ttk.Button(btns, text="清空", command=self._chat_clear)
+        self.chat_clear_btn.pack(side="right", padx=8)
 
     def _toggle_chat(self):
         if self.chat_visible:
@@ -1576,7 +1418,7 @@ class App(tk.Tk):
             self.chat_visible = False
             return
         height = min(620, max(420, self.winfo_height() - 120))
-        self.chat_frame.place(relx=1.0, rely=1.0, anchor="se", x=-16, y=-14, width=340, height=height)
+        self.chat_frame.place(relx=1.0, rely=1.0, anchor="se", x=-16, y=-14, width=430, height=height)
         self.chat_frame.lift()
         self.chat_visible = True
         self.chat_input.focus_set()
@@ -1596,6 +1438,7 @@ class App(tk.Tk):
         self.chat_view.see("end")
 
     def _chat_clear(self):
+        self._cancel_chat_preview()
         self.chat_view.configure(state="normal")
         self.chat_view.delete("1.0", "end")
         self.chat_view.configure(state="disabled")
@@ -1630,6 +1473,9 @@ class App(tk.Tk):
     def _chat_send(self, question=None, extra=None):
         if self.busy:
             return
+        if question is None and self._chat_pending is not None:
+            self._send_chat_preview()
+            return
         text = (self.chat_input.get("1.0", "end") if question is None else question).strip()
         if not text:
             return
@@ -1657,23 +1503,40 @@ class App(tk.Tk):
         except (ai_module.AIError, settings.SettingsError, ValueError) as exc:
             self._chat_append("sys", str(exc))
             return
-        history = list(self.chat_history[-8:])
-        dialog = PayloadDialog(self, {**context, "question": text, "history": history}, client.model, client.base_url)
-        self.wait_window(dialog)
-        if not dialog.confirmed:
-            return
+        self._chat_pending = (revision, text, history, context, client, refs, entries)
+        self.chat_input.configure(state="normal")
+        if question is not None:
+            self.chat_input.delete("1.0", "end")
+            self.chat_input.insert("1.0", text)
+        self.chat_input.configure(state="disabled")
+        scope = ["当前问题", *request_scope(context)]
+        if history:
+            scope.append(f"最近对话 {len(history)} 条")
+        self.chat_scope.set(f"{client.base_url} · {client.model}\n发送范围：" + "；".join(scope))
+        self.chat_scope_label.grid()
+        self.chat_send_btn.configure(text="发送")
+        self.chat_clear_btn.configure(text="取消", command=self._cancel_chat_preview)
+        self.chat_send_btn.focus_set()
+
+    def _cancel_chat_preview(self):
+        self._chat_pending = None
+        self.chat_input.configure(state="normal")
+        self.chat_scope_label.grid_remove()
+        self.chat_send_btn.configure(text="准备发送")
+        self.chat_clear_btn.configure(text="清空", command=self._chat_clear)
+
+    def _send_chat_preview(self):
+        revision, text, history, context, client, refs, entries = self._chat_pending
+        self._cancel_chat_preview()
         if revision != self._context_revision:
             self._chat_append("sys", "主体、期间、模板或复核资料已变化，请重新预览后发送。")
             return
-        if question is None:
-            self.chat_input.delete("1.0", "end")
+        self.chat_input.delete("1.0", "end")
         self._chat_append("me", text)
         detail = f"附 {len(context['targets'])} 个字段 / {len(context['candidates'])} 个科目"
         scope = (context.get("facts") or {}).get("account_scope") or {}
         if scope.get("reports"):
             detail += " / " + "、".join(scope["reports"])
-        if extra and extra.get("facts"):
-            detail += f" / {len(extra['facts']['movements'])} 项变动"
         self._chat_append("sys", detail)
         self.chat_history.append({"role": "user", "content": text})
 
@@ -1690,7 +1553,8 @@ class App(tk.Tk):
     def _on_chat_answer(self, answer):
         if answer.get("intent") == "error":
             self._chat_append("sys", answer["answer"])
-            self.chat_history.pop()
+            if self.chat_history and self.chat_history[-1]["role"] == "user":
+                self.chat_history.pop()
             return
         self._chat_append("ai", answer["answer"])
         self.chat_history.append({"role": "assistant", "content": answer["answer"]})
@@ -1719,17 +1583,71 @@ class App(tk.Tk):
         messagebox.showinfo("功能待实现", "附注与报告生成仍待实现；可按报表项目整册制作底稿，或辅助复核现有文档。",
                             parent=self)
 
-    def _open_review(self):
-        """AI 复核：把疑点交模型判来源范围，采纳后金额仍本地重算。"""
-        if self.busy or self.scan is None:
+    def _draft_tb(self):
+        if self.busy:
             return
         if self.store is None or not self.store.has_key or not self.store.data.get("ai_enabled"):
-            messagebox.showinfo("需要模型服务", "请先在「AI 设置」配置并启用模型服务。")
+            messagebox.showinfo("需要模型服务", "先在「设置」配置并启用模型服务，或选择「仅本地匹配」。",
+                                parent=self)
             return
-        if not self.results:
-            messagebox.showinfo("缺少识别结果", "请先识别并匹配模板。")
+        if self.scan is None:
+            self._recognize(use_ai=True)
             return
-        ReviewDialog(self)
+        if getattr(self.scan, "period_mismatch", None):
+            messagebox.showwarning("请核对期间", "模板与账套的期间不一致，请先更正后再使用 AI 制作。", parent=self)
+            return
+        try:
+            client = ai_module.DeepSeekClient.from_store(self.store)
+        except (ai_module.AIError, settings.SettingsError) as exc:
+            messagebox.showwarning("模型服务不可用", str(exc), parent=self)
+            return
+        results, rows = deepcopy(self.results), tuple(self.rows)
+        self._async("正在整理可由 AI 补配的字段…", lambda: ai_module.tb_draft_batches(results, rows),
+                    lambda batches: self._confirm_tb_draft(client, results, rows, batches))
+
+    def _confirm_tb_draft(self, client, results, rows, batches):
+        if not batches:
+            self._apply_tb_draft([])
+            self.scan_state.set("本地草稿已就绪 · 没有可交给 AI 补配的字段")
+            return
+        revision, scan = self._context_revision, self.scan
+        count = sum(len(batch["targets"]) for batch in batches)
+        if not messagebox.askokcancel(
+            "AI 制作 TB", f"发送至：{client.base_url} · {client.model}\n\n"
+            f"发送范围：{count} 个待匹配空白格，以及相关科目路径、余额和发生额。\n"
+            "不会发送完整工作簿。通过本地校验的建议会加入填列草稿，不会直接写入 Excel。", parent=self
+        ) or revision != self._context_revision:
+            self.scan_state.set("未发送；本地匹配结果保留")
+            return
+
+        def work():
+            if fields.file_digest(scan.path) != scan.digest:
+                raise ValueError("模板文件已被修改，请重新识别后再制作 TB。")
+            return [decision for batch in batches for decision in ai_module.review(
+                client, results, rows, payload=batch, include_unconfirmed=True)]
+
+        self._async(f"AI 正在处理 {count} 个字段…", work, self._apply_tb_draft)
+
+    def _apply_tb_draft(self, decisions):
+        results = deepcopy(self.results)
+        eligible = [item for item in results if item.status in {"ambiguous", "unmatched"}]
+        matching.apply_ai_suggestions(eligible, [item for item in decisions if item["action"] == "fill"], self.rows)
+        matching.validate_claims(results)
+        accepted = {item.target.id: item for item in eligible if item.selected and item.status == "matched"}
+        suggestions = {item["target_id"]: item["unconfirmed_codes"] for item in decisions if item.get("unconfirmed_codes")}
+        names = {row.code: row.name for row in self.rows}
+        for item in self.results:
+            codes = suggestions.get(item.target.id)
+            if codes and item.status in {"ambiguous", "unmatched"}:
+                item.status = "ambiguous"
+                item.reason = "AI 建议核对：" + "、".join(f"{names[code]}（{code}）" for code in codes) + "；未填入"
+        self.results = [accepted.get(item.target.id, item) for item in self.results]
+        if any(item.selected for item in self.results):
+            self.filter_var.set("已选中")
+        self._refresh_tree()
+        note = f" · {len(suggestions)} 项来源建议未写入" if suggestions else ""
+        self.scan_state.set(f"草稿已就绪 · AI 补配 {len(accepted)} 项{note}")
+        self._audit("ai_tb_draft", filled=len(accepted))
 
     def _build_all_papers(self):
         self._draft_document("paper")
@@ -1775,6 +1693,7 @@ class App(tk.Tk):
         if not self.rows or self.loaded_subject is None:
             messagebox.showinfo("缺少科目余额", "请先在「账套与 TB」读取科目余额并确认主体、期间。", parent=self)
             return
+        self._save_signers()
         PaperDialog(self, "paper")
 
     def _set_knowledge_refs(self, refs):
@@ -1813,7 +1732,7 @@ class App(tk.Tk):
         # 知识库已内置并在对话中自动检索，无需先手工选用条目。
         if role == "TB" and not self.results:
             workspace.navigate(self, "tb")
-            messagebox.showinfo("缺少 TB", "请先读取账套并识别模板，再进行 TB 知识库复核。")
+            messagebox.showinfo("缺少 TB", "请先读取账套并制作 TB 草稿，再进行知识库复核。")
             return
         if role in {"附注", "底稿", "报告"} and (not self.review_document or self.review_document["role"] != role):
             self._attach_review_document(role, after=lambda: self._agent_review(role))
@@ -2091,7 +2010,7 @@ class App(tk.Tk):
         value = self.period_var.get()
         return ("opening", "ending") if value == "both" else (value,)
 
-    def _recognize(self):
+    def _recognize(self, *, use_ai=False):
         if self.busy:
             return
         path = self.template_var.get().strip()
@@ -2113,7 +2032,13 @@ class App(tk.Tk):
             return scan, matching.match_fields(scan.fields, list(rows))
 
         self._recognize_started = time.perf_counter()
-        self._async("正在识别模板字段并匹配…", work, self._on_scanned)
+
+        def done(value):
+            self._on_scanned(value)
+            if use_ai:
+                self._draft_tb()
+
+        self._async("正在识别模板字段并匹配…", work, done if use_ai else self._on_scanned)
 
     def _on_scanned(self, value):
         scan, results = value
@@ -2349,50 +2274,8 @@ class App(tk.Tk):
             return
         dialog = AISettingsDialog(self, self.store)
         self.wait_window(dialog)
+        self._cancel_chat_preview()
         self._sync_ai_state()
-
-    def _ai_review(self):
-        if self.busy:
-            return
-        if self.store is None or not self.store.has_key:
-            messagebox.showinfo("未配置 Key", "请先在“AI 设置”中填入自己的 DeepSeek API Key。")
-            return
-        if not self.store.data.get("ai_enabled"):
-            messagebox.showinfo("AI 未启用", "请先在 AI 设置中启用。")
-            return
-        if not self.results:
-            messagebox.showinfo("无结果", "请先识别模板。")
-            return
-        subset = [result for result in self.results
-                  if result.status in {"unmatched", "ambiguous", "duplicate", "missing"}][:30]
-        if not subset:
-            messagebox.showinfo("无需复核", "当前没有待确认或未匹配的字段。")
-            return
-        try:
-            payload = ai_module.assistance_payload(subset, self.rows)
-            client = ai_module.DeepSeekClient.from_store(self.store)
-        except (ai_module.AIError, settings.SettingsError) as exc:
-            messagebox.showwarning("范围过大", str(exc))
-            return
-        dialog = PayloadDialog(self, payload, client.model, client.base_url)
-        self.wait_window(dialog)
-        if not dialog.confirmed:
-            return
-        self._ai_subset = subset
-        self._async(f"正在请求模型复核 {len(subset)} 个字段…",
-                    lambda: client.assist(payload),
-                    self._on_ai_answer)
-
-    def _on_ai_answer(self, answer):
-        applied, notes = matching.apply_ai_suggestions(self._ai_subset, answer.get("suggestions", []), self.rows)
-        matching.validate_claims(self.results)
-        self._refresh_tree()
-        self._log(f"AI 复核：{answer.get('summary', '').strip()}")
-        self._log(f"AI 采纳 {applied} 条建议（金额仍由本地规则计算）。未采纳 {len(notes)} 条。")
-        for note in notes[:5]:
-            self._log("  未采纳：" + note)
-        messagebox.showinfo("AI 复核完成", f"{answer.get('summary', '').strip()}\n\n"
-                                          f"采纳建议：{applied} 条\n未采纳：{len(notes)} 条")
 
     # ---------- 输出 ----------
 
@@ -2524,48 +2407,6 @@ class App(tk.Tk):
         else:
             messagebox.showerror("审计日志校验", f"第 {seq} 条记录异常：{reason}\n\n{self.audit.path}\n"
                                              "请保留现场并人工核对，不要覆盖原文件。")
-
-
-class PayloadDialog(tk.Toplevel):
-    """上传 AI 的内容必须可预览、可取消。"""
-
-    def __init__(self, master, payload, model, destination=""):
-        super().__init__(master)
-        self.title("AI 复核 · 上传内容预览")
-        self.transient(master)
-        self.grab_set()
-        self.resizable(True, True)
-        self.confirmed = False
-        self.geometry("760x560")
-        self.configure(bg=BG)
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
-
-        tk.Label(self, text=f"{payload.get('purpose') or 'AI 复核'} · {model}\n发送至：{destination or '当前配置的模型服务'} · 仅预览中所示范围",
-                 bg=BG, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w", padx=PAD, pady=(PAD, 6))
-
-        frame = ttk.Frame(self, padding=(PAD, 0, PAD, 0))
-        frame.grid(row=1, column=0, sticky="nsew")
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(0, weight=1)
-        text = tk.Text(frame, wrap="none", font=("Consolas", 9), background=CARD, relief="flat",
-                       highlightthickness=1, highlightbackground=BORDER, borderwidth=0, padx=8, pady=6)
-        text.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
-        text.configure(yscrollcommand=scroll.set)
-        text.insert("1.0", json.dumps(payload, ensure_ascii=False, indent=2))
-        text.configure(state="disabled")
-
-        bar = ttk.Frame(self, padding=PAD)
-        bar.grid(row=2, column=0, sticky="ew")
-        ttk.Button(bar, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(bar, text="确认发送", style="Accent.TButton",
-                   command=self._confirm).pack(side="right", padx=8)
-
-    def _confirm(self):
-        self.confirmed = True
-        self.destroy()
 
 
 class SourceDialog(tk.Toplevel):

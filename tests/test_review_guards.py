@@ -34,19 +34,21 @@ class RequestScopeTests(unittest.TestCase):
         return SimpleNamespace(
             busy=False, _context_revision=1, rows=ledger(), results=[], knowledge_refs=[],
             store=SimpleNamespace(has_key=True, data={"ai_enabled": True}), chat_history=[],
-            _chat_append=Mock(), _async=Mock(), _on_chat_answer=Mock(), wait_window=Mock(),
+            _chat_append=Mock(), _async=Mock(), _on_chat_answer=Mock(), _cancel_chat_preview=Mock(),
+            chat_input=Mock(), chat_scope=Mock(), chat_scope_label=Mock(),
+            chat_send_btn=Mock(), chat_clear_btn=Mock(),
         )
 
     def send(self, app):
-        with patch.object(gui, "PayloadDialog", return_value=SimpleNamespace(confirmed=True)), \
-                patch.object(gui.ai_module.DeepSeekClient, "from_store", return_value=SimpleNamespace(
+        with patch.object(gui.ai_module.DeepSeekClient, "from_store", return_value=SimpleNamespace(
                     model="synthetic", base_url="https://model.invalid/v1")):
             gui.App._chat_send(app, question="请复核本次账套的审计证据")
 
     def test_context_change_while_preview_open_cancels_request(self):
         app = self.app()
-        app.wait_window.side_effect = lambda _dialog: setattr(app, "_context_revision", 2)
         self.send(app)
+        app._context_revision = 2
+        gui.App._send_chat_preview(app)
         app._async.assert_not_called()
         self.assertEqual(app.chat_history, [])
         self.assertIn("重新预览", app._chat_append.call_args.args[1])
@@ -54,6 +56,8 @@ class RequestScopeTests(unittest.TestCase):
     def test_unchanged_preview_can_start_request(self):
         app = self.app()
         self.send(app)
+        app._async.assert_not_called()
+        gui.App._send_chat_preview(app)
         app._async.assert_called_once()
 
     def test_unfinished_generation_entrypoints_never_open_dialog_or_send_data(self):

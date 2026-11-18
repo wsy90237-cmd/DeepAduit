@@ -122,6 +122,27 @@ def font(size=9, *, weight="normal", family="body"):
     return (FAMILY[family], size, weight)
 
 
+def style_window_caption(window):
+    if window.tk.call("tk", "windowingsystem") != "win32":
+        return
+    from ctypes import byref, sizeof, windll
+    from ctypes.wintypes import DWORD, HWND, UINT
+
+    try:
+        ancestor = windll.user32.GetAncestor
+        ancestor.argtypes = (HWND, UINT)
+        ancestor.restype = HWND
+        handle = ancestor(window.winfo_id(), 2)
+        if not handle:
+            return
+        border_color, caption_color, text_color = 34, 35, 36
+        for attribute, value in ((border_color, HAIRLINE), (caption_color, PAPER), (text_color, INK)):
+            color = DWORD(int.from_bytes(bytes.fromhex(value[1:]), "little"))
+            windll.dwmapi.DwmSetWindowAttribute(HWND(handle), attribute, byref(color), sizeof(color))
+    except (AttributeError, OSError):
+        return
+
+
 def mono(size=9, *, weight="normal"):
     return (FAMILY["mono"], size, weight)
 

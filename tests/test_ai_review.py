@@ -3,11 +3,12 @@
 import json
 import unittest
 from decimal import Decimal
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from tb_autofill import ai, gui
-from tb_autofill.models import LedgerRow, TargetField
+from tb_autofill.models import LedgerRow, MatchResult, TargetField
 from tb_autofill.matching import match_fields, resolve_match
 
 
@@ -56,6 +57,11 @@ class ReviewGuardTests(unittest.TestCase):
         checked = ai.review(client(decisions), [result], rows)
         self.assertEqual(checked[0]["action"], "hold")
         self.assertEqual(checked[0]["source_codes"], [])
+        batch = ai.tb_draft_batches([result], rows)[0]
+        hint = ai.review(client(decisions), [result], rows, payload=batch, include_unconfirmed=True)[0]
+        self.assertEqual(hint["action"], "hold")
+        self.assertEqual(hint["unconfirmed_codes"], ["660201"])
+        self.assertEqual(hint["source_codes"], [])
 
     def test_review_rejects_partial_or_truncated_source_sets(self):
         result = pending()
@@ -75,23 +81,41 @@ class ReviewGuardTests(unittest.TestCase):
         self.assertEqual(check.method, "ai")
 
     def test_cancelled_payload_preview_starts_no_request(self):
-        app = SimpleNamespace(_context_revision=1, results=[pending()], rows=ledger(), store=object())
-        dialog = SimpleNamespace(app=app, state=Mock(), wait_window=Mock(), running=False)
+        app = SimpleNamespace(_context_revision=1, scan=object(), scan_state=Mock(), _async=Mock())
         service = SimpleNamespace(model="synthetic", base_url="https://example.invalid")
-        with patch.object(ai.DeepSeekClient, "from_store", return_value=service), \
-                patch.object(gui, "PayloadDialog", return_value=SimpleNamespace(confirmed=False)) as preview, \
-                patch.object(gui.threading, "Thread") as thread:
-            gui.ReviewDialog._load(dialog)
+        with patch.object(gui.messagebox, "askokcancel", return_value=False) as preview:
+            gui.App._confirm_tb_draft(app, service, [pending()], ledger(), [{"targets": [{}]}])
         preview.assert_called_once()
-        thread.assert_not_called()
-        self.assertFalse(dialog.running)
+        app._async.assert_not_called()
 
-    def test_stale_review_cannot_apply_to_changed_context(self):
-        app = SimpleNamespace(_context_revision=2)
-        dialog = SimpleNamespace(app=app, context_revision=1, state=Mock(), tree=Mock())
-        gui.ReviewDialog._apply(dialog)
-        dialog.tree.get_children.assert_not_called()
-        self.assertIn("旧建议", dialog.state.set.call_args.args[0])
+    def test_tb_draft_batches_exclude_existing_amounts_formulas_and_audited_fields(self):
+        target = TargetField("S", "B2", "银行存款", "ending")
+        good = [MatchResult(replace(target, cell=f"B{number}"), status="unmatched") for number in range(2, 30)]
+        excluded = [MatchResult(replace(target, cell="C2", value=0), status="ambiguous"),
+                    MatchResult(replace(target, cell="D2", is_formula=True), status="protected"),
+                    MatchResult(replace(target, cell="E2", basis="audited"), status="ambiguous")]
+        batches = ai.tb_draft_batches(good + excluded, ledger())
+        self.assertEqual([len(batch["targets"]) for batch in batches], [12, 12, 4])
+        self.assertTrue(all(not batch["candidates"] for batch in batches))
+        self.assertEqual([item["target_id"] for batch in batches for item in batch["targets"]],
+                         [item.target.id for item in good])
+
+    def test_tb_draft_inserts_local_amount_only_if_it_does_not_conflict(self):
+        target = TargetField("S", "B2", "银行存款", "ending")
+        unrelated = TargetField("S", "B3", "应收账款", "ending")
+        collision = replace(target, cell="B4")
+        results = [resolve_match(target, [ledger()[0]], rows=ledger()),
+                   MatchResult(unrelated, status="unmatched"), MatchResult(collision, status="unmatched")]
+        decisions = [{"target_id": unrelated.id, "action": "fill", "source_codes": ["1122"], "amount": "9"},
+                     {"target_id": collision.id, "action": "fill", "source_codes": ["1002"]}]
+        app = SimpleNamespace(results=results, rows=ledger(), filter_var=Mock(), scan_state=Mock(),
+                              _refresh_tree=Mock(), _audit=Mock())
+        gui.App._apply_tb_draft(app, decisions)
+        self.assertIs(app.results[0], results[0])
+        self.assertTrue(app.results[0].selected)
+        self.assertEqual(app.results[1].amount, Decimal("2000"))
+        self.assertTrue(app.results[1].selected)
+        self.assertFalse(app.results[2].selected)
 
     def test_payload_lists_pending_items_and_candidates(self):
         target = TargetField("S", "B2", "投资性房地产", "ending")

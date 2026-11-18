@@ -177,15 +177,18 @@ class PaperUiTests(unittest.TestCase):
             return context, [ref], [ref]
         with patch.object(gui.ai_module.DeepSeekClient, "from_store", return_value=client), \
                 patch.object(gui.ai_module, "inject_skills", side_effect=enrich), \
-                patch.object(gui, "PayloadDialog", return_value=SimpleNamespace(confirmed=True)) as preview, \
-                patch.object(self.app, "wait_window"), patch.object(self.app, "_on_chat_answer"), \
+                patch.object(self.app, "wait_window") as popup, patch.object(self.app, "_on_chat_answer"), \
                 patch.object(self.app, "_async", side_effect=lambda label, work, done: done(work())):
             self.app._chat_send("固定资产今年有什么异常吗")
-        payload = preview.call_args.args[1]
-        context = {key: value for key, value in payload.items() if key not in {"question", "history"}}
+            _, question, history, context, *_ = self.app._chat_pending
+            self.assertIn("账套科目及金额 2 项", self.app.chat_scope.get())
+            self.assertIn("知识参考片段 1 项", self.app.chat_scope.get())
+            client.converse.assert_not_called()
+            self.app._chat_send()
+        popup.assert_not_called()
         self.assertEqual({item["code"] for item in context["facts"]["accounts"]}, {"1601", "1602"})
         self.assertEqual(context["knowledge_refs"], [ref])
-        client.converse.assert_called_once_with("固定资产今年有什么异常吗", payload["history"], context)
+        client.converse.assert_called_once_with(question, history, context)
         client.converse_with_skills.assert_not_called()
 
     def test_selecting_tree_row_does_not_shrink_report_scope_or_clear_draft(self):
@@ -204,14 +207,18 @@ class PaperUiTests(unittest.TestCase):
         captured = {}
         self.assertEqual(dialog.view.winfo_manager(), "")
         def confirm():
-            captured["text"] = dialog.view.get("1.0", "end-1c")
-            captured["visible"] = dialog.view.winfo_manager()
+            captured["text"] = "\n".join(widget.cget("text") for widget in dialog.preview_bar.body.winfo_children())
+            captured["visible"] = dialog.preview_bar.winfo_manager()
             dialog._preview_choice.set("send")
         dialog.after(20, confirm)
-        payload = {"purpose": "合成测试", "context": {"example": "仅合成数据"}}
+        payload = {"purpose": "合成测试", "system": "不显示提示词",
+                   "context": {"facts": {"paper": {"name": "合成报告"}, "accounts": [{"amount": "123456789"}]}}}
         self.assertTrue(dialog._preview_request(payload, "合成模型", "https://model.invalid"))
-        self.assertIn("仅合成数据", captured["text"])
+        self.assertIn("合成报告", captured["text"])
+        self.assertIn("账套科目及金额 1 项", captured["text"])
         self.assertIn("https://model.invalid", captured["text"])
+        self.assertNotIn("123456789", captured["text"])
+        self.assertNotIn("不显示提示词", captured["text"])
         self.assertEqual(captured["visible"], "grid")
         self.assertEqual(dialog.view.winfo_manager(), "")
 
@@ -320,6 +327,13 @@ class PaperUiTests(unittest.TestCase):
         self.assertTrue({child.code for child in children} <= detail_codes)
 
     def test_export_contains_entire_cash_report_including_cash_and_bank(self):
+        self.app.store = gui.settings.SettingsStore(Path(self.folder.name) / "settings.json")
+        self.app.prepared_by_var.set("合成编制人")
+        self.app.reviewed_by_var.set("合成复核人")
+        self.app._save_signers()
+        reloaded = gui.settings.SettingsStore(self.app.store.path)
+        self.assertEqual(reloaded.data["prepared_by"], "合成编制人")
+        self.assertEqual(reloaded.data["reviewed_by"], "合成复核人")
         dialog = self.dialog()
         path = Path(self.folder.name) / "synthetic.xlsx"
         with patch.object(gui.filedialog, "asksaveasfilename", return_value=str(path)):
@@ -329,6 +343,9 @@ class PaperUiTests(unittest.TestCase):
         catalog = " ".join(str(cell.value) for row in book["底稿目录"] for cell in row if cell.value is not None)
         self.assertNotIn("合成银行甲", catalog)
         self.assertIn("账项明细表", catalog)
+        header = [cell.value for row in book["1-010 明细表"].iter_rows(max_row=5) for cell in row]
+        self.assertIn("编制人：合成编制人", header)
+        self.assertIn("复核人：合成复核人", header)
         detail = book["1-010 明细表"]
         codes = [row[1].value for row in detail if row[0].value and str(row[0].value).startswith("1:K")]
         self.assertEqual(codes, ["1001", "1002.01", "1002.02"])

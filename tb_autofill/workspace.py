@@ -179,6 +179,7 @@ def build_shell(app):
 
 def build_pages(app):
     app.review_status = tk.StringVar(value="")
+    app.overview_entity = tk.StringVar(value="尚未读取账套")
     app.overview_meta = tk.StringVar(value="")
     app.primary_action = tk.StringVar(value="读取账套")
     _build_overview(app)
@@ -190,18 +191,39 @@ def build_pages(app):
 
 
 def _build_overview(app):
-    """项目名、三项数字、一个动作。没有口号，也不重复侧栏导航。"""
     page = scroll_page(app, "overview")
     page.columnconfigure(0, weight=1)
 
-    head = tk.Frame(page, bg=BG)
-    head.grid(row=0, column=0, sticky="ew", padx=30, pady=(34, 0))
-    tk.Label(head, textvariable=app.page_context, bg=BG, fg=theme.INK,
-             font=(theme.FAMILY["display"], 32, "bold"), anchor="w", justify="left",
-             wraplength=900).pack(anchor="w")
-    tk.Label(head, textvariable=app.overview_meta, bg=BG, fg=theme.MUTED,
-             font=(theme.FAMILY["mono"], 9), anchor="w", justify="left",
-             wraplength=900).pack(anchor="w", pady=(6, 0))
+    top = tk.Frame(page, bg=BG)
+    top.grid(row=0, column=0, sticky="ew", padx=30, pady=(24, 0))
+    top.columnconfigure(0, weight=1)
+    head = theme.RoundCard(top)
+    head.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+    surface = theme.SURFACE
+    tk.Label(head.body, text="当前审计项目", bg=surface, fg=MUTED,
+             font=theme.font(9, weight="bold")).pack(anchor="w")
+    entity = tk.Label(head.body, textvariable=app.overview_entity, bg=surface, fg=INK,
+                      font=theme.font(21, weight="bold"), anchor="w", justify="left", wraplength=400)
+    entity.pack(anchor="w", pady=(10, 4))
+    meta = tk.Label(head.body, textvariable=app.overview_meta, bg=surface, fg=MUTED,
+                    font=theme.mono(), anchor="w", justify="left", wraplength=400)
+    meta.pack(anchor="w")
+    head.body.bind("<Configure>", lambda event: (entity.configure(wraplength=event.width),
+                                                   meta.configure(wraplength=event.width)))
+
+    signers = theme.RoundCard(top)
+    signers.grid(row=0, column=1, sticky="nsew")
+    tk.Label(signers.body, text="底稿人员", bg=surface, fg=INK,
+             font=theme.font(11, weight="bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+    for row, (title, variable) in enumerate((("编制人", app.prepared_by_var),
+                                              ("复核人", app.reviewed_by_var)), 1):
+        tk.Label(signers.body, text=title, bg=surface, fg=MUTED).grid(row=row, column=0, sticky="w", pady=(8, 0))
+        entry = ttk.Entry(signers.body, textvariable=variable, width=18)
+        entry.grid(row=row, column=1, sticky="ew", padx=(12, 0), pady=(8, 0))
+        entry.bind("<Return>", app._save_signers)
+        entry.bind("<FocusOut>", app._save_signers)
+    tk.Label(signers.body, text="自动保存到本机，导出底稿时带入。", bg=surface, fg=MUTED,
+             font=theme.font(8)).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
     facts = tk.Frame(page, bg=BG)
     facts.grid(row=1, column=0, sticky="ew", padx=30, pady=(34, 0))
@@ -221,7 +243,7 @@ def _build_overview(app):
 
     tk.Frame(page, bg=theme.HAIRLINE, height=1).grid(row=2, column=0, sticky="ew", padx=30, pady=(30, 0))
     page.rowconfigure(3, weight=1)
-    theme.reveal([head, facts], delay=20, stagger=40)
+    theme.reveal([top, facts], delay=20, stagger=40)
 
 
 def _build_papers(app):
@@ -385,6 +407,8 @@ def refresh_context(app):
     differences = sum(result.difference not in (None, 0) for result in app.results)
     subject = app._subject_label()
     app.page_context.set(subject if subject else "尚未读取账套")
+    if hasattr(app, "overview_entity"):
+        app.overview_entity.set(app.loaded_subject.name if app.loaded_subject else "尚未读取账套")
     meta = getattr(app, "overview_meta", None)
     if meta is not None:
         meta.set(context_meta(app.loaded_subject, app.template_var.get()))
