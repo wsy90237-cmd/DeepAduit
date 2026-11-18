@@ -456,14 +456,8 @@ def _relevant_value(item, row):
 
 
 def _has_relevant_value(item, rows):
-    """候选在目标对应的余额或发生额度量中至少有一个已知非零值。"""
-    label, parent = str(item.target.label or ""), str(item.target.parent or "")
-    for row in rows:
-        name = str(row.name or "")
-        if (name and label and (name in label or label in name)) or (parent and name == parent):
-            if _relevant_value(item, row) not in (None, 0):
-                return True
-    return False
+    from .matching import has_relevant_tb_value
+    return has_relevant_tb_value(item, rows)
 
 
 def review_payload(results, rows, *, limit=25, candidate_limit=8, include_global_candidates=True):
@@ -605,7 +599,6 @@ def _candidate_labels(results, rows, limit):
 def tb_draft_batches(results, rows, *, batch_size=12):
     pending = [item for item in results if item.status in {"ambiguous", "unmatched"}
                and item.target.basis == "book" and not item.target.is_formula
-               and (item.target.value is None or not str(item.target.value).strip())
                and _has_relevant_value(item, rows)]
     return [review_payload(pending[offset:offset + batch_size], rows, limit=batch_size, include_global_candidates=False)
             for offset in range(0, len(pending), batch_size)]

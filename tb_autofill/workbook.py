@@ -4,6 +4,7 @@ import tempfile
 import ntpath
 import re
 from collections import Counter
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -14,6 +15,10 @@ from openpyxl.utils.cell import coordinate_to_tuple
 
 from .fields import file_digest
 from .models import ledger_digest, money
+
+
+def tb_has_gap(difference):
+    return difference is not None and abs(difference) >= Decimal("0.005")
 
 
 def validate_source_context(scan, results, rows):
@@ -36,12 +41,12 @@ def validate_source_context(scan, results, rows):
             raise ValueError("结果包含当前账套之外的来源，请重新识别。")
 
 
-def planned_writes(scan, results, *, rows=None):
+def planned_writes(scan, results, *, rows=None, allow_empty=False):
     from .matching import resolve_match, validate_claims
     validate_source_context(scan, results, rows)
     known = {field.id: field for field in scan.fields}
     selected = [result for result in results if result.selected]
-    if not selected:
+    if not selected and not allow_empty:
         raise ValueError("请先勾选需要写入的已匹配字段。")
     writes, seen = [], set()
     checked = []
@@ -66,6 +71,85 @@ def planned_writes(scan, results, *, rows=None):
     if file_digest(scan.path) != scan.digest:
         raise ValueError("模板文件已被修改，请重新识别后再导出。")
     return writes
+
+
+def tb_output_path(template):
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    return template.with_name(f"{template.stem}-TB填列-{timestamp}{template.suffix}")
+
+
+def tb_balance_checks(path, scan):
+    from .matching import normalize
+
+    groups = {}
+    for target in scan.fields:
+        if target.statement not in {"", "balance_sheet"} or target.measure != "balance":
+            continue
+        row, col = coordinate_to_tuple(target.cell)
+        key = target.sheet, target.period, target.basis
+        label = re.sub(r"\([^()]*\)", "", normalize(target.label))
+        if target.balance_side and label in {"合计", "总计", "余额合计", "余额总计"}:
+            group, side = (*key, row, "借贷余额"), target.balance_side
+        elif not target.balance_side and re.fullmatch(r"资产(?:总计|合计|总额)|负债[及和与]?(?:所有者|股东)权益(?:总计|合计|总额)", label):
+            group = (*key, col, "资产－负债及权益")
+            side = "asset" if label.startswith("资产") else "claims"
+        else:
+            continue
+        groups.setdefault(group, {}).setdefault(side, []).append(target)
+
+    if not groups:
+        return []
+    book = load_workbook(path, data_only=True, read_only=False, keep_links=False)
+    try:
+        checks = []
+        for (sheet, period, basis, _position, title), totals in groups.items():
+            left, right = ("借", "贷") if title == "借贷余额" else ("asset", "claims")
+            found = [totals.get(left, []), totals.get(right, [])]
+            cells = [items[0].cell for items in found if len(items) == 1]
+            difference = None
+            if len(cells) == 2 and all(items[0].is_formula for items in found):
+                try:
+                    amounts = [money(book[sheet][cell].value) for cell in cells]
+                except ValueError:
+                    amounts = []
+                if len(amounts) == 2 and all(amount is not None for amount in amounts):
+                    difference = amounts[0] - amounts[1]
+            checks.append((sheet, period, basis, title, tuple(cells), difference))
+        return checks
+    finally:
+        book.close()
+
+
+def tb_balance_summary(checks, results):
+    summary, verified = [], set()
+    for sheet, period, basis, title, cells, difference in checks:
+        label = f"{sheet} / {title}（{'、'.join(cells)}）"
+        if difference is None:
+            summary.append(f"{label}：无法核验，请检查合计公式及其重算结果。")
+        elif tb_has_gap(difference):
+            summary.append(f"{label}：不平衡，差额 {difference:,.2f}（模板单位）。")
+        else:
+            summary.append(f"{label}：试算平衡。")
+        verified.add((sheet, period, basis))
+    for sheet, period, basis in sorted({(item.target.sheet, item.target.period, item.target.basis)
+                                       for item in results if item.target.measure == "balance"} - verified):
+        summary.append(f"{sheet} / {'期初' if period == 'opening' else '期末'}：未识别到可核验的平衡合计。")
+    return summary
+
+
+class TBBalanceRegression(ValueError):
+    def __init__(self, checks):
+        self.checks = checks
+        super().__init__("自动填列使原本平衡的合计失衡，未发布该结果。")
+
+
+def guard_tb_balance(before, after):
+    balanced = {check[:-1] for check in before if check[-1] is not None and not tb_has_gap(check[-1])}
+    differences = {check[:-1]: check[-1] for check in after}
+    affected = [(*key, differences.get(key)) for key in sorted(balanced)
+                if differences.get(key) is None or tb_has_gap(differences[key])]
+    if affected:
+        raise TBBalanceRegression(affected)
 
 
 def _external_targets(book, path):
@@ -161,8 +245,8 @@ def verify_output(source, output, writes):
         after.close()
 
 
-def write_results(scan, results, output, *, rows=None):
-    writes = planned_writes(scan, results, rows=rows)
+def write_results(scan, results, output, *, rows=None, allow_empty=False, preserve_tb_balance=False):
+    writes = planned_writes(scan, results, rows=rows, allow_empty=allow_empty)
     output = Path(output).resolve()
     if output == scan.path or (output.exists() and os.path.samefile(output, scan.path)):
         raise ValueError("请另存为新文件，不能覆盖原始模板。")
@@ -217,6 +301,8 @@ def write_results(scan, results, output, *, rows=None):
             if initialized:
                 pythoncom.CoUninitialize()
         verify_output(scan.path, draft, writes)
+        if preserve_tb_balance and writes:
+            guard_tb_balance(tb_balance_checks(scan.path, scan), tb_balance_checks(draft, scan))
         if file_digest(scan.path) != scan.digest:
             raise ValueError("导出期间原模板发生变化，未发布输出，请重新识别。")
         # Windows rename refuses an existing destination, including one created after the initial check.

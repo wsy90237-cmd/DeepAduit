@@ -167,6 +167,39 @@ class MatchingTests(unittest.TestCase):
         self.assertIsNone(result.amount)
         self.assertEqual(resolve_match(field,[zero]).status,'missing')
         self.assertEqual(resolve_match(field,[zero,unpaid]).status,'missing')
+
+    def test_vat_summary_uses_complete_signed_components_when_tax_parent_reconciles(self):
+        field = target("应交税费-增值税", statement="balance_sheet", presentation_direction="贷")
+        parent = row("2221", "应交税费", path="应交税费", direction="贷", ending=Decimal(33))
+        unpaid = row("222101", "未交增值税", path="应交税费/未交增值税", level=2, direction="贷", ending=Decimal(30))
+        prepaid = row("222102", "预交增值税", path="应交税费/预交增值税", level=2, direction="借", ending=Decimal(2))
+        land = row("222103", "土地增值税", path="应交税费/土地增值税", level=2, direction="贷", ending=Decimal(5))
+        rows = [parent, unpaid, prepaid, land]
+        result = match_fields([field], rows)[0]
+        self.assertEqual((result.status, result.amount, result.source_ids), ("matched", Decimal(28), ["222101", "222102"]))
+        self.assertEqual(resolve_match(field, [unpaid], rows=rows).status, "missing")
+        self.assertEqual(match_fields([field], rows[:-1])[0].status, "ambiguous")
+
+    def test_development_overhead_is_not_claimed_twice_when_already_in_development_cost(self):
+        root = row("5001", "开发成本", path="开发成本", ending=Decimal(190))
+        child = row("5001.01.08", "开发间接费", path="开发成本/工程/开发间接费", level=3, ending=Decimal(8))
+        total = target("开发成本", parent="存货", cell="D20", statement="balance_sheet")
+        detail = target("开发间接费", parent="存货", cell="D21", statement="balance_sheet")
+        results = match_fields([total, detail], [root, child])
+        self.assertEqual([(item.status, item.amount) for item in results], [("matched", Decimal(190)), ("included", None)])
+        self.assertEqual([item.status for item in match_fields([total, replace(detail, value=8)], [root, child])],
+                         ["duplicate", "duplicate"])
+
+    def test_surplus_reserve_does_not_replace_a_potential_combined_balance(self):
+        field = target("法定盈余公积", statement="balance_sheet", presentation_direction="贷", value=100)
+        reserve = row("410101", "法定盈余公积", path="盈余公积/法定盈余公积", level=2,
+                      direction="贷", ending=Decimal(60))
+        welfare = row("410102", "法定公益金", path="盈余公积/法定公益金", level=2,
+                      direction="贷", ending=Decimal(40))
+        result = match_fields([field], [reserve, welfare])[0]
+        self.assertEqual((result.status, result.selected), ("ambiguous", False))
+        self.assertEqual(resolve_match(field, [reserve], method="ai", rows=[reserve, welfare]).status, "ambiguous")
+        self.assertEqual(match_fields([field], [reserve, replace(welfare, ending=Decimal(0))])[0].amount, Decimal(60))
     def test_tax_details_use_tax_root_and_specific_tax_name(self):
         parent=row('2221','应交税金',direction='贷')
         details=[('城建税','应交城市维护建设税'),('土增税','土地增值税'),

@@ -270,7 +270,8 @@ def _tax_name(name):
     name = normalize(name)
     name = re.sub(r"^(?:应交|应缴)", "", name)
     return {"城建税": "城市维护建设税", "城市建设维护税": "城市维护建设税",
-            "土增税": "土地增值税"}.get(name, name)
+            "土增税": "土地增值税", "城镇土地使用税": "土地使用税",
+            "车船税": "车船使用税"}.get(name, name)
 
 
 def _vat_summary(target):
@@ -279,6 +280,41 @@ def _vat_summary(target):
     parts = _PATH_SEP.split(normalize(target.label))
     return ((len(parts) == 2 and _canonical(parts[0]) == "应交税费" and parts[1] == "增值税")
             or (_canonical(target.parent) == "应交税费" and normalize(target.label) == "增值税"))
+
+
+def _vat_component(row):
+    parts = str(row.path).split("/")
+    names = {"增值税", "未交增值税", "预交增值税", "待抵扣进项税额", "待认证进项税额",
+             "待转销项税额", "增值税留抵税额", "转让金融商品应交增值税", "代扣代交增值税",
+             "简易计税", "增值税检查调整"}
+    return (not row.is_profit_loss and row.level == 2 and len(parts) == 2
+            and _canonical(parts[0]) == "应交税费" and _tax_name(parts[1]) == _tax_name(row.name)
+            and _tax_name(row.name) in names)
+
+
+def _vat_sources(target, index):
+    roots = [row for row in index.rows if row.level == 1 and not row.is_profit_loss
+             and _canonical(row.name) == _canonical(row.path or row.name) == "应交税费"]
+    candidates = [row for row in index.rows if _vat_component(row)]
+    if len(roots) != 1 or not candidates or target.measure != "balance" or target.balance_side:
+        return candidates, "ambiguous_parent"
+    root = roots[0]
+    children = [row for row in index.rows if row.level == 2 and _in_root(row, root.code)]
+    if (any(row not in children for row in candidates) or
+            any(row.basis != target.basis or row.path.rpartition("/")[0] != root.path for row in children) or
+            len({_tax_name(row.name) for row in candidates}) != len(candidates) or
+            any("增值税" in normalize(row.name) and "土地增值税" not in _tax_name(row.name)
+                and row not in candidates for row in children)):
+        return candidates, "ambiguous_parent"
+    attribute = "opening" if target.period == "opening" else "ending"
+    try:
+        amounts = [money(getattr(row, attribute)) for row in [root, *children]]
+        if None not in amounts and abs(amounts[0] * _direction(root) -
+                sum(value * _direction(row) for value, row in zip(amounts[1:], children))) < Decimal("0.005"):
+            return candidates, "vat_rollup"
+    except ValueError:
+        pass
+    return candidates, "ambiguous_parent"
 
 
 def _tax_subject(target):
@@ -315,6 +351,16 @@ def _welfare_detail(target):
             and _canonical(re.sub(r"^应付", "", normalize(target.label))) == "福利费")
 
 
+def _surplus_reserve_gap(target, index):
+    if (target.statement != "balance_sheet" or target.measure != "balance" or target.balance_side
+            or _canonical(target.label) != "法定盈余公积"):
+        return []
+    attribute = "opening" if target.period == "opening" else "ending"
+    return [row for row in index.rows if row.level == 2 and not row.is_profit_loss and row.basis == target.basis
+            and _canonical(row.path) == "盈余公积/法定公益金" and _canonical(row.name) == "法定公益金"
+            and getattr(row, attribute) != 0]
+
+
 def _opening_profit(target):
     return (target.measure == "opening_balance" and target.period == "ending" and target.basis == "book"
             and target.statement == "profit_loss" and _canonical(target.label) == "年初未分配利润"
@@ -331,6 +377,20 @@ def _opening_profit_source(row):
 
 
 def _candidate_rows(target, index):
+    reserve_gap = _surplus_reserve_gap(target, index)
+    if reserve_gap:
+        return [row for row in index.by_name.get("法定盈余公积", [])
+                if _canonical(row.path) == "盈余公积/法定盈余公积"] + reserve_gap, "surplus_reserve_scope"
+    if (target.statement == "balance_sheet" and target.measure == "balance"
+            and not target.parent and not target.balance_side and _canonical(target.label) == "货币资金"):
+        names = {"库存现金", "银行存款", "其他货币资金"}
+        roots = [row for row in index.rows if row.level == 1 and not row.is_profit_loss
+                 and _canonical(row.name) == _canonical(row.path or row.name) and _canonical(row.name) in names]
+        direct = [row for row in index.rows if row.level == 1
+                  and _canonical(row.name) == _canonical(row.path or row.name) == "货币资金"]
+        if roots and not direct:
+            return roots, ("cash_rollup" if len({_canonical(row.name) for row in roots}) == len(roots)
+                           else "ambiguous_parent")
     if target.measure == "opening_balance":
         if not _opening_profit(target):
             return [], "opening_balance"
@@ -365,10 +425,7 @@ def _candidate_rows(target, index):
             return roots,"loan_component"
         return candidates,"ambiguous_parent" if candidates else "loan_component"
     if _vat_summary(target):
-        candidates = [row for row in index.rows if row.level == 2 and not row.is_profit_loss
-                      and _canonical(str(row.path).split("/")[0]) == "应交税费"
-                      and "增值税" in normalize(row.name) and "土地增值税" not in normalize(row.name)]
-        return candidates, "ambiguous_parent"
+        return _vat_sources(target, index)
     subject = _allowance_subject(target)
     if subject:
         candidates = [row for row in index.rows if _allowance_matches(subject, row)]
@@ -480,7 +537,7 @@ def _row_amount(target, row):
     loan = _loan_component(target)
     if loan and (_canonical(target.parent) not in {"",loan[0]} or not _loan_matches(loan,row)):
         return None
-    if _vat_summary(target):
+    if _vat_summary(target) and not _vat_component(row):
         return None
     subject = _allowance_subject(target)
     if subject and not _allowance_matches(subject, row):
@@ -511,6 +568,8 @@ def _row_amount(target, row):
             amount = max(signed if target.balance_side == "借" else -signed, Decimal(0))
         elif amount is not None and target.presentation_direction:
             amount *= _direction(row) * (1 if target.presentation_direction == "借" else -1)
+        elif amount is not None and _vat_summary(target):
+            amount *= -_direction(row)
         elif amount is not None and _canonical(target.label) == "未确认融资费用":
             amount *= _direction(row)
         return amount
@@ -590,6 +649,12 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
                and money(row.opening) != 0 for row in context):
             result.status, result.reason = "ambiguous", "本年利润年初余额非零或缺失，年初利润结转范围不明；需核对结转及调整依据，不能只取未分配利润或自行相加"
             return result
+    if _vat_summary(target):
+        context = _index if _index is not None else (_Index(rows) if rows is not None else None)
+        candidates, rule = _vat_sources(target, context) if context is not None else ([], "")
+        if rule != "vat_rollup" or set(candidates) != set(sources):
+            result.status, result.reason = "missing", "应交税费总额与明细须先勾稽，增值税不能只取部分科目"
+            return result
     try:
         amounts = [_row_amount(target, row) for row in sources]
     except ValueError as exc:
@@ -654,7 +719,15 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
         if any(source not in candidates for source in sources):
             result.status, result.reason = "missing", "来源科目名称、类别或父路径与字段不符，或缺少完整账套上下文"
             return result
-        if (method != "manual" or target.measure == "opening_balance") and (candidate_method == "ambiguous_parent" or len(candidates) != 1):
+        if candidate_method == "surplus_reserve_scope" and method != "manual":
+            result.status, result.reason = "ambiguous", "账套另有法定公益金，需核对模板是否合并列示，未自动改写"
+            return result
+        if candidate_method == "cash_rollup" and set(sources) != set(candidates):
+            result.status, result.reason = "ambiguous", "货币资金须使用全部已识别的一级资金科目，不能只取部分"
+            return result
+        if ((method != "manual" or target.measure == "opening_balance")
+                and candidate_method not in {"cash_rollup", "vat_rollup"}
+                and (candidate_method == "ambiguous_parent" or len(candidates) != 1)):
             result.status, result.reason = "ambiguous", "来源存在歧义，自动匹配或AI不能确定或选中"
             return result
     try:
@@ -766,6 +839,84 @@ def apply_ai_suggestions(results: list[MatchResult], suggestions, rows: list[Led
     return applied, notes
 
 
+def select_tb_writes(results):
+    for result in results:
+        target = result.target
+        if target.basis != "book" or target.is_formula or result.status != "matched" or result.amount is None:
+            continue
+        try:
+            existing = money(target.value)
+        except ValueError:
+            continue
+        if existing is None:
+            result.selected = result.amount != 0
+        else:
+            result.selected = result.overwrite = abs(existing - result.amount) * target.unit_factor >= Decimal("0.005")
+
+
+def has_relevant_tb_value(result, rows):
+    label, parent = normalize(result.target.label), normalize(result.target.parent)
+    sources = set(result.source_ids)
+    for row in rows:
+        name = normalize(row.name)
+        related = row.code in sources or (name and label and (name in label or label in name)) or (parent and name == parent)
+        if not related:
+            continue
+        try:
+            if _row_amount(result.target, row) not in (None, 0):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def tb_review_item(result, rows):
+    if result.selected or result.status in {"protected", "included"} or result.target.is_formula:
+        return False
+    if result.status == "matched":
+        if result.difference is not None:
+            return abs(result.difference) * result.target.unit_factor >= Decimal("0.005")
+        return bool(str(result.target.value or "").strip()) or result.amount not in (None, 0)
+    if result.target.basis != "book":
+        return any(source.basis == result.target.basis for source in result.sources) or result.status == "invalid"
+    if result.status in {"invalid", "duplicate", "missing", "basis_mismatch"}:
+        return True
+    if result.target.value is not None and str(result.target.value).strip():
+        return True
+    return has_relevant_tb_value(result, rows)
+
+
+def tb_ledger_gaps(results, rows):
+    roots = [row for row in rows if row.level == 1 and row.basis == "book"]
+    periods = {result.target.period for result in results if result.target.basis == "book"
+               and result.target.measure == "balance" and result.target.statement != "profit_loss"}
+    used = {period: set() for period in periods}
+    for result in results:
+        target, difference = result.target, result.difference
+        if (target.period in used and target.measure == "balance" and target.basis == "book"
+                and target.statement != "profit_loss" and result.status == "matched"
+                and (result.selected or (difference is not None and abs(difference) * target.unit_factor < Decimal("0.005")))):
+            used[target.period].update(result.source_ids)
+    gaps = []
+    for period in sorted(periods):
+        for root in roots:
+            amount = root.opening if period == "opening" else root.ending
+            if root.is_profit_loss or amount in (None, 0) or root.code in used[period]:
+                continue
+            children = [row for row in rows if row.level == 2 and _in_root(row, root.code)
+                        and (row.opening if period == "opening" else row.ending) not in (None, 0)]
+            if children and all(row.code in used[period] for row in children):
+                try:
+                    child_amount = sum((row.opening if period == "opening" else row.ending)
+                                       * _direction(row) for row in children)
+                    if abs(child_amount - amount * _direction(root)) < Decimal("0.005"):
+                        continue
+                except ValueError:
+                    pass
+            gaps.append((period, root.code, root.name, amount))
+    return gaps
+
+
 def match_fields(targets: list[TargetField], rows: list[LedgerRow]) -> list[MatchResult]:
     _validate_rows(rows)
     index = _Index(rows)
@@ -782,11 +933,14 @@ def match_fields(targets: list[TargetField], rows: list[LedgerRow]) -> list[Matc
                 results.append(MatchResult(target=target, sources=rejected, method=method, status="missing",
                     reason="同名候选均为损益科目，不能作为资产负债表来源"))
                 continue
-        if method == "ambiguous_parent" or len(candidates) != 1:
+        if method in {"ambiguous_parent", "surplus_reserve_scope"} or (
+                len(candidates) != 1 and method not in {"cash_rollup", "vat_rollup"}):
             result = MatchResult(target=target, sources=candidates, method=method)
             result.status = "ambiguous" if candidates or method == "ambiguous_parent" else "unmatched"
             result.reason = "父科目存在多个候选，需要确认完整路径" if method == "ambiguous_parent" else ("存在多个同名候选，需要按科目路径确认" if candidates else "没有可靠匹配，不猜测或自动归入其他")
-            if _vat_summary(target):
+            if method == "surplus_reserve_scope":
+                result.reason = "账套另有法定公益金，需核对模板是否合并列示，未自动改写"
+            elif _vat_summary(target):
                 result.reason = "增值税汇总需确认应交、未交、预交等明细的取数范围，不能用单个同名余额代替"
             elif _tax_subject(target) == "防洪费" and method == "ambiguous_parent":
                 result.reason = "防洪费来源或水利基金等范围存在歧义，需复核模板的填列范围，不能自动当作同义税费"
@@ -797,4 +951,34 @@ def match_fields(targets: list[TargetField], rows: list[LedgerRow]) -> list[Matc
         else:
             result = resolve_match(target, candidates, method, _index=balance_index if target.statement == "balance_sheet" else index)
         results.append(result)
+    development = {}
+    for item in results:
+        if (item.target.statement == "balance_sheet" and item.status == "matched"
+                and _canonical(item.target.parent) == "存货" and _canonical(item.target.label) == "开发成本"
+                and len(item.sources) == 1 and item.sources[0].level == 1):
+            key = item.target.sheet, item.target.period, item.target.basis
+            development.setdefault(key, []).append(item)
+    for item in results:
+        totals = development.get((item.target.sheet, item.target.period, item.target.basis), ())
+        if (len(totals) == 1 and item.target.statement == "balance_sheet" and item.status == "matched"
+                and _canonical(item.target.parent) == "存货"
+                and _canonical(item.target.label) == "开发间接费" and
+                (item.target.value is None or not str(item.target.value).strip()) and item.sources):
+            total = totals[0]
+            if not all(source.level > 1 and _in_root(source, total.sources[0].code)
+                       and _canonical(source.path.split("/")[0]) == "开发成本" for source in item.sources):
+                continue
+            item.status, item.amount, item.selected = "included", None, False
+            item.reason = f"已包含在 {total.target.cell} 开发成本中，不重复填列"
+    detail_claims = {}
+    for result in results:
+        if result.method != "cash_rollup" and result.status == "matched" and _claim_measure(result) == "balance":
+            key = result.target.sheet, result.target.period, result.target.basis
+            detail_claims.setdefault(key, []).extend(result.sources)
+    for result in results:
+        key = result.target.sheet, result.target.period, result.target.basis
+        if result.method == "cash_rollup" and any(_overlap(source, detail)
+               for source in result.sources for detail in detail_claims.get(key, ())):
+            result.status, result.amount, result.selected = "ambiguous", None, False
+            result.reason = "模板同时有货币资金总额和可填写分项，请核对模板汇总关系，未重复填列"
     return validate_claims(results)

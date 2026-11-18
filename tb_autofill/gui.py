@@ -11,6 +11,7 @@ import threading
 import time
 import traceback
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -39,6 +40,7 @@ STATUS_LABEL = {
     "ambiguous": "待确认",
     "unmatched": "未匹配",
     "protected": "公式保护",
+    "included": "已含在总额",
     "duplicate": "重复认领",
     "missing": "缺少依据",
     "basis_mismatch": "口径不符",
@@ -51,6 +53,7 @@ STATUS_TAG = {
     "unmatched": "muted",
     "missing": "muted",
     "protected": "info",
+    "included": "info",
     "basis_mismatch": "bad",
     "invalid": "bad",
 }
@@ -1270,7 +1273,7 @@ class App(tk.Tk):
         controls.pack(fill="x")
         self.filter_var = tk.StringVar(value="全部")
         chooser = ttk.Combobox(controls, textvariable=self.filter_var, state="readonly", width=9,
-                               values=("全部", "可写入", "已匹配", "待确认", "未匹配", "公式保护", "已选中"))
+                               values=("全部", "需我处理", "可写入", "已匹配", "待确认", "未匹配", "公式保护", "已选中"))
         chooser.pack(side="left")
         chooser.bind("<<ComboboxSelected>>", lambda _event: self._refresh_tree())
         for text, command in (("全选可写入", self._select_all_fillable), ("清空", self._clear_selection),
@@ -1624,14 +1627,14 @@ class App(tk.Tk):
     def _confirm_tb_draft(self, client, results, rows, batches):
         if not batches:
             self._apply_tb_draft([])
-            self.scan_state.set("本地草稿已就绪 · 没有可交给 AI 补配的字段")
+            self._save_ai_tb()
             return
         revision, scan = self._context_revision, self.scan
         count = sum(len(batch["targets"]) for batch in batches)
         if not messagebox.askokcancel(
             "AI 制作 TB", f"发送至：{client.base_url} · {client.model}\n\n"
-            f"发送范围：{count} 个待匹配空白格，以及相关科目路径、余额和发生额。\n"
-            "不会发送完整工作簿。通过本地校验的建议会加入填列草稿，不会直接写入 Excel。", parent=self
+            f"发送范围：{count} 个待匹配字段，以及相关科目路径、余额和发生额。不发送完整工作簿。\n\n"
+            "通过校验的账面数（含模板旧金额）将写入新副本并重算；原模板、公式、审定数和调整不改。", parent=self
         ) or revision != self._context_revision:
             self.scan_state.set("未发送；本地匹配结果保留")
             return
@@ -1639,15 +1642,26 @@ class App(tk.Tk):
         def work():
             if fields.file_digest(scan.path) != scan.digest:
                 raise ValueError("模板文件已被修改，请重新识别后再制作 TB。")
-            return [decision for batch in batches for decision in ai_module.review(
-                client, results, rows, payload=batch, include_unconfirmed=True)]
+            decisions = []
+            for batch in batches:
+                try:
+                    decisions.extend(ai_module.review(client, results, rows, payload=batch, include_unconfirmed=True))
+                except ai_module.AIError as exc:
+                    return decisions, f"AI 补配未全部完成：{exc}。已保留本地可确认结果。"
+            return decisions, ""
 
-        self._async(f"AI 正在处理 {count} 个字段…", work, self._apply_tb_draft)
+        def done(value):
+            decisions, warning = value
+            self._apply_tb_draft(decisions)
+            self._save_ai_tb(warning)
+
+        self._async(f"AI 正在处理 {count} 个字段…", work, done)
 
     def _apply_tb_draft(self, decisions):
         results = deepcopy(self.results)
         eligible = [item for item in results if item.status in {"ambiguous", "unmatched"}]
         matching.apply_ai_suggestions(eligible, [item for item in decisions if item["action"] == "fill"], self.rows)
+        matching.select_tb_writes(eligible)
         matching.validate_claims(results)
         accepted = {item.target.id: item for item in eligible if item.selected and item.status == "matched"}
         suggestions = {item["target_id"]: item["unconfirmed_codes"] for item in decisions if item.get("unconfirmed_codes")}
@@ -1658,12 +1672,85 @@ class App(tk.Tk):
                 item.status = "ambiguous"
                 item.reason = "AI 建议核对：" + "、".join(f"{names[code]}（{code}）" for code in codes) + "；未填入"
         self.results = [accepted.get(item.target.id, item) for item in self.results]
-        if any(item.selected for item in self.results):
-            self.filter_var.set("已选中")
+        matching.select_tb_writes(self.results)
+        self.filter_var.set("需我处理")
         self._refresh_tree()
         note = f" · {len(suggestions)} 项来源建议未写入" if suggestions else ""
         self.scan_state.set(f"草稿已就绪 · AI 补配 {len(accepted)} 项{note}")
         self._audit("ai_tb_draft", filled=len(accepted))
+
+    def _save_ai_tb(self, warning=""):
+        scan, results, rows = deepcopy(self.scan), deepcopy(self.results), tuple(self.rows)
+        subject = self._subject_label()
+        selected = sum(item.selected for item in results)
+        has_confirmed = any(item.target.basis == "book" and item.status == "matched" and
+                            item.difference is not None and
+                            abs(item.difference) * item.target.unit_factor < Decimal("0.005") for item in results)
+        unresolved = [item for item in results if matching.tb_review_item(item, rows)]
+        audited = sum(not item.selected and item.status != "protected" and not has_value(item.target.value)
+                      and item.target.basis == "audited" and not any(source.basis == "audited" for source in item.sources)
+                      for item in results)
+        output = workbook.tb_output_path(scan.path)
+        report = output.with_name(f"{output.stem}-待处理.csv")
+
+        def work():
+            error = ""
+            rejected = False
+            try:
+                saved = workbook.write_results(scan, results, output, rows=rows, allow_empty=has_confirmed,
+                                                preserve_tb_balance=True) if selected or has_confirmed else None
+            except workbook.TBBalanceRegression as exc:
+                saved, checks, error, rejected = None, exc.checks, str(exc), True
+            else:
+                try:
+                    checks = workbook.tb_balance_checks(saved, scan) if saved else []
+                except (OSError, ValueError, KeyError) as exc:
+                    checks = []
+                    error = f"无法读取重算结果：{exc}"
+            notes = workbook.tb_balance_summary(checks, results) if checks else (
+                ["重算后未识别到可核验的合计。"] if saved else ["没有可写入的金额，未生成 Excel。"])
+            gaps = matching.tb_ledger_gaps(results, rows)
+            notes.extend(f"{'期初' if period == 'opening' else '期末'}非零科目未确认完整入表：{code} {name} {fmt_amount(amount)} 元"
+                         for period, code, name, amount in gaps)
+            if audited:
+                notes.append(f"{audited} 个空白审定数未自动填列，须提供独立审定来源。")
+            notes.extend(filter(None, (scan.period_warning, warning, error)))
+            try:
+                pending = [item for item in results if item.selected] + unresolved if rejected else unresolved
+                workbook.export_report(report, pending, subject=subject, unit=scan.unit, warnings=notes)
+            except OSError as exc:
+                return saved, checks, len(gaps), f"待处理清单未保存：{exc}", rejected
+            return saved, checks, len(gaps), f"核对与待处理清单：{report}", rejected
+
+        def done(value):
+            saved, checks, gap_count, report_message, rejected = value
+            if saved:
+                self._on_written(saved, scan, results, subject, notify=False)
+            failures = sum(workbook.tb_has_gap(difference) for *_, difference in checks)
+            unknown = len({(item.target.sheet, item.target.period, item.target.basis)
+                           for item in results if item.target.measure == "balance"} -
+                          {(sheet, period, basis) for sheet, period, basis, *_ in checks})
+            unknown += sum(difference is None for *_, difference in checks)
+            balance = f"{failures} 处不平、{unknown} 处未核验" if failures or unknown else (
+                "已核验的合计平衡" if checks else "未核验平衡")
+            state = "已生成待复核副本" if saved and (failures or unknown or gap_count or unresolved or audited or warning) else "已生成 TB"
+            pending_count = len(unresolved) + (selected if rejected else 0)
+            self.scan_state.set(f"{state if saved else '未写入'} · {balance} · 待处理 {pending_count} 项")
+            first_gap = next(((sheet, difference) for sheet, _, _, _, _, difference in checks
+                              if workbook.tb_has_gap(difference)), None)
+            if first_gap:
+                balance += f"（{first_gap[0]}差额 {fmt_amount(first_gap[1])}，模板单位）"
+            if gap_count:
+                balance += f"；{gap_count} 个非零科目待核对入表"
+            if audited:
+                balance += f"；{audited} 个空白审定数需独立来源"
+            output_message = (f"已生成副本（更新 {selected} 项）：{saved}" if saved else
+                              ("本次填列会使原本平衡的表失衡，未发布 Excel。" if rejected else "没有可写入金额，未生成 Excel。"))
+            messagebox.showinfo("TB 制作结果",
+                                f"{output_message}\n\n{balance}；{pending_count} 个字段待处理。"
+                                f"\n{report_message}", parent=self)
+
+        self._async("正在生成 TB、重算并检查平衡…", work, done)
 
     def _build_all_papers(self):
         self._draft_document("paper")
@@ -2076,6 +2163,8 @@ class App(tk.Tk):
         mode = self.filter_var.get()
         if mode == "全部":
             return list(enumerate(self.results))
+        if mode == "需我处理":
+            return [(index, item) for index, item in enumerate(self.results) if matching.tb_review_item(item, self.rows)]
         if mode == "可写入":
             return [(i, r) for i, r in enumerate(self.results)
                     if r.amount is not None and r.status not in {"protected"}]
@@ -2132,6 +2221,10 @@ class App(tk.Tk):
             counts[result.status] = counts.get(result.status, 0) + 1
         selected = sum(1 for result in self.results if result.selected)
         overwrite = sum(1 for result in self.results if result.selected and result.overwrite)
+        if self.filter_var.get() == "需我处理":
+            pending = sum(matching.tb_review_item(item, self.rows) for item in self.results)
+            self.stats.set(f"待处理字段 {pending} 项｜已确认填写 {selected} 项（含更新旧值 {overwrite} 项）")
+            return
         self.stats.set(f"共 {total} 项｜已匹配 {counts['matched']}｜待确认 {counts['ambiguous']}｜"
                        f"未匹配 {counts['unmatched']}｜缺少依据 {counts['missing']}｜公式 {counts['protected']}｜"
                        f"已勾选 {selected}（其中覆盖 {overwrite}）")
@@ -2379,7 +2472,7 @@ class App(tk.Tk):
                     lambda: workbook.write_results(scan, results, path, rows=rows),
                     lambda output: self._on_written(output, scan, results, subject), guard_context=False)
 
-    def _on_written(self, output, scan, results, subject):
+    def _on_written(self, output, scan, results, subject, *, notify=True):
         self._log(f"已另存：{output}")
         self._audit("write_excel", output=str(output), template=str(scan.path),
                     template_digest=scan.digest, subject=subject, unit=scan.unit,
@@ -2388,7 +2481,8 @@ class App(tk.Tk):
                             "after": str(result.amount), "overwrite": result.overwrite,
                             "sources": result.source_ids}
                            for result in results if result.selected])
-        messagebox.showinfo("写入完成", str(output))
+        if notify:
+            messagebox.showinfo("写入完成", str(output))
 
     def _audit(self, event, **fields):
         if self.audit is None:
