@@ -341,14 +341,17 @@ def _tax_matches(subject, row):
             and _tax_name(parts[-1]) == _tax_name(row.name) == subject)
 
 
-def _welfare_detail(target):
+def _payroll_name(name):
+    return _canonical(normalize(name).removeprefix("应付"))
+
+
+def _payroll_detail(target):
     if target.statement != "balance_sheet":
-        return False
+        return ""
     parts = _PATH_SEP.split(normalize(target.label))
     if len(parts) == 2 and _canonical(parts[0]) == "应付职工薪酬":
-        return _canonical(re.sub(r"^应付", "", parts[1])) == "福利费"
-    return (_canonical(target.parent) == "应付职工薪酬"
-            and _canonical(re.sub(r"^应付", "", normalize(target.label))) == "福利费")
+        return _payroll_name(parts[1])
+    return _payroll_name(target.label) if _canonical(target.parent) == "应付职工薪酬" else ""
 
 
 def _surplus_reserve_gap(target, index):
@@ -452,15 +455,15 @@ def _candidate_rows(target, index):
         if len(roots) == 1 and all(_in_root(row, roots[0].code) for row in candidates):
             return roots, "tax_detail"
         return candidates, "ambiguous_parent" if candidates else "tax_detail"
-    if _welfare_detail(target):
+    payroll = _payroll_detail(target)
+    if payroll in {"工资", "福利费"}:
         if _canonical(target.parent) not in {"", "应付职工薪酬"}:
             return [], "ambiguous_parent"
         parents = [row for row in index.rows if row.level == 1 and _canonical(row.name) == "应付职工薪酬"]
         candidates = [row for row in index.rows if not row.is_profit_loss and row.level == 2
                       and len(str(row.path).split("/")) == 2
                       and _canonical(str(row.path).split("/")[0]) == "应付职工薪酬"
-                      and _canonical(re.sub(r"^应付", "", normalize(str(row.path).split("/")[-1])))
-                      == _canonical(re.sub(r"^应付", "", normalize(row.name))) == "福利费"]
+                      and _payroll_name(str(row.path).split("/")[-1]) == _payroll_name(row.name) == payroll]
         if len(parents) != 1 or any(not _in_root(row, parents[0].code) for row in candidates):
             return candidates, "ambiguous_parent" if candidates else "payroll_detail"
         return candidates, "payroll_detail"

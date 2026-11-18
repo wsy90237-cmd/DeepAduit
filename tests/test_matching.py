@@ -3,7 +3,7 @@ from dataclasses import replace
 from decimal import Decimal
 from time import perf_counter
 
-from tb_autofill.matching import apply_ai_suggestions, match_fields, normalize, resolve_match, validate_claims
+from tb_autofill.matching import apply_ai_suggestions, match_fields, normalize, resolve_match, select_tb_writes, validate_claims
 from tb_autofill.models import LedgerRow, TargetField
 
 
@@ -189,6 +189,23 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual([(item.status, item.amount) for item in results], [("matched", Decimal(190)), ("included", None)])
         self.assertEqual([item.status for item in match_fields([total, replace(detail, value=8)], [root, child])],
                          ["duplicate", "duplicate"])
+
+    def test_payroll_split_replaces_existing_wage_value_without_increasing_total(self):
+        parent = row("2211", "应付职工薪酬", path="应付职工薪酬", ending=Decimal(100), direction="贷")
+        wages = row("221101", "应付工资", path="应付职工薪酬/应付工资", ending=Decimal(90), direction="贷", level=2)
+        union = replace(wages, code="221102", name="工会经费", path="应付职工薪酬/工会经费", ending=Decimal(10))
+        unrelated = replace(wages, code="224101", path="其他应付款/应付工资")
+        wage_field = target("应付薪酬-职工工资", parent="应付职工薪酬", statement="balance_sheet",
+                            presentation_direction="贷", value=100, cell="D11")
+        union_field = replace(wage_field, label="应付薪酬-工会经费", value=None, cell="D12")
+        rows = [parent, wages, union, unrelated]
+        results = match_fields([wage_field, union_field], rows)
+        select_tb_writes(results)
+        self.assertEqual([(item.source_ids, item.amount, item.overwrite) for item in results if item.selected],
+                         [(["221101"], Decimal(90), True), (["221102"], Decimal(10), False)])
+        self.assertEqual(resolve_match(wage_field, [unrelated], method="ai", rows=rows).status, "missing")
+        other_wages = replace(wages, code="221103", name="职工工资", path="应付职工薪酬/职工工资")
+        self.assertEqual(match_fields([wage_field], rows + [other_wages])[0].status, "ambiguous")
 
     def test_surplus_reserve_does_not_replace_a_potential_combined_balance(self):
         field = target("法定盈余公积", statement="balance_sheet", presentation_direction="贷", value=100)
