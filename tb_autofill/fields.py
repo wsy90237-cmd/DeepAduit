@@ -38,6 +38,7 @@ class TemplateScan:
     unit: str = "元"
     source_digest: str = ""
     ending_periods: tuple[tuple[str, int, int], ...] = ()
+    period_warning: str = ""
 
 
 UNITS = {"元": Decimal("1"), "千元": Decimal("1000"), "万元": Decimal("10000"), "亿元": Decimal("100000000")}

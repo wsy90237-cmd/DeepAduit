@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-from tb_autofill import APP_NAME
 import runpy
 import sys
 import tempfile
@@ -17,6 +15,8 @@ LOG = Path(tempfile.gettempdir()) / "attesta-gui.log"
 def main():
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(ROOT))
+    from tb_autofill import APP_NAME
+
     try:
         runpy.run_path(str(ROOT / "launch.py"), run_name="__main__")
     except Exception:

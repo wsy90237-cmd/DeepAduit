@@ -245,12 +245,32 @@ class TemplatePeriodTests(unittest.TestCase):
                 results = matching.match_fields(scan.fields, good)
                 self.assertEqual(workbook.planned_writes(scan, results, rows=good)[0][1], Decimal(123))
                 for rows in (self.rows(2024, 12), self.rows(2025, 11), self.rows(0, 0)):
-                    # 识别阶段只提示期间差异，金额仍按账套取；写入阶段才拦截。
                     workbook.validate_source_context(scan, [], rows)
-                    self.assertTrue(scan.period_mismatch)
-                    self.assertTrue(any("截止日期" in warning for warning in scan.warnings))
-                    with self.assertRaises(ValueError):
-                        workbook.planned_writes(scan, matching.match_fields(scan.fields, rows), rows=rows)
+                    self.assertIn("模板：2025-12", scan.period_warning)
+                    results = matching.match_fields(scan.fields, rows)
+                    self.assertEqual(workbook.planned_writes(scan, results, rows=rows)[0][1], Decimal(123))
+                    self.assertEqual(scan.warnings.count(scan.period_warning), 1)
+                workbook.validate_source_context(scan, [], good)
+                self.assertFalse(scan.period_warning)
+                self.assertFalse(any("与账套期间不同" in warning for warning in scan.warnings))
+
+    def test_ai_and_save_dialog_can_continue_with_different_template_period(self):
+        scan, rows = self.scan(), self.rows(2026, 9)
+        workbook.validate_source_context(scan, [], rows)
+        app = SimpleNamespace(busy=False, scan=scan, rows=rows,
+                              results=matching.match_fields(scan.fields, rows),
+                              store=SimpleNamespace(has_key=True, data={"ai_enabled": True}),
+                              _async=Mock())
+        with patch.object(gui.ai_module.DeepSeekClient, "from_store", return_value=Mock()), \
+                patch.object(gui.messagebox, "showwarning") as warning, \
+                patch.object(gui.messagebox, "askyesno", return_value=False) as confirmation, \
+                patch.object(gui.filedialog, "asksaveasfilename", return_value="") as save:
+            gui.App._draft_tb(app)
+            gui.App._write_excel(app)
+        app._async.assert_called_once()
+        save.assert_called_once()
+        confirmation.assert_not_called()
+        warning.assert_not_called()
 
     def test_invalid_conflicting_and_midmonth_dates_stop_scan(self):
         for first, second in (("截止日期：2025-12-15", None), ("截止日期：2025-02-30", None),
@@ -283,10 +303,10 @@ class TemplatePeriodTests(unittest.TestCase):
             scan = self.scan(value)
             self.assertEqual(scan.ending_periods, (("试算平衡表(期末)", year, month),))
             workbook.validate_source_context(scan, [], self.rows(year, month))
-            self.assertFalse(getattr(scan, "period_mismatch", None))
+            self.assertFalse(scan.period_warning)
             for rows in (self.rows(year, month) + self.rows(2023, 12), None):
                 workbook.validate_source_context(scan, [], rows)
-                self.assertTrue(scan.period_mismatch)
+                self.assertTrue(scan.period_warning)
                 self.assertTrue(any("截止日期" in warning for warning in scan.warnings))
         for value in ("会计期间：2026年7-9月", "截止日：2023年2月29日"):
             with self.assertRaises(ValueError):
@@ -305,7 +325,7 @@ class TemplatePeriodTests(unittest.TestCase):
         scan = fields.scan_template(self.path)
         self.assertEqual(scan.ending_periods, (("试算平衡表(期末)", 2025, 12),))
         workbook.validate_source_context(scan, [], self.rows(2024, 12))
-        self.assertTrue(scan.period_mismatch)
+        self.assertTrue(scan.period_warning)
 
     def test_unselected_ending_period_does_not_bind_opening_only_import(self):
         self.scan()
@@ -341,9 +361,10 @@ class TemplatePeriodTests(unittest.TestCase):
                     sheet["B2"] = expression
                 scan = self.save_and_scan(book)
                 self.assertEqual(scan.ending_periods, ((sheet.title, 2025, 12),))
-                bad_rows = self.rows(2026, 10)
-                with self.assertRaises(ValueError):
-                    workbook.planned_writes(scan, matching.match_fields(scan.fields, bad_rows), rows=bad_rows)
+                rows = self.rows(2026, 10)
+                self.assertEqual(workbook.planned_writes(scan, matching.match_fields(scan.fields, rows),
+                                                        rows=rows)[0][1], Decimal(123))
+                self.assertIn("账套：2026-10", scan.period_warning)
 
     def test_unsupported_date_formula_cannot_be_empty_or_partially_resolved(self):
         for expression in ('="截止日期："&TEXT(B2,"yyyy年mm月dd日")',
@@ -430,12 +451,10 @@ class TemplatePeriodTests(unittest.TestCase):
                 rows = self.rows()
                 result = matching.match_fields(scan.fields, rows)[0]
                 self.assertEqual(workbook.planned_writes(scan, [result], rows=rows)[0][1], Decimal(123) / factor)
-                # 单位识别与期间提示互相独立：期间不符只在写入阶段拦截。
-                workbook.validate_source_context(scan, [], self.rows(2026, 10))
-                self.assertTrue(scan.period_mismatch)
-                with self.assertRaises(ValueError):
-                    workbook.planned_writes(scan, [matching.match_fields(scan.fields, self.rows(2026, 10))[0]],
-                                            rows=self.rows(2026, 10))
+                rows = self.rows(2026, 10)
+                result = matching.match_fields(scan.fields, rows)[0]
+                self.assertEqual(workbook.planned_writes(scan, [result], rows=rows)[0][1], Decimal(123) / factor)
+                self.assertIn("账套：2026-10", scan.period_warning)
 
     def test_unrelated_formula_and_literal_ampersand_remain_safe(self):
         self.scan()

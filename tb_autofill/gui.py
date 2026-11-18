@@ -1247,6 +1247,11 @@ class App(tk.Tk):
         ttk.Button(action, text="仅本地匹配", command=self._recognize).pack(side="left", padx=8)
         tk.Label(action, textvariable=self.scan_state, bg=CARD, fg=MUTED,
                  font=theme.font(8)).pack(side="left", padx=4)
+        self.period_state = tk.StringVar(value="")
+        self.period_notice = tk.Label(bar, textvariable=self.period_state, bg=theme.WARN_SOFT, fg=theme.WARN,
+                                      font=theme.font(8), anchor="w", justify="left", padx=8, pady=4)
+        self.period_notice.bind("<Configure>", lambda event: self.period_notice.configure(
+            wraplength=max(event.width - 16, 1)))
         controls = tk.Frame(bar, bg=CARD)
         controls.pack(fill="x")
         self.filter_var = tk.StringVar(value="全部")
@@ -1592,9 +1597,6 @@ class App(tk.Tk):
             return
         if self.scan is None:
             self._recognize(use_ai=True)
-            return
-        if getattr(self.scan, "period_mismatch", None):
-            messagebox.showwarning("请核对期间", "模板与账套的期间不一致，请先更正后再使用 AI 制作。", parent=self)
             return
         try:
             client = ai_module.DeepSeekClient.from_store(self.store)
@@ -2101,6 +2103,12 @@ class App(tk.Tk):
 
     def _refresh_stats(self):
         workspace.refresh_context(self)
+        warning = self.scan.period_warning if self.scan else ""
+        self.period_state.set(warning)
+        if warning:
+            self.period_notice.pack(fill="x", after=self.ai_btn.master, pady=(0, 8))
+        else:
+            self.period_notice.pack_forget()
         if not self.results:
             self.stats.set("")
             return
@@ -2345,16 +2353,6 @@ class App(tk.Tk):
         if not selected:
             messagebox.showwarning("尚未勾选", "请先勾选需要写入的字段。")
             return
-        mismatch = getattr(self.scan, "period_mismatch", None)
-        confirmed_mismatch = False
-        if mismatch:
-            periods = "、".join(f"{year}-{month:02d}" for year, month in mismatch)
-            if not messagebox.askyesno(
-                    "期间口径不一致",
-                    f"模板声明的截止日期为 {periods}，与当前账套期间不一致。\n\n"
-                    "金额仍按当前账套填列，是否继续写入？\n（建议写入后复核期间与附注口径）"):
-                return
-            confirmed_mismatch = True
         suffix = self.scan.path.suffix
         path = filedialog.asksaveasfilename(title="另存为新的 Excel 文件", defaultextension=suffix,
                                             filetypes=[("Excel 工作簿", f"*{suffix}")],
@@ -2362,8 +2360,6 @@ class App(tk.Tk):
         if not path:
             return
         scan, results, rows = deepcopy(self.scan), deepcopy(self.results), tuple(self.rows)
-        if confirmed_mismatch:
-            scan.allow_period_mismatch = True     # 已人工确认期间差异，放行本次写入
         subject = self._subject_label()
         self._async(f"正在写入 {len(selected)} 个字段（调用 Excel 重算并逐格校验）…",
                     lambda: workbook.write_results(scan, results, path, rows=rows),
