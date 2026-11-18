@@ -26,6 +26,10 @@ def project_entity(subject):
     return f"{subject.name} [{subject.id}]"
 
 
+def review_state(app):
+    return [(r.target.id, r.status, r.selected, r.overwrite, r.source_ids, str(r.amount)) for r in app.results]
+
+
 def source_key(app):
     subject = app.loaded_subject
     if subject is None or not app.rows:
@@ -36,7 +40,7 @@ def source_key(app):
         raise ValueError("TB 模板尚未识别或已变化，请先重新识别。")
     state = [subject.name, subject.id, subject.ledger_id, subject.project_path, subject.year,
              subject.month, ledger_digest(app.rows), scan.digest if scan else "",
-             [(r.target.id, r.status, r.selected, r.overwrite, r.source_ids, str(r.amount)) for r in app.results]]
+             review_state(app)]
     return hashlib.sha256(json.dumps(state, ensure_ascii=False).encode()).hexdigest()
 
 

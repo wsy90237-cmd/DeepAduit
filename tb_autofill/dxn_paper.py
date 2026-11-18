@@ -320,7 +320,8 @@ def _period_text(subject_label):
     year, _, month = tail.partition("-")
     if year.strip().isdigit() and month.strip().isdigit():
         month = int(month)
-        return f"{year.strip()}年01月—{year.strip()}年{month:02d}月", f"{year.strip()}年{month:02d}月{31 if month in (1,3,5,7,8,10,12) else 30}日"
+        from calendar import monthrange
+        return f"{year.strip()}年01月—{year.strip()}年{month:02d}月", f"{year.strip()}年{month:02d}月{monthrange(int(year), month)[1]}日"
     return tail or WAIT, tail or WAIT
 
 

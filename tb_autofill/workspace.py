@@ -254,7 +254,7 @@ def _build_papers(app):
     ttk.Button(actions, text="制作报表项目底稿", style="Accent.TButton",
                command=app._draft_paper).pack(side="left")
     from . import evidence_ui
-    ttk.Button(actions, text="项目 PDF 与 OCR",
+    ttk.Button(actions, text="项目资料与自动底稿",
                command=lambda: evidence_ui.open_project(app)).pack(side="left", padx=6)
     ttk.Button(actions, text="选择待复核底稿", style="Quiet.TButton",
                command=lambda: app._attach_review_document("底稿")).pack(side="left", padx=(8, 0))
@@ -264,6 +264,8 @@ def _build_papers(app):
              font=(theme.FAMILY["body"], 9), anchor="w", justify="left",
              wraplength=820).grid(row=1, column=0, sticky="w", padx=30, pady=(14, 0))
     page.rowconfigure(2, weight=1)
+    app.intake_status = tk.StringVar(master=app, value="读取账套后建立公司年度资料夹。")
+    ttk.Label(page, textvariable=app.intake_status, wraplength=820).grid(row=2, column=0, sticky="nw", padx=30)
 
 
 def _build_notes(app):

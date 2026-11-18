@@ -13,27 +13,41 @@ from .evidence_ownership import check_ownership
 from .pdf_ocr import extract_pdf_pages
 
 
-def open_project(app):
+def activate_project(app):
     if app.busy:
         return
     subject = app.loaded_subject
     if subject is None:
         messagebox.showinfo("项目资料", "请先在账套与 TB 中读取主体和期间。", parent=app)
         return
-    root = filedialog.askdirectory(title="选择各公司底稿的共同存放目录", parent=app,
-                                   initialdir=getattr(app, "evidence_root", None) or
-                                   (app.store.data.get("evidence_root") if app.store else None))
+    root = getattr(app, 'evidence_root', '') or (app.store.data.get('evidence_root') if app.store else '')
+    if not root:
+        root = filedialog.askdirectory(title="首次设置：选择各公司底稿的共同存放目录", parent=app)
     if not root:
         return
     try:
         store = ProjectStore(root, draft.project_entity(subject), subject.year)
-        if app.store:
+        if app.store and app.store.data.get('evidence_root') != root:
             app.store.save_evidence_root(root)
-        window = EvidenceDialog(app, store)
+        from .auto_intake_ui import Intake
+        intake = Intake(app, store)
     except Exception as exc:
         messagebox.showerror("无法打开项目资料", str(exc), parent=app)
         return
     app.evidence_store, app.evidence_root = store, root
+    app.intake = intake
+    intake.start()
+    return store
+
+
+def open_project(app):
+    if app.busy:
+        return
+    intake = getattr(app, 'intake', None)
+    store = intake.store if intake and intake.current() else activate_project(app)
+    if not store:
+        return
+    window = EvidenceDialog(app, store)
     window.grab_set()
 
 
@@ -68,7 +82,13 @@ class EvidenceDialog(tk.Toplevel):
         bar = ttk.Frame(self)
         bar.grid(row=0, column=0, sticky="ew", padx=12, pady=8)
         self.button(bar, "导入 PDF", self.import_pdf)
-        self.button(bar, "打开资料夹", lambda: os.startfile(store.inbox))
+        self.button(bar, "打开公司资料夹", lambda: os.startfile(store.root))
+        intake = getattr(app, 'intake', None)
+        if intake and intake.store is store:
+            auto_bar = ttk.Frame(self)
+            auto_bar.grid(row=6, column=0, sticky='ew', padx=12, pady=6)
+            self.button(auto_bar, '自动收件详情', lambda: self.show_text('自动收件', '\n'.join(intake.notes)))
+            self.button(auto_bar, '确认自动底稿范围', intake.confirm)
         self.button(bar, "识别资料夹", lambda: self.import_files(sorted(store.inbox.glob("*.pdf"))))
         self.button(bar, "打开原页所在 PDF", self.open_pdf)
         self.button(bar, "已核对资料归属", self.review_doc)

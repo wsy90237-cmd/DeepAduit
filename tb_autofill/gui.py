@@ -685,7 +685,8 @@ class PaperDialog(tk.Toplevel):
         self.sample_source = paper_source_key(data)
         self.state.set(f"已选择 {len(self.sample_selection)} 笔抽凭样本；导出后请复核。")
 
-    def _read_paper_data(self, subject, rows, accounts, install_path, want_journal):
+    @staticmethod
+    def _read_paper_data(subject, rows, accounts, install_path, want_journal):
         if subject is None:
             raise ValueError("请先读取科目余额，确定主体、期间及账套后再制作底稿。")
         data = dxn.read_paper_data(subject, tuple(row.code for row in accounts), install_path,
@@ -1077,7 +1078,7 @@ class App(tk.Tk):
         self._refresh_tree()
 
     def _request_close(self):
-        if self.busy:
+        if self.busy or getattr(getattr(self, 'intake', None), 'running', False):
             messagebox.showinfo("任务进行中", "请等待当前任务完成后退出，以确保临时副本和输出文件正确关闭。")
             return
         self._save_signers()
@@ -2092,6 +2093,9 @@ class App(tk.Tk):
         self._log(f"科目余额读取完成：{len(self.rows)} 个科目，"
                   f"编码 {self.rows[0].code}–{self.rows[-1].code}。")
         workspace.refresh_context(self)
+        from . import evidence_ui
+        if hasattr(self, 'intake_status'):
+            evidence_ui.activate_project(self)
 
     # ---------- 模板识别 ----------
 
