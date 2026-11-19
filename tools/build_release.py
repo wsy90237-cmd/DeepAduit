@@ -35,10 +35,7 @@ def build_arguments(compiler, jobs):
                f"--report={ROOT / 'build' / 'native-compilation-report.xml'}",
                f"--product-name={brand.PRODUCT_NAME}", f"--file-description={brand.FILE_DESCRIPTION}",
                f"--file-version={__version__}", f"--product-version={__version__}",
-               f"--windows-company-name={brand.COMPANY}", f"--windows-copyright={brand.COPYRIGHT}",
-               f"--windows-product-name={brand.PRODUCT_NAME}",
-               f"--windows-file-description={brand.FILE_DESCRIPTION}",
-               f"--windows-file-version={__version__}"]
+               f"--company-name={brand.COMPANY}", f"--copyright={brand.COPYRIGHT}"]
     if compiler == "msvc":
         options.append("--msvc=latest")
     elif compiler == "zig":
