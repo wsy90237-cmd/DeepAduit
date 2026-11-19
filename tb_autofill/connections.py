@@ -9,7 +9,7 @@ from tkinter import messagebox, ttk
 from urllib.parse import urlsplit
 import webbrowser
 
-from . import APP_NAME, ai, settings, theme
+from . import APP_NAME, ai, netdiag, settings, theme
 
 BG, FG = theme.PAPER, theme.INK
 FONT = (theme.FAMILY["body"], 10)
@@ -80,6 +80,8 @@ class ModelDialog(tk.Toplevel):
         footer.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(18, 0))
         ttk.Button(footer, text="获取 DeepSeek Key", style="Ghost.TButton",
                    command=lambda: webbrowser.open("https://platform.deepseek.com/api_keys")).pack(side="left")
+        ttk.Button(footer, text="网络诊断", style="Ghost.TButton",
+                   command=self._diagnose).pack(side="left", padx=(4, 0))
         self.delete_button = ttk.Button(footer, text="删除本机 Key", style="Ghost.TButton", command=self._delete)
         self.delete_button.pack(side="left", padx=8)
         ttk.Button(footer, text="关闭", command=self._close).pack(side="right")
@@ -87,6 +89,8 @@ class ModelDialog(tk.Toplevel):
             self.delete_button.configure(state="disabled")
         self.key_entry.focus_set()
         self.key_entry.bind("<Return>", lambda _event: self._connect())
+        # 内容建好后按实际高度收紧，避免下方大片空白。
+        theme.fit_window(self, 720, 460, min_width=560, min_height=320, fit_content=True)
 
     # ---- 交互 ----
 
@@ -183,6 +187,23 @@ class ModelDialog(tk.Toplevel):
         self.state.set(text)
         self.status.configure(fg=theme.BAD if error else theme.WARN if warn else theme.OK)
 
+    def _diagnose(self):
+        """逐段核对网络、代理、证书与鉴权；结果可整段复制给同事或服务商。"""
+        if self.busy:
+            return
+        try:
+            endpoint = settings.normalize_base_url(self.endpoint.get())
+        except settings.SettingsError as exc:
+            self._say(str(exc), error=True)
+            return
+        key = self.key.get().strip()
+        if not key and self.store.has_key:
+            try:
+                key = self.store.get_key(endpoint)
+            except settings.SettingsError:
+                key = ""
+        DiagnosticsDialog(self, endpoint, key)
+
     def _delete(self):
         if self.busy:
             return
@@ -201,6 +222,98 @@ class ModelDialog(tk.Toplevel):
             self.after_cancel(self.poll_job)
         self.key.set("")
         self.destroy()
+
+
+class DiagnosticsDialog(tk.Toplevel):
+    """连接诊断：时间 / 代理 / DNS / TCP / TLS / 鉴权六段，逐条给结论与下一步。"""
+
+    def __init__(self, master, endpoint, key):
+        super().__init__(master)
+        self.title(f"{APP_NAME} · 网络诊断")
+        self.transient(master)
+        self.configure(bg=BG)
+        self.endpoint, self.key = endpoint, key
+        self.report = ""
+        self.busy = False
+        self.queue = queue.Queue()
+        theme.fit_window(self, 780, 540, min_width=560, min_height=360)
+
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=20, pady=(18, 8))
+        tk.Label(head, text="模型连接诊断", bg=BG, fg=FG,
+                 font=(theme.FAMILY["display"], 16, "bold")).pack(anchor="w")
+        self.state = tk.StringVar(value=f"正在诊断 {endpoint} …")
+        tk.Label(head, textvariable=self.state, bg=BG, fg=theme.MUTED,
+                 font=(theme.FAMILY["body"], 9), anchor="w", justify="left").pack(anchor="w", pady=(4, 0))
+
+        holder = tk.Frame(self, bg=BG)
+        holder.pack(fill="both", expand=True, padx=20)
+        self.text = tk.Text(holder, wrap="word", font=(theme.FAMILY["mono"], 9), bg=theme.SURFACE,
+                            fg=theme.INK, relief="flat", padx=12, pady=10, height=16)
+        self.text.pack(side="left", fill="both", expand=True)
+        bar = ttk.Scrollbar(holder, orient="vertical", command=self.text.yview)
+        bar.pack(side="right", fill="y")
+        self.text.configure(yscrollcommand=bar.set)
+
+        actions = tk.Frame(self, bg=BG)
+        actions.pack(fill="x", padx=20, pady=16)
+        ttk.Button(actions, text="复制报告", style="Ghost.TButton", command=self._copy).pack(side="left")
+        self.again = ttk.Button(actions, text="重新诊断", command=self._run)
+        self.again.pack(side="left", padx=6)
+        ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
+        self._run()
+
+    def _run(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.again.configure(state="disabled")
+        self.state.set(f"正在诊断 {self.endpoint} …（最多约 30 秒）")
+        self._write("正在检查系统时间、代理、DNS、TCP、证书与鉴权 …\n")
+
+        def work():
+            try:
+                findings = netdiag.diagnose(self.endpoint, self.key)
+                text = netdiag.format_report(findings, title=f"Attesta 模型连接诊断 · {self.endpoint}")
+            except Exception as exc:              # 诊断本身失败也要给出可读结论
+                text = f"诊断未能完成：{exc}"
+            self.queue.put(text)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(150, self._poll)
+
+    def _poll(self):
+        try:
+            text = self.queue.get_nowait()
+        except queue.Empty:
+            try:
+                self.after(150, self._poll)
+            except tk.TclError:
+                pass
+            return
+        self._done(text)
+
+    def _done(self, text):
+        self.busy = False
+        self.again.configure(state="normal")
+        self.report = text
+        self._write(text)
+        bad = text.count("[异常]")
+        self.state.set("结论：链路正常，可直接连接。" if not bad else
+                       f"发现 {bad} 处异常，按下方「→」提示处理后点「重新诊断」。")
+
+    def _write(self, text):
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", text)
+        self.text.configure(state="disabled")
+
+    def _copy(self):
+        if not self.report:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(self.report)
+        self.state.set("报告已复制到剪贴板，可直接粘贴给同事或服务商。")
 
 
 class ImaDialog(tk.Toplevel):

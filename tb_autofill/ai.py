@@ -6,7 +6,7 @@ import socket
 import urllib.error
 import urllib.request
 
-from . import analysis, skills
+from . import analysis, netdiag, skills
 from .settings import DEFAULT_BASE_URL, MODELS, normalize_base_url, validate_key, valid_model, SettingsError
 
 DEFAULT_MODEL = MODELS[0]
@@ -160,32 +160,85 @@ class DeepSeekClient:
         endpoint = store.data.get("base_url", DEFAULT_BASE_URL)
         return cls(store.get_key(endpoint), store.data.get("model", DEFAULT_MODEL), base_url=endpoint)
 
-    def _request(self, path, payload=None):
+    def _preflight(self, address):
+        """先做一次短超时的 TCP 握手，把「网络不通」和「模型慢」分开报。
+
+        原实现只有一个 60 秒总超时：DNS 失败、防火墙丢包、代理没开都要等满 60 秒，
+        最后统一报「无法连接或超时」，同事无法判断该查网络还是查 Key。
+        """
+        host, _, port = address.rpartition(":")
+        host, port = (host or address), int(port or 443)
+        try:
+            with socket.create_connection((host, port), timeout=netdiag.CONNECT_TIMEOUT):
+                return
+        except OSError as exc:
+            raise AIError(netdiag.describe_failure(exc, host)) from None
+
+    def _http_error(self, exc):
+        try:
+            body = exc.read()[:400].decode("utf-8", "replace")
+        except (OSError, ValueError):
+            body = ""
+        detail = ""
+        try:
+            parsed = json.loads(body)
+            message = parsed.get("error", {})
+            detail = str(message.get("message") if isinstance(message, dict) else message or "")[:120]
+        except (ValueError, AttributeError):
+            detail = body.strip()[:120]
+        messages = {
+            400: "请求格式不被模型支持",
+            401: "API Key 无效或已失效",
+            402: "模型账户余额不足",
+            403: "Key 无权访问此接口",
+            404: "接口路径不存在，请把地址填成 https://api.deepseek.com（不要带 /v1 或 /chat/completions）",
+            407: "代理要求认证，本机未配置代理账号",
+            429: "请求受限，请稍后重试",
+            500: "模型服务异常",
+            502: "模型服务网关错误",
+            503: "模型服务繁忙",
+        }
+        text = messages.get(exc.code, f"模型服务请求失败（HTTP {exc.code}）")
+        if detail and self.key:
+            # 服务端可能把请求内容原样回显；凭证绝不进入界面或日志。
+            detail = detail.replace(self.key, "***")
+        return f"{text}{'：' + detail if detail else ''}"
+
+    def _request(self, path, payload=None, *, timeout=None):
         if payload is not None and self.base_url not in {DEFAULT_BASE_URL, DEFAULT_BASE_URL + "/v1"}:
             payload = {k: v for k, v in payload.items() if k != "thinking"}
         if self.transport:
             return self.transport(path, payload)
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+        host, port, _base = netdiag.endpoint_parts(self.base_url)
+        proxy, _source = netdiag.resolve_proxy(self.base_url + path)
+        # 预检只连到真正要建立的连接（直连站点，或本地/公司代理）。
+        self._preflight(proxy or f"{host}:{port}")
+        handlers = [_NoRedirect]
+        if proxy:
+            handlers.append(urllib.request.ProxyHandler({"http": f"http://{proxy}", "https": f"http://{proxy}"}))
+        opener = urllib.request.build_opener(*handlers)
         request = urllib.request.Request(self.base_url + path, data=data, headers={
             "Authorization": "Bearer " + self.key, "Content-Type": "application/json", "Accept": "application/json",
         })
         try:
-            with urllib.request.build_opener(_NoRedirect).open(request, timeout=60) as response:
+            with opener.open(request, timeout=timeout or netdiag.READ_TIMEOUT) as response:
                 raw = response.read(2_000_001)
                 if len(raw) > 2_000_000:
                     raise AIError("AI 返回过大，请减少本次选中的条目")
                 return json.loads(raw)
+        except AIError:
+            raise
         except urllib.error.HTTPError as exc:
-            messages = {400: "请求格式不被模型支持", 401: "API Key 无效或已失效", 402: "模型账户余额不足", 403: "Key 无权访问此接口", 429: "请求受限，请稍后重试", 500: "模型服务异常", 503: "模型服务繁忙"}
-            raise AIError(messages.get(exc.code, f"模型服务请求失败（HTTP {exc.code}）")) from None
-        except (urllib.error.URLError, socket.timeout, TimeoutError, OSError):
-            raise AIError("无法连接模型服务或请求超时；本地结果已保留，可稍后重试。") from None
+            raise AIError(self._http_error(exc)) from None
+        except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as exc:
+            raise AIError(netdiag.describe_failure(exc, host)) from None
         except (ValueError, UnicodeError):
             raise AIError("模型服务返回了无法解析的内容，本地结果未改变。") from None
 
-    def list_models(self):
+    def list_models(self, timeout=None):
         """以账户实际开通的模型为准，避免把模型名写死在代码里。"""
-        response = self._request("/models")
+        response = self._request("/models", timeout=timeout or netdiag.FAST_READ_TIMEOUT)
         data = response.get("data") if isinstance(response, dict) else None
         if not isinstance(data, list):
             raise AIError("无法读取账户可用模型列表")

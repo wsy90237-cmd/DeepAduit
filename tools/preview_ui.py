@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--page", choices=(*workspace.PAGES, "settings"), default="overview",
                         help="页面键；settings 为 security 的易记别名")
     parser.add_argument("--shot", help="截取当前页面到指定 PNG 后退出，用于设计核对")
+    parser.add_argument("--size", help="窗口尺寸，如 1000x620；用于核对小屏与高分屏下的排版")
     args = parser.parse_args()
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -33,6 +34,10 @@ def main():
                 patch.object(auditlog, "AuditLog", lambda: log_class(root / "synthetic.jsonl")), \
                 patch.object(knowledge, "LocalLibrary", lambda: library_class(root / "synthetic-knowledge.sqlite3")):
             app = gui.App()
+        if args.size:
+            width, height = (int(value) for value in args.size.lower().split("x"))
+            app.minsize(1, 1)
+            app.geometry(f"{width}x{height}+40+40")
         app.install_var.set("合成演示 · 不连接真实账套")
         app.project_var.set(f"{APP_NAME} / 合成审计项目")
         subject = Subject("SYNTHETIC", "合成示例企业（虚构）", 2026, 6, "synthetic-only")

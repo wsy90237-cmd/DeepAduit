@@ -36,6 +36,8 @@ Attesta 面向企业年度财务报表审计。从鼎信诺科目余额的只读
 
 在应用「AI 设置」中输入自己的 Key，验证凭证并获取模型，再按需验证对话能力。默认 DeepSeek，也支持提供 `/models` 与 JSON Chat Completions 的 HTTPS 兼容接口。切换 API 地址必须重新输入对应服务的 Key。对话能力测试会产生少量 token 用量，点击前有提示。
 
+连接失败时点「模型设置 → 网络诊断」：逐段检查系统时间、代理（含 PAC 自动配置）、DNS、TCP 443、TLS 证书与 Key 鉴权，每段给出结论和下一步，报告可整段复制。长文本生成使用 180 秒读取超时，连接不通时 8 秒内返回具体原因，不再统一报「无法连接或超时」。
+
 ima 需要独立的 Client ID 和 API Key，在 [ima 官方开放接口页](https://ima.qq.com/agent-interface) 自行配置，再到「财会知识库 → 配置 ima 连接」加密保存。搜索库名或填写库 ID 后检索正文；“已关注”不代表接口必然有读取权限。无法取得正文时不会把标题冒充内容，不能访问的库也不会自动导出或绕过授权。
 
 暂时没有 ima 接口权限时，可导入自己有权使用的 TXT、MD、DOCX、文字 PDF。本地为关键词检索，不提供 OCR 或向量检索。审计对话点击“准备发送”后在输入区显示目的服务、模型和资料范围，再点击“发送”，不会打开独立预览窗口。引用编号缺失或不存在时，提示并丢弃改动提案。引用编号校验不能证明原文适用性或模型结论正确。
@@ -129,6 +131,8 @@ python -m venv .venv
 ```
 
 MSVC 需 Visual Studio 2022+ C++ 构建工具；本机没有 MSVC 可使用 `--compiler zig`，Nuitka 会下载其支持的编译器。源码保留开发能力，编译包用 isolated 模式，减少外部 Python 路径注入；这不等于无法逆向。
+
+本机快速自用（无 MSVC 时）：`.venv\Scripts\python -B tools/build_app.py` 用 PyInstaller 生成 `dist\Attesta.exe`，构建后自动跑离线自检并写出 `BUILDINFO.json`、`SHA256SUMS.txt`、`INSTALL.txt`。该产物定位为本机/内部分发试用版，未经过原生编译门槛，不能用于对外正式发布。
 
 只分发以下文件：`dist/Attesta.exe`、`SHA256SUMS.txt`、`INSTALL.txt`、`BUILDINFO.json`。不要分发开发包、源代码、C 代码、编译报告、构建目录、真实数据或日志。
 

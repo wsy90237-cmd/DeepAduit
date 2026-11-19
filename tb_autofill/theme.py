@@ -103,7 +103,7 @@ def install(root):
                     padding=(8, 4))
     style.map("Quiet.TButton", background=[("active", PAPER_DEEP)], foreground=[("active", INK)])
     style.configure("Treeview", background=SURFACE, fieldbackground=SURFACE, foreground=INK,
-                    borderwidth=0, rowheight=ROW_HEIGHT, font=(FAMILY["body"], 9))
+                    borderwidth=0, rowheight=px(root, ROW_HEIGHT), font=(FAMILY["body"], 9))
     style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
     style.configure("Treeview.Heading", background=SURFACE, foreground=MUTED, relief="flat",
                     font=(FAMILY["body"], 8), padding=(8, 8))
@@ -111,7 +111,7 @@ def install(root):
     style.map("Treeview", background=[("selected", ACCENT_SOFT)], foreground=[("selected", INK)])
     for bar in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
         style.configure(bar, background=HAIRLINE, troughcolor=PAPER, borderwidth=0,
-                        arrowsize=12, width=9)
+                        arrowsize=px(root, 12), width=px(root, 9))
         style.map(bar, background=[("active", HAIRLINE_STRONG)])
     style.configure("TProgressbar", background=ACCENT, troughcolor=PAPER_DEEP, borderwidth=0,
                     thickness=3)
@@ -120,6 +120,108 @@ def install(root):
 
 def font(size=9, *, weight="normal", family="body"):
     return (FAMILY[family], size, weight)
+
+
+# ---------- 分辨率 / 缩放适配 ----------
+# Tk 的几何参数是物理像素，字号按 DPI 放大。设计稿以 96 DPI 为准，
+# 因此所有写死的像素常量都要经过 px() 换算，否则 125% / 150% 缩放下必然裁切。
+BASE_DPI = 96.0
+
+
+def ui_scale(root):
+    """当前屏幕的界面缩放比（96 DPI = 1.0），限制在 0.8–2.0 之间。"""
+    try:
+        dpi = float(root.winfo_fpixels("1i"))
+    except (tk.TclError, ValueError):
+        dpi = BASE_DPI
+    if dpi <= 0:
+        dpi = BASE_DPI
+    return min(2.0, max(0.8, dpi / BASE_DPI))
+
+
+def px(root, value):
+    """设计像素 → 当前缩放下的屏幕像素。"""
+    return max(1, int(round(value * ui_scale(root))))
+
+
+def work_area(root):
+    """主显示器可用工作区（已扣任务栏），取不到时退回整屏尺寸。"""
+    try:
+        from ctypes import byref, windll
+        from ctypes.wintypes import RECT
+
+        rect = RECT()
+        if windll.user32.SystemParametersInfoW(0x0030, 0, byref(rect), 0):
+            width, height = rect.right - rect.left, rect.bottom - rect.top
+            if width > 320 and height > 240:
+                return width, height
+    except (AttributeError, OSError, ValueError):
+        pass
+    return root.winfo_screenwidth(), root.winfo_screenheight()
+
+
+def fit_window(window, width, height, *, min_width=0, min_height=0, margin=12, fit_content=False):
+    """把窗口限制在可用工作区内并居中，返回最终 (宽, 高)。
+
+    小屏（1366×768）或 150% 缩放时，固定尺寸对话框会超出屏幕导致按钮点不到；
+    这里以工作区为上界，同时把 minsize 一并收紧。fit_content=True 时按内容收紧高度，
+    避免表单类对话框下方留一大片空白。
+    """
+    area_w, area_h = work_area(window)
+    limit_w, limit_h = max(320, area_w - margin * 2), max(240, area_h - margin * 2)
+    final_w = min(max(px(window, width), 320), limit_w)
+    final_h = min(max(px(window, height), 240), limit_h)
+    if fit_content:
+        try:
+            window.update_idletasks()
+            final_h = min(final_h, max(240, window.winfo_reqheight() + px(window, 8)))
+        except tk.TclError:
+            pass
+    if min_width or min_height:
+        window.minsize(min(px(window, min_width) if min_width else 0, final_w),
+                       min(px(window, min_height) if min_height else 0, final_h))
+    left = max(0, (area_w - final_w) // 2)
+    top = max(0, (area_h - final_h) // 2)
+    window.geometry(f"{final_w}x{final_h}+{left}+{top}")
+    return final_w, final_h
+
+
+def wrap_to_parent(label, *, ratio=1.0, minimum=160, padding=0):
+    """让换行宽度跟随父容器，避免固定 wraplength 在大/小屏上过宽或过窄。"""
+
+    def resize(event):
+        width = int((event.width - padding) * ratio)
+        if width >= minimum:
+            try:
+                label.configure(wraplength=width)
+            except tk.TclError:
+                pass
+
+    target = label.master
+    target.bind("<Configure>", resize, add="+")
+    return label
+
+
+def fit_columns(tree, spec, *, minimum=56):
+    """按控件实际宽度等比分配 Treeview 列宽。
+
+    固定像素列宽在 125%/150% 缩放或窄窗口下会把「差额」「来源科目」挤没，
+    这里保留设计稿的比例，宽度随窗口变化重算。
+    """
+    total = float(sum(spec.values())) or 1.0
+
+    def resize(event):
+        width = event.width
+        if width < minimum * 2:
+            return
+        for key, weight in spec.items():
+            try:
+                tree.column(key, width=max(minimum, int(width * weight / total)))
+            except tk.TclError:
+                return
+
+    tree.bind("<Configure>", resize, add="+")
+    return tree
 
 
 def style_window_caption(window):

@@ -105,7 +105,7 @@ class SubjectPicker(tk.Toplevel):
         self.title("选择主体")
         self.transient(parent)
         self.resizable(True, True)
-        self.geometry("760x460")
+        theme.fit_window(self, 760, 460, min_width=520, min_height=320)
         self.result = None
         self._labels = list(labels)
 
@@ -180,8 +180,7 @@ class SheetSuggestionDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("选择要采纳的建议")
         self.transient(parent)
-        self.geometry("760x480")
-        self.minsize(600, 360)
+        theme.fit_window(self, 760, 480, min_width=600, min_height=360)
         self.result = None
         self.items = [(action, item) for action in ("add", "remove") for item in suggestions.get(action, [])]
         self.choices = [tk.BooleanVar(value=False) for _ in self.items]
@@ -218,8 +217,7 @@ class VoucherPicker(tk.Toplevel):
         super().__init__(parent)
         self.title("选择抽凭样本")
         self.transient(parent)
-        self.geometry("1080x580")
-        self.minsize(800, 420)
+        theme.fit_window(self, 1080, 580, min_width=800, min_height=420)
         self.result = None
         rows = [row for row in journal if row.amount > 0 and not sampling.is_profit_closing(row)]
         self.default = dict(sampling.pick(rows))
@@ -230,8 +228,10 @@ class VoucherPicker(tk.Toplevel):
         note = "规则初选可调整；按凭证号、摘要或对方科目搜索，点击首列勾选。内部往来由项目组判断。"
         if not getattr(journal, "complete", True):
             note += " 当前序时账已截取，样本总体不完整。"
-        tk.Label(self, text=note, bg=CARD, fg=SEC, font=(FONT, 9), anchor="w", wraplength=1000,
-                 justify="left").grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+        note_label = tk.Label(self, text=note, bg=CARD, fg=SEC, font=(FONT, 9), anchor="w",
+                              wraplength=1000, justify="left")
+        note_label.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+        theme.wrap_to_parent(note_label, padding=36)
         self.query = tk.StringVar()
         ttk.Entry(self, textvariable=self.query).grid(row=1, column=0, sticky="ew", padx=12, pady=4)
         holder = tk.Frame(self, bg=CARD)
@@ -319,8 +319,7 @@ class PaperDialog(tk.Toplevel):
         self.scope = scope
         self.title(self.SCOPE_TITLE.get(scope, "生成草稿"))
         self.transient(app)
-        self.geometry("900x700")
-        self.minsize(780, 560)
+        theme.fit_window(self, 900, 700, min_width=760, min_height=540)
         self.app = app
         self.store = app.store
         self.queue = queue.Queue()
@@ -1012,12 +1011,17 @@ class App(tk.Tk):
         self.brand_mark = tk.PhotoImage(master=self, file=str(brand.icon(48)))
         self.brand_icon = tk.PhotoImage(master=self, file=str(brand.icon(256)))
         self.iconphoto(True, self.brand_icon, self.brand_small)
-        # 适配小屏：按可用桌面留出标题栏与任务栏，底部操作区不再被裁掉。
-        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
-        width = min(1480, max(1000, screen_w - 90))
-        height = min(920, max(620, screen_h - 130))
-        self.geometry(f"{width}x{height}")
-        self.minsize(1000, 600)
+        # 适配不同分辨率与缩放：以「可用工作区」为上界，留出标题栏与任务栏，
+        # 底部操作区不再被裁掉；150% 缩放下也按 DPI 折算最小尺寸。
+        area_w, area_h = theme.work_area(self)
+        width = min(theme.px(self, 1480), area_w - theme.px(self, 24))
+        height = min(theme.px(self, 920), area_h - theme.px(self, 24))
+        width, height = max(theme.px(self, 720), width), max(theme.px(self, 520), height)
+        left = max(0, (area_w - width) // 2)
+        top = max(0, (area_h - height) // 2)
+        self.geometry(f"{width}x{height}+{left}+{top}")
+        # minsize 不能超过工作区，否则小屏上窗口无法缩到可见范围。
+        self.minsize(min(theme.px(self, 1000), width), min(theme.px(self, 620), height))
         self.queue = queue.Queue()
         self.busy = False
         self.projects = []
@@ -1102,6 +1106,7 @@ class App(tk.Tk):
 
     def _build(self):
         self.chat_visible = False
+        self._fit_job = None
         workspace.build_shell(self)
         self._build_header()
         # 表单区独立滚动：宽屏时 ①② 并排，窄屏时上下堆叠，余量全部留给结果表。
@@ -1110,7 +1115,9 @@ class App(tk.Tk):
         # 表单固定单列堆叠：高分屏缩放后两列会把「填列期间」「识别并匹配」挤出卡片，
         # 单列在全部分辨率下都能完整显示，纵向空间由表单滚动区消化。
         self.form_wide = False
-        self.minsize(1000, 620)
+        area_w, area_h = theme.work_area(self)
+        self.minsize(min(theme.px(self, 1000), area_w - theme.px(self, 24)),
+                     min(theme.px(self, 620), area_h - theme.px(self, 24)))
         self.form_row = self.form_scroll.body
         if self.form_wide:
             self.form_row.columnconfigure(0, weight=3)
@@ -1128,7 +1135,21 @@ class App(tk.Tk):
             self._log("设置读取失败：" + self._pending_error, error=True)
 
     def _on_workspace_resize(self, event):
-        self.form_scroll.fit(event.height)
+        # 拖动/切换尺寸时 Configure 会连发多次；延迟到布局稳定后按最终高度重算，
+        # 否则会拿到中间态高度，表单区高度偏小或偏大。
+        if self._fit_job is not None:
+            try:
+                self.after_cancel(self._fit_job)
+            except (tk.TclError, ValueError):
+                pass
+        self._fit_job = self.after(24, self._fit_form)
+
+    def _fit_form(self):
+        self._fit_job = None
+        try:
+            self.form_scroll.fit(self.workspace.winfo_height())
+        except tk.TclError:
+            pass
 
     def _card(self, row, title, pady=(10, 0), parent=None, column=0, padx=16):
         """白底卡片：1px 边框 + 标题，替代有年代感的 LabelFrame。"""
@@ -1199,29 +1220,36 @@ class App(tk.Tk):
         HoverTip(self.project_box, self.project_var)
         ttk.Button(body, text="扫描项目", command=self._scan_projects).grid(row=1, column=2, pady=(8, 0))
 
+        # 主体 / 期间分两行排布：一行塞满 8 个控件时，150% 缩放下「截止月」
+        # 与「读取科目余额」会被卡片裁掉。
         line = tk.Frame(body, bg=CARD)
         line.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
-        ttk.Label(line, text="主体单位", style="Card.TLabel").pack(side="left")
+        line.columnconfigure(1, weight=1)
+        ttk.Label(line, text="主体单位", style="Card.TLabel").grid(row=0, column=0, sticky="w")
         self.subject_var = tk.StringVar()
-        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly", width=26)
-        self.subject_box.pack(side="left", padx=8)
+        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly")
+        self.subject_box.grid(row=0, column=1, sticky="ew", padx=8)
         self.subject_box.bind("<<ComboboxSelected>>", self._on_subject)
         self.subject_full = tk.StringVar()
         HoverTip(self.subject_box, self.subject_full)
-        ttk.Button(line, text="选择主体", command=self._pick_subject).pack(side="left", padx=(0, 8))
-        ttk.Label(line, text="年度", style="Card.TLabel").pack(side="left")
+        ttk.Button(line, text="选择主体", command=self._pick_subject).grid(row=0, column=2, sticky="e")
+
+        period = tk.Frame(body, bg=CARD)
+        period.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        ttk.Label(period, text="年度", style="Card.TLabel").pack(side="left")
         self.year_var = tk.StringVar()
-        ttk.Combobox(line, textvariable=self.year_var, width=6,
+        ttk.Combobox(period, textvariable=self.year_var, width=6,
                      values=[str(year) for year in range(2000, 2101)]).pack(side="left", padx=(8, 12))
-        ttk.Label(line, text="截止月", style="Card.TLabel").pack(side="left")
+        ttk.Label(period, text="截止月", style="Card.TLabel").pack(side="left")
         self.month_var = tk.StringVar()
-        ttk.Combobox(line, textvariable=self.month_var, width=4,
+        ttk.Combobox(period, textvariable=self.month_var, width=4,
                      values=[str(month) for month in range(1, 13)]).pack(side="left", padx=8)
-        ttk.Button(line, text="读取科目余额", style="Accent.TButton",
+        ttk.Button(period, text="读取科目余额", style="Accent.TButton",
                    command=self._read_ledger).pack(side="left", padx=(12, 0))
         self.ledger_state = tk.StringVar(value="")
-        tk.Label(line, textvariable=self.ledger_state, bg=CARD, fg=MUTED,
-                 font=(FONT, 8)).pack(side="left", padx=10)
+        self.ledger_label = tk.Label(period, textvariable=self.ledger_state, bg=CARD, fg=MUTED,
+                                     font=(FONT, 8), anchor="w")
+        self.ledger_label.pack(side="left", padx=10)
 
     def _build_template(self):
         _outer, body, _head = self._form_card("模板与期间", 1)
@@ -1232,6 +1260,7 @@ class App(tk.Tk):
         ttk.Entry(body, textvariable=self.template_var).grid(row=0, column=1, sticky="ew", padx=8)
         ttk.Button(body, text="浏览", command=self._choose_template).grid(row=0, column=2)
 
+        # 填列期间与金额单位各占一行：单行排列在 125%/150% 缩放下会超出卡片宽度。
         line = tk.Frame(body, bg=CARD)
         line.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         ttk.Label(line, text="填列期间", style="Card.TLabel").pack(side="left")
@@ -1239,13 +1268,11 @@ class App(tk.Tk):
         for text, value in (("仅期初", "opening"), ("仅期末", "ending"), ("期初+期末", "both")):
             ttk.Radiobutton(line, text=text, value=value, variable=self.period_var,
                             style="Card.TRadiobutton").pack(side="left", padx=(10, 0))
+
+        unit_row = tk.Frame(body, bg=CARD)
+        unit_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        ttk.Label(unit_row, text="金额单位", style="Card.TLabel").pack(side="left")
         self.unit_var = tk.StringVar(value="自动")
-        unit_row = tk.Frame(body, bg=CARD) if self.form_wide else line
-        if self.form_wide:
-            unit_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-            ttk.Label(unit_row, text="金额单位", style="Card.TLabel").pack(side="left")
-        else:
-            ttk.Label(line, text="金额单位", style="Card.TLabel").pack(side="left", padx=(18, 0))
         ttk.Combobox(unit_row, textvariable=self.unit_var, state="readonly", width=6,
                      values=("自动", "元", "千元", "万元", "亿元")).pack(side="left", padx=8)
 
@@ -1296,9 +1323,10 @@ class App(tk.Tk):
         self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse", height=7)
         for key in columns:
             self.tree.heading(key, text=headings[key])
-            self.tree.column(key, width=widths[key], minwidth=widths[key] - 20,
-                             anchor=anchors.get(key, "w"),
-                             stretch=key in ("label", "reason", "sources"))
+            self.tree.column(key, width=widths[key], minwidth=max(24, widths[key] - 20),
+                             anchor=anchors.get(key, "w"), stretch=True)
+        # 列宽按窗口宽度等比重算：缩放或窄窗口下不会把「差额」「方法」挤出可视区。
+        theme.fit_columns(self.tree, widths, minimum=26)
         self.tree.grid(row=1, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
         scroll.grid(row=1, column=1, sticky="ns")
@@ -1316,6 +1344,7 @@ class App(tk.Tk):
         self.reason_detail = tk.StringVar(value="")
         self.detail_label = tk.Label(body, textvariable=self.reason_detail, bg=CARD, fg=TX,
                                      font=(FONT, 9), anchor="w", justify="left", wraplength=1100)
+        theme.wrap_to_parent(self.detail_label, padding=4)
         self.tree.bind("<<TreeviewSelect>>", self._show_reason)
 
     def _show_reason(self, _event=None):
@@ -1358,7 +1387,7 @@ class App(tk.Tk):
     def _open_log(self):
         window = tk.Toplevel(self)
         window.title(f"{APP_NAME} · 运行日志")
-        window.geometry("760x420")
+        theme.fit_window(window, 760, 420, min_width=520, min_height=300)
         window.configure(bg=BG)
         window.transient(self)
         text = tk.Text(window, wrap="none", font=(theme.FAMILY["mono"], 9),
@@ -2525,7 +2554,7 @@ class SourceDialog(tk.Toplevel):
         self.title(f"人工指定来源 · {result.target.id}")
         self.transient(master)
         self.grab_set()
-        self.geometry("820x480")
+        theme.fit_window(self, 820, 480, min_width=560, min_height=320)
         self.result = None
         self.rows = list(rows)
         self.filtered = self.rows
