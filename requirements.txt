@@ -3,3 +3,4 @@ xlrd>=2.0.1,<3
 PyMySQL>=1.1.1,<2
 pywin32>=308; sys_platform == "win32"
 pypdf>=6,<7
+Pillow>=10,<13
