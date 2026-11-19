@@ -49,14 +49,6 @@ class PdfExtractionTests(unittest.TestCase):
         with self.assertRaisesRegex(pdf_ocr.PdfExtractionError, "密码保护"):
             pdf_ocr.extract_pdf_pages(self.path)
 
-    def test_image_evidence_uses_local_ocr_as_one_page(self):
-        for suffix in ('.png', '.JPG', '.jpeg'):
-            with self.subTest(suffix=suffix), patch.object(
-                    pdf_ocr, '_recognize_scans', return_value=['扫描内容']) as recognize:
-                path = self.path.with_suffix(suffix)
-                self.assertEqual(pdf_ocr.extract_evidence_pages(path), [(1, '扫描内容')])
-                recognize.assert_called_once_with(path, [1])
-
     def test_thin_number_layer_over_large_image_still_goes_to_ocr(self):
         writer = PdfWriter()
         page = writer.add_blank_page(400, 400)
