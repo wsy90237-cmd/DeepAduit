@@ -74,6 +74,15 @@ class AutoProjectTests(unittest.TestCase):
         self.assertEqual('人工修改', book['证据核对与风险']['A5'].value)
         book.close()
 
+    def test_agent_distinguishes_missing_evidence_from_amount_difference(self):
+        self.assertIn('无法检查', self.prepare()[1][-1])
+        self.listing()
+        self.assertIn('银行回函、银行对账单', self.prepare()[1][-1])
+        (self.bank / '回函.pdf').write_bytes(b'synthetic confirmation')
+        _, notes = self.prepare()
+        self.assertIn('-20000.00', notes[0])
+        self.assertIn('账号 01234567：未匹配可比的银行对账单', notes[-1])
+
     def test_ambiguous_or_wrong_scope_never_compared_with_total(self):
         pdf = self.bank / '回函.pdf'
         pdf.write_bytes(b'synthetic no listing')

@@ -29,6 +29,16 @@ class Intake:
     def status(self, text):
         self.app.intake_status.set(text)
 
+    def agent_brief(self):
+        if not self.current():
+            return '项目已切换，请重新打开当前项目资料。'
+        heading = f'{self.subject.label} · 银行存款核对（本机）\n'
+        if not self.approval:
+            return heading + '请先读取账套、识别 TB，并点击「确认自动底稿范围」。未确认前不出稿。'
+        if self.running or self.finished != (intake.inventory(self.directories), self.approval):
+            return heading + '资料正在等待扫描或重新核对，请稍后重新打开任务单。'
+        return heading + '以下为最近一次本机核对的结果，不代表审计结论。\n\n' + '\n'.join(self.notes)
+
     def start(self):
         self.status(f'公司资料夹：{self.store.root}。放入资料后自动识别；首次出稿请确认自动底稿范围。')
         self.app.after(1500, self.poll)

@@ -170,6 +170,7 @@ def prepare(store, entries, subject, rows, currency, library, source, extractor=
                                 filename=label, ref=f'银行账户余额清单!H{item.row}', sha256=digest, risk='逐户合计已与总账核平，非审定数'))
     elif listings:
         issues.append('多份不同余额清单，无法确定采用哪份，请移出旧版。')
+    comparable = set()
     for label, digest, number, kind, evidence, text in pages:
         book = lookup.get(evidence.account_number.replace(' ', ''))
         if not book and not listings:
@@ -184,10 +185,18 @@ def prepare(store, entries, subject, rows, currency, library, source, extractor=
             continue
         if result.difference:
             issues.append(f'{label} 第{number}页：差异待核 {result.difference:.2f}')
+        comparable.add((book.account_number, kind))
         records.append(dict(field='银行回函余额' if kind == 'confirmation' else '银行对账单余额', value=str(evidence.balance),
                             quote=text[:32000], comparison=f'账面 {book.balance:.2f}；银行减账面 {result.difference:.2f}',
                             risk='差异待核' if result.difference else '金额一致，非审计结论', next_step=result.recommendation,
                             filename=label, page=number, sha256=digest, ref=f'{digest}:{number}'))
+    if not lookup:
+        issues.append('请提供或复核逐户余额清单；目前无法检查清单内各户的资料覆盖情况。')
+    for account in lookup:
+        missing = [name for kind, name in [('confirmation', '银行回函'), ('statement', '银行对账单')]
+                   if (account, kind) not in comparable]
+        if missing:
+            issues.append(f'{listings[0][0]} · 账号 {account}：未匹配可比的{"、".join(missing)}；请核对原件、适用程序或替代证据。')
     records.sort(key=lambda item: (item['field'] != '逐户余额清单', item['filename'], item.get('page', 0), item['ref']))
     signature = hashlib.sha256(json.dumps([source, currency, records], ensure_ascii=False).encode()).hexdigest()
     return (signature, paper, accounts, scoped, records), issues

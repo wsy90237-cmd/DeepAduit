@@ -89,6 +89,7 @@ class EvidenceDialog(tk.Toplevel):
             auto_bar.grid(row=6, column=0, sticky='ew', padx=12, pady=6)
             self.button(auto_bar, '自动收件详情', lambda: self.show_text('自动收件', '\n'.join(intake.notes)))
             self.button(auto_bar, '确认自动底稿范围', intake.confirm)
+            self.button(auto_bar, '审计 Agent · 银行核对', lambda: self.show_text('银行核对任务单', intake.agent_brief()))
         self.button(bar, "批量读取 PDF", lambda: self.import_files(sorted(store.inbox.glob("*.pdf"))))
         self.button(bar, "打开原页所在 PDF", self.open_pdf)
         self.button(bar, "已核对资料归属", self.review_doc)
