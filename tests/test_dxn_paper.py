@@ -1,5 +1,6 @@
 """鼎信诺式底稿：取数结构解析、审定表与明细表勾稽。"""
 
+from dataclasses import replace
 import tempfile
 import unittest
 from decimal import Decimal
@@ -8,7 +9,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from tb_autofill import audit_index, dxn_paper, paper_pack
-from tb_autofill.models import LedgerRow
+from tb_autofill.models import JournalRow, JournalRows, LedgerRow
 
 def ledger():
     def row(code, name, path, level, opening, debit, credit, ending):
@@ -57,6 +58,31 @@ class CodeFormatTests(unittest.TestCase):
 
 
 class GroupTests(unittest.TestCase):
+    def test_offsetting_leaf_errors_reach_exported_review_sheet(self):
+        rows = ledger()
+        bank = rows[1]
+        second = replace(rows[-1], code='100202', name='银行乙', path='银行存款/银行乙',
+                         opening=Decimal(0), ending=Decimal(0), debit=Decimal(0), credit=Decimal(0))
+        rows.append(second)
+        line = JournalRow(1, '2025-01-02', '记-1', '1', '合成', rows[-2].code, bank.debit, bank.credit)
+        self.assertEqual(dxn_paper._journal_detail_checks(rows, [bank], [line])[0][1], '相符')
+        wrong = replace(line, code=second.code)
+        paper = resolve(bank.code, bank.name)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'draft.xlsx'
+            dxn_paper.build(path, paper=paper, subject_label='合成 / 2025-12', rows=rows,
+                            resolve=resolve, accounts=[bank], journal=[wrong])
+            book = load_workbook(path, read_only=True)
+            try:
+                review = next(sheet for sheet in book if '复核自检清单' in sheet.title)
+                differences = [(values[1], values[3]) for values in review.values if values[2] == '差异']
+                self.assertIn(('序时账与末级科目发生额 100201', '序时账减余额表：借方 -2000.50；贷方 -500.25。'), differences)
+                self.assertIn(('序时账与末级科目发生额 100202', '序时账减余额表：借方 2000.50；贷方 500.25。'), differences)
+            finally:
+                book.close()
+        self.assertEqual(dxn_paper._journal_detail_checks(rows, [bank], JournalRows([wrong], complete=False))[0][1], '未核对')
+        self.assertEqual(dxn_paper._journal_detail_checks(rows, [bank], [replace(line, code=bank.code)])[0][1], '待核实')
+
     def test_same_report_paper_groups_accounts(self):
         paper = audit_index.resolve("1002", "银行存款")[0]
         grouped = dxn_paper.group_accounts(ledger(), paper, resolve)

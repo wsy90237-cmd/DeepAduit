@@ -772,6 +772,37 @@ def _metadata_sheet(book, meta, index_no):
     return sheet
 
 
+def _journal_detail_checks(rows, accounts, journal):
+    label = '序时账与末级科目发生额'
+    if journal is None or not getattr(journal, 'complete', True):
+        return [(label, '未核对', '序时账未读取或读取范围不完整。')]
+    roots = {account.code for account in accounts}
+    paths = {account.path for account in accounts if account.path}
+    scoped = [row for row in rows if row.code in roots or row.path.split('/')[0] in paths]
+    parents = {row.path.rpartition('/')[0] for row in scoped if '/' in row.path}
+    leaves = {row.code: row for row in scoped if row.path not in parents}
+    totals = {}
+    issues = []
+    unknown = set()
+    for line in journal:
+        if line.code not in leaves or (line.debit is None and line.credit is None):
+            unknown.add(line.code)
+            continue
+        sides = totals.setdefault(line.code, [Decimal(0), Decimal(0)])
+        sides[0] += line.debit or 0
+        sides[1] += line.credit or 0
+    if unknown:
+        return [(label, '待核实', f'分录未定位至本册末级科目或缺少金额：{code}') for code in sorted(unknown)]
+    for code, row in leaves.items():
+        if row.debit is None or row.credit is None:
+            issues.append((f'{label} {code}', '待核实', '余额表借贷发生额缺失。'))
+            continue
+        debit, credit = totals.get(code, (0, 0))
+        if debit != row.debit or credit != row.credit:
+            issues.append((f'{label} {code}', '差异', f'序时账减余额表：借方 {debit-row.debit:.2f}；贷方 {credit-row.credit:.2f}。'))
+    return issues or [(label, '相符', f'已按编码分别核对 {len(leaves)} 个末级科目的借贷发生额；不包含凭证附件检查。')]
+
+
 def _review_sheet(book, meta, checks, *, index_no, conclusion):
     """一级复核自检清单：格式、索引与勾稽的自检，不替代专业判断。"""
     columns = 4
@@ -1121,6 +1152,7 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
     meta["review_page"] = 8 + len(extras)
     checks = list(_self_checks(consistent, gap, picks, prepared_by, reviewed_by, has_detail=has_detail, is_pl=is_pl,
                                journal_available=journal is not None))
+    checks.extend(_journal_detail_checks(rows, grouped, journal))
     for check in meta["auxiliary_checks"]:
         checks.append((f"客商明细与科目 {check.get('account_code', '')} 核对",
                        {"matched": "相符", "difference": "差异", "missing": "待补来源", "ambiguous": "维度歧义"}.get(check.get("status"), "待核实"),
