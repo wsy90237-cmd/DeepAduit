@@ -50,9 +50,19 @@ def build_arguments(clean=True):
     icon = ROOT / "packaging" / "attesta.ico"
     if icon.is_file():
         args.append(f"--icon={icon}")
+    # 没有版本资源，Windows 属性页的产品名称 / 版本 / 版权都是空白。
+    args.append(f"--version-file={version_resource()}")
     if clean:
         args.append("--clean")
     return args + [str(ROOT / "launch.py")]
+
+
+def version_resource():
+    """写入临时版本资源文本并返回路径；内容统一来自 brand。"""
+    WORK.mkdir(parents=True, exist_ok=True)
+    target = WORK / "version_info.txt"
+    target.write_text(brand.version_info_text(), encoding="utf-8")
+    return target
 
 
 def selftest(executable):

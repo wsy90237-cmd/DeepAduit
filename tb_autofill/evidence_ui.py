@@ -4,10 +4,10 @@ import os
 from pathlib import Path
 from threading import Event
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from . import ai, audit_index, evidence_draft as draft
+from . import ai, audit_index, dialogs as messagebox, evidence_draft as draft
 from .evidence_project import ProjectStore
 from .evidence_ownership import check_ownership
 from .pdf_text import extract_pdf_pages

@@ -7,9 +7,10 @@ from datetime import date
 import json
 import re
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
+from . import dialogs as messagebox
 from .bank_evidence import BankBalance, complete_amount_at, reconcile_bank_balance
 from .bank_listing import HEADERS, SHEET, read_listing
 

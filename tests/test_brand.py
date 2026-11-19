@@ -47,6 +47,29 @@ class BrandTests(unittest.TestCase):
             self.assertIn(b"runtime\\python", data)
             self.assertIn(b"tools\\run_gui.py", data)
 
+    def test_copyright_and_company_have_one_source(self):
+        self.assertEqual(brand.COMPANY, "WSY")
+        self.assertEqual(brand.COPYRIGHT, "© WSY")
+        self.assertEqual(brand.PRODUCT_NAME, APP_NAME)
+        self.assertIn(f"v{__version__}", brand.FOOTER_TEXT)
+        self.assertIn(brand.COPYRIGHT, brand.FOOTER_TEXT)
+
+    def test_version_resource_fills_product_name_version_and_copyright(self):
+        text = brand.version_info_text()
+        # Windows 属性页的四项：产品名称、产品版本、文件说明、版权。
+        self.assertIn("StringStruct('ProductName', 'Attesta')", text)
+        self.assertIn(f"StringStruct('ProductVersion', '{__version__}')", text)
+        self.assertIn("StringStruct('LegalCopyright', '© WSY')", text)
+        self.assertIn("StringStruct('CompanyName', 'WSY')", text)
+        self.assertIn("StringStruct('OriginalFilename', 'Attesta.exe')", text)
+        self.assertIn("VSVersionInfo(", text)
+        self.assertEqual(text.count("StringStruct("), 8)
+
+    def test_version_numbers_are_four_pe_fields(self):
+        numbers = brand.version_numbers()
+        self.assertEqual(len(numbers), 4)
+        self.assertEqual(".".join(str(item) for item in numbers[:3]), __version__)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,9 +14,10 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 from . import APP_NAME, ai as ai_module
+from . import dialogs as messagebox
 from . import (analysis, auditlog, audit_index, brand, dxn, dxn_paper, fields, knowledge, matching,
                paper_pack, paper_sheets, papers, sampling, settings, theme, workbook,
                dxn_templates, workspace)
@@ -992,7 +993,7 @@ class HoverTip:
         window = tk.Toplevel(self.widget)
         window.wm_overrideredirect(True)
         window.wm_geometry(f"+{x}+{y}")
-        tk.Label(window, text=text, bg=theme.INK, fg="#F2F5F7",
+        tk.Label(window, text=text, bg=theme.INK, fg=theme.PAPER,
                  font=(theme.FAMILY["body"], 9), padx=9, pady=5, justify="left",
                  wraplength=520).pack()
         self.window = window
@@ -1448,7 +1449,7 @@ class App(tk.Tk):
         box.grid(row=3, column=0, columnspan=2, sticky="ew", padx=14, pady=(10, 12))
         box.columnconfigure(0, weight=1)
         self.chat_input = tk.Text(box, height=3, wrap="word", relief="flat", borderwidth=0,
-                                  bg="#f7f8fa", fg=TX, font=(FONT, 9), padx=10, pady=8,
+                                  bg=theme.SURFACE_ALT, fg=TX, font=(FONT, 9), padx=10, pady=8,
                                   highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACC)
         self.chat_input.grid(row=0, column=0, sticky="ew")
         self.chat_input.bind("<Return>", self._on_chat_return)
@@ -2586,8 +2587,9 @@ class SourceDialog(tk.Toplevel):
 
         actions = ttk.Frame(self, padding=PAD)
         actions.grid(row=3, column=0, sticky="ew")
-        ttk.Button(actions, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(actions, text="确定使用所选来源", command=self._ok).pack(side="right", padx=8)
+        ttk.Button(actions, text="确定使用所选来源", style="Accent.TButton",
+                   command=self._ok).pack(side="right")
+        ttk.Button(actions, text="取消", command=self.destroy).pack(side="right", padx=8)
         self._filter()
 
     def _filter(self):

@@ -3,7 +3,7 @@
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from . import APP_NAME, __version__
+from . import APP_NAME, __version__, brand
 
 
 def readiness(rows, results, subject=None, scan=None, references=()):
@@ -48,7 +48,8 @@ def export_readiness(path, state):
             '<p class="note">本文件仅反映资料与功能准备状态，不是审计意见或已签发审计报告。</p>'
             f'<table><tr><th>环节</th><th>状态</th><th>依据 / 待办</th></tr>{rows}</table>'
             f'<h2>本次参考资料</h2><ul>{references}</ul>'
-            f'<p><small>{APP_NAME} {__version__} · {datetime.now().astimezone().isoformat(timespec="seconds")}</small></p></html>')
+            f'<p><small>{APP_NAME} {__version__} · {brand.COPYRIGHT} · '
+            f'{datetime.now().astimezone().isoformat(timespec="seconds")}</small></p></html>')
     with path.open("x", encoding="utf-8") as stream:
         stream.write(page)
     return path

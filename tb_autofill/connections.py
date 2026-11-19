@@ -5,20 +5,25 @@ import hashlib
 import queue
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk
 from urllib.parse import urlsplit
 import webbrowser
 
-from . import APP_NAME, ai, netdiag, settings, theme
+from . import APP_NAME, ai, layout, netdiag, settings, theme
+from . import dialogs as messagebox
 
 BG, FG = theme.PAPER, theme.INK
 FONT = (theme.FAMILY["body"], 10)
+LABEL_GAP = 10   # 表单行距（设计像素），两个连接弹窗统一
+COLUMN_GAP = 12  # 标签列与控件的间距
 
 
 class ModelDialog(tk.Toplevel):
     """一步连接模型服务：粘贴 Key → 自动验模型 → 自动验证对话 → 保存。
 
     地址与模型默认折叠；只要 Key 能用，就不需要用户理解 /models 或 JSON 能力。
+    主体放进滚动区，底部操作栏固定贴底——高级设置展开后窗口长高，长到工作区
+    上限就改成滚动，按钮永远点得到。
     """
 
     def __init__(self, master, store):
@@ -26,21 +31,29 @@ class ModelDialog(tk.Toplevel):
         self.title("模型服务")
         self.transient(master)
         self.grab_set()
-        self.resizable(False, False)
+        self.resizable(True, True)
         self.configure(bg=BG)
         self.store, self.queue = store, queue.Queue()
         self.busy, self.closed, self.tested = False, False, None
         self.poll_job, self.advanced_open = None, False
         self.protocol("WM_DELETE_WINDOW", self._close)
 
-        body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", padx=24, pady=20)
-        body.columnconfigure(1, weight=1)
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=24, pady=(20, 12))
+        tk.Label(head, text="模型服务", bg=BG, fg=FG,
+                 font=(theme.FAMILY["display"], 18, "bold")).pack(anchor="w")
+        tk.Label(head, text="DeepSeek 或兼容接口", bg=BG,
+                 fg=theme.MUTED, font=(theme.FAMILY["body"], 9)).pack(anchor="w", pady=(4, 0))
 
-        tk.Label(body, text="模型服务", bg=BG, fg=FG, font=(theme.FAMILY["display"], 18, "bold")).grid(
-            row=0, column=0, columnspan=3, sticky="w")
-        tk.Label(body, text="DeepSeek 或兼容接口", bg=BG,
-                 fg=theme.MUTED, font=(theme.FAMILY["body"], 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 16))
+        # 底部操作栏先占位（pack 顺序决定分配顺序）：滚动区再高也挤不掉它。
+        footer = tk.Frame(self, bg=BG)
+        footer.pack(side="bottom", fill="x", padx=24, pady=(10, 14))
+        tk.Frame(self, bg=theme.HAIRLINE, height=1).pack(side="bottom", fill="x", padx=24)
+
+        self.scroller = layout.scroll_host(self, bg=BG)
+        self.scroller.pack(fill="both", expand=True, padx=24)
+        body = self.scroller.body
+        body.columnconfigure(1, weight=1)
 
         self.key = tk.StringVar()
         self.endpoint = tk.StringVar(value=store.data.get("base_url", settings.DEFAULT_BASE_URL))
@@ -48,60 +61,81 @@ class ModelDialog(tk.Toplevel):
         self.state = tk.StringVar(
             value="已保存 Key；留空则沿用原 Key 重新连接。" if store.has_key else "尚未配置。")
 
-        tk.Label(body, text="API Key", bg=BG, fg=FG, font=FONT).grid(row=2, column=0, sticky="w", padx=(0, 12))
+        tk.Label(body, text="API Key", bg=BG, fg=FG, font=FONT).grid(
+            row=0, column=0, sticky="w", padx=(0, COLUMN_GAP))
         self.key_entry = ttk.Entry(body, textvariable=self.key, show="•", width=44)
-        self.key_entry.grid(row=2, column=1, sticky="ew")
-        self.connect_button = ttk.Button(body, text="连接并保存", style="Accent.TButton", command=self._connect)
-        self.connect_button.grid(row=2, column=2, padx=(10, 0))
-        tk.Label(body, text="Key 仅保存在本机。",
-                 bg=BG, fg=theme.MUTED, font=(theme.FAMILY["body"], 8)).grid(row=3, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        self.key_entry.grid(row=0, column=1, sticky="ew")
+        self.connect_button = ttk.Button(body, text="连接并保存", style="Accent.TButton",
+                                         command=self._connect)
+        self.connect_button.grid(row=0, column=2, padx=(LABEL_GAP, 0))
+        tk.Label(body, text="Key 仅保存在本机。", bg=BG, fg=theme.MUTED,
+                 font=(theme.FAMILY["body"], 8)).grid(row=1, column=1, columnspan=2,
+                                                      sticky="w", pady=(6, 0))
 
-        self.status = tk.Label(body, textvariable=self.state, bg=BG, fg=theme.ACCENT, font=(theme.FAMILY["body"], 9),
-                               wraplength=520, justify="left")
-        self.status.grid(row=4, column=0, columnspan=3, sticky="w", pady=(14, 6))
+        self.status = tk.Label(body, textvariable=self.state, bg=BG, fg=theme.ACCENT,
+                               font=(theme.FAMILY["body"], 9), wraplength=520, justify="left")
+        self.status.grid(row=2, column=0, columnspan=3, sticky="w", pady=(16, 6))
 
         self.advanced_toggle = ttk.Button(body, text="高级设置 ▸", style="Ghost.TButton",
                                           command=self._toggle_advanced)
-        self.advanced_toggle.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.advanced_toggle.grid(row=3, column=0, columnspan=3, sticky="w", pady=(LABEL_GAP, 0))
         self.advanced = tk.Frame(body, bg=BG)
         self.advanced.columnconfigure(1, weight=1)
-        ttk.Label(self.advanced, text="服务地址", style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Label(self.advanced, text="服务地址").grid(
+            row=0, column=0, sticky="w", padx=(0, LABEL_GAP))
         ttk.Combobox(self.advanced, textvariable=self.endpoint, values=(settings.DEFAULT_BASE_URL,),
                      width=42).grid(row=0, column=1, sticky="ew")
-        ttk.Label(self.advanced, text="模型", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0), padx=(0, 10))
-        self.model_box = ttk.Combobox(self.advanced, textvariable=self.model, values=settings.MODELS, width=26)
-        self.model_box.grid(row=1, column=1, sticky="w", pady=(8, 0))
-        ttk.Button(self.advanced, text="刷新模型列表", command=lambda: self._connect(refresh_only=True)).grid(
-            row=1, column=2, padx=(8, 0), pady=(8, 0))
-        tk.Label(self.advanced, text="兼容接口需支持 /models 与 JSON Chat Completions；换地址必须重新输入对应 Key。",
-                 bg=BG, fg=theme.MUTED, font=(theme.FAMILY["body"], 8)).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Label(self.advanced, text="模型").grid(
+            row=1, column=0, sticky="w", pady=(LABEL_GAP, 0), padx=(0, LABEL_GAP))
+        self.model_box = ttk.Combobox(self.advanced, textvariable=self.model,
+                                      values=settings.MODELS, width=26)
+        self.model_box.grid(row=1, column=1, sticky="w", pady=(LABEL_GAP, 0))
+        ttk.Button(self.advanced, text="刷新模型列表",
+                   command=lambda: self._connect(refresh_only=True)).grid(
+            row=1, column=2, padx=(LABEL_GAP, 0), pady=(LABEL_GAP, 0))
+        note = ttk.Label(self.advanced, text="兼容接口需支持 /models 与 JSON Chat Completions；"
+                                             "换地址必须重新输入对应 Key。", justify="left")
+        note.grid(row=2, column=0, columnspan=3, sticky="w", pady=(LABEL_GAP, 0))
+        theme.wrap_to_parent(note, padding=LABEL_GAP * 2)
 
-        footer = tk.Frame(body, bg=BG)
-        footer.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(18, 0))
         ttk.Button(footer, text="获取 DeepSeek Key", style="Ghost.TButton",
                    command=lambda: webbrowser.open("https://platform.deepseek.com/api_keys")).pack(side="left")
         ttk.Button(footer, text="网络诊断", style="Ghost.TButton",
                    command=self._diagnose).pack(side="left", padx=(4, 0))
-        self.delete_button = ttk.Button(footer, text="删除本机 Key", style="Ghost.TButton", command=self._delete)
+        self.delete_button = ttk.Button(footer, text="删除本机 Key", style="Ghost.TButton",
+                                        command=self._delete)
         self.delete_button.pack(side="left", padx=8)
         ttk.Button(footer, text="关闭", command=self._close).pack(side="right")
         if not store.has_key:
             self.delete_button.configure(state="disabled")
         self.key_entry.focus_set()
         self.key_entry.bind("<Return>", lambda _event: self._connect())
-        # 内容建好后按实际高度收紧，避免下方大片空白。
-        theme.fit_window(self, 720, 460, min_width=560, min_height=320, fit_content=True)
+        self.bind("<Escape>", lambda _event: self._close())
+
+        # 内容建好后按实际高度收紧，之后由守护器跟随内容变化与窗口缩放。
+        self.guard = layout.LayoutGuard(self, host=self.scroller, fit_content=True,
+                                        min_width=560, min_height=320,
+                                        on_report=self._report_layout)
+        self.scroller.refresh()
+        layout.autofit(self, min_width=560, min_height=320)
+        self.guard.check_now()
 
     # ---- 交互 ----
+
+    def _report_layout(self, text):
+        """窗口已到上限仍放不下时，把结论放在状态行，不静默截断。"""
+        self._say(text, warn=True)
 
     def _toggle_advanced(self):
         self.advanced_open = not self.advanced_open
         if self.advanced_open:
-            self.advanced.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+            self.advanced.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(LABEL_GAP, 0))
             self.advanced_toggle.configure(text="收起高级设置 ▾")
+            theme.fade(self.advanced, end=BG)
         else:
             self.advanced.grid_remove()
             self.advanced_toggle.configure(text="高级设置 ▸")
+        self.guard.refit()
 
     def _profile(self):
         endpoint = settings.normalize_base_url(self.endpoint.get())
@@ -142,15 +176,16 @@ class ModelDialog(tk.Toplevel):
             self.queue.put(report)
 
         threading.Thread(target=work, daemon=True).start()
-        self.after(120, self._poll, refresh_only)
+        self.poll_job = self.after(120, self._poll, refresh_only)
 
     def _poll(self, refresh_only=False):
+        self.poll_job = None
         if self.closed:
             return
         try:
             report = self.queue.get_nowait()
         except queue.Empty:
-            self.after(120, self._poll, refresh_only)
+            self.poll_job = self.after(120, self._poll, refresh_only)
             return
         self.busy = False
         self.connect_button.configure(state="normal")
@@ -220,7 +255,9 @@ class ModelDialog(tk.Toplevel):
         self.closed = True
         if self.poll_job:
             self.after_cancel(self.poll_job)
+        self.poll_job = None
         self.key.set("")
+        self.guard.stop()
         self.destroy()
 
 
@@ -232,11 +269,11 @@ class DiagnosticsDialog(tk.Toplevel):
         self.title(f"{APP_NAME} · 网络诊断")
         self.transient(master)
         self.configure(bg=BG)
+        self.resizable(True, True)
         self.endpoint, self.key = endpoint, key
         self.report = ""
         self.busy = False
         self.queue = queue.Queue()
-        theme.fit_window(self, 780, 540, min_width=560, min_height=360)
 
         head = tk.Frame(self, bg=BG)
         head.pack(fill="x", padx=20, pady=(18, 8))
@@ -245,6 +282,10 @@ class DiagnosticsDialog(tk.Toplevel):
         self.state = tk.StringVar(value=f"正在诊断 {endpoint} …")
         tk.Label(head, textvariable=self.state, bg=BG, fg=theme.MUTED,
                  font=(theme.FAMILY["body"], 9), anchor="w", justify="left").pack(anchor="w", pady=(4, 0))
+
+        actions = tk.Frame(self, bg=BG)
+        actions.pack(side="bottom", fill="x", padx=20, pady=16)
+        tk.Frame(self, bg=theme.HAIRLINE, height=1).pack(side="bottom", fill="x", padx=20)
 
         holder = tk.Frame(self, bg=BG)
         holder.pack(fill="both", expand=True, padx=20)
@@ -255,13 +296,20 @@ class DiagnosticsDialog(tk.Toplevel):
         bar.pack(side="right", fill="y")
         self.text.configure(yscrollcommand=bar.set)
 
-        actions = tk.Frame(self, bg=BG)
-        actions.pack(fill="x", padx=20, pady=16)
         ttk.Button(actions, text="复制报告", style="Ghost.TButton", command=self._copy).pack(side="left")
         self.again = ttk.Button(actions, text="重新诊断", command=self._run)
         self.again.pack(side="left", padx=6)
-        ttk.Button(actions, text="关闭", command=self.destroy).pack(side="right")
+        ttk.Button(actions, text="关闭", command=self._close).pack(side="right")
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.bind("<Escape>", lambda _event: self._close())
+        self.guard = layout.LayoutGuard(self, min_width=560, min_height=360, fit_content=False)
+        layout.autofit(self, min_width=560, min_height=360)
+        self.guard.check_now()
         self._run()
+
+    def _close(self):
+        self.guard.stop()
+        self.destroy()
 
     def _run(self):
         if self.busy:
@@ -317,33 +365,65 @@ class DiagnosticsDialog(tk.Toplevel):
 
 
 class ImaDialog(tk.Toplevel):
+    """ima 只读知识库接入：凭证与说明进滚动区，操作栏固定贴底。"""
+
     def __init__(self, master, store):
         super().__init__(master)
         self.title(f"{APP_NAME} · ima 知识库连接")
         self.transient(master)
         self.grab_set()
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.configure(bg=BG)
         self.store = store
-        body = ttk.Frame(self, padding=22)
-        body.pack(fill="both")
-        ttk.Label(body, text="ima 只读知识库接入", font=(FONT[0], 15, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
+
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=22, pady=(20, 10))
+        tk.Label(head, text="ima 只读知识库接入", bg=BG, fg=FG,
+                 font=(theme.FAMILY["display"], 15, "bold")).pack(anchor="w")
+
+        actions = tk.Frame(self, bg=BG)
+        actions.pack(side="bottom", fill="x", padx=22, pady=(10, 16))
+        tk.Frame(self, bg=theme.HAIRLINE, height=1).pack(side="bottom", fill="x", padx=22)
+
+        self.scroller = layout.scroll_host(self, bg=BG)
+        self.scroller.pack(fill="both", expand=True, padx=22)
+        body = self.scroller.body
+        body.columnconfigure(1, weight=1)
+
         self.client_id, self.key = tk.StringVar(), tk.StringVar()
-        for row, title, value in ((1, "Client ID", self.client_id), (2, "API Key", self.key)):
-            ttk.Label(body, text=title).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=9)
-            ttk.Entry(body, textvariable=value, show="•", width=52).grid(row=row, column=1, sticky="ew")
-        ttk.Label(body, text="已有 ima 凭证已加密保存，留空可保留。" if store.has_ima else "尚未配置 ima 凭证。").grid(row=3, column=0, columnspan=2, sticky="w", pady=8)
+        for row, title, value in ((0, "Client ID", self.client_id), (1, "API Key", self.key)):
+            ttk.Label(body, text=title).grid(row=row, column=0, sticky="w",
+                                             padx=(0, COLUMN_GAP), pady=(0, LABEL_GAP))
+            ttk.Entry(body, textvariable=value, show="•", width=52).grid(
+                row=row, column=1, sticky="ew", pady=(0, LABEL_GAP))
+        ttk.Label(body, text="已有 ima 凭证已加密保存，留空可保留。" if store.has_ima
+                  else "尚未配置 ima 凭证。").grid(row=2, column=0, columnspan=2,
+                                                 sticky="w", pady=(0, LABEL_GAP))
         ttk.Label(body, text="请在 ima 官方开放接口页自行获取 Client ID 与 API Key。\n"
-                  "本版仅搜索账号有权访问的知识库，不导出整库，不使用登录 Cookie。\n"
-                  "关注知识库不等于获得接口读取权限；保存后搜索库名即可验证。",
-                  wraplength=560, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=12)
+                             "本版仅搜索账号有权访问的知识库，不导出整库，不使用登录 Cookie。\n"
+                             "关注知识库不等于获得接口读取权限；保存后搜索库名即可验证。",
+                  wraplength=520, justify="left").grid(row=3, column=0, columnspan=2,
+                                                       sticky="w", pady=(LABEL_GAP + 2, 0))
         self.state = tk.StringVar()
-        ttk.Label(body, textvariable=self.state, wraplength=560).grid(row=5, column=0, columnspan=2, sticky="w")
-        actions = ttk.Frame(body)
-        actions.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(16, 0))
-        ttk.Button(actions, text="打开 ima 官方配置页", command=lambda: webbrowser.open("https://ima.qq.com/agent-interface")).pack(side="left")
-        ttk.Button(actions, text="移除连接", command=self._delete).pack(side="left", padx=8)
-        ttk.Button(actions, text="加密保存", command=self._save).pack(side="right")
+        ttk.Label(body, textvariable=self.state, wraplength=520).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(LABEL_GAP, 0))
+
+        ttk.Button(actions, text="打开 ima 官方配置页", style="Ghost.TButton",
+                   command=lambda: webbrowser.open("https://ima.qq.com/agent-interface")).pack(side="left")
+        ttk.Button(actions, text="移除连接", style="Ghost.TButton",
+                   command=self._delete).pack(side="left", padx=8)
+        ttk.Button(actions, text="加密保存", style="Accent.TButton",
+                   command=self._save).pack(side="right")
         self.protocol("WM_DELETE_WINDOW", self._close)
+        self.bind("<Escape>", lambda _event: self._close())
+        self.bind("<Return>", lambda _event: self._save())
+
+        self.guard = layout.LayoutGuard(self, host=self.scroller, fit_content=True,
+                                        min_width=520, min_height=300,
+                                        on_report=lambda text: self.state.set(text))
+        self.scroller.refresh()
+        layout.autofit(self, min_width=520, min_height=300)
+        self.guard.check_now()
 
     def _save(self):
         client_id, key = self.client_id.get().strip(), self.key.get().strip()
@@ -369,4 +449,5 @@ class ImaDialog(tk.Toplevel):
     def _close(self):
         self.client_id.set("")
         self.key.set("")
+        self.guard.stop()
         self.destroy()

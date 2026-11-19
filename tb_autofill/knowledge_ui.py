@@ -1,15 +1,15 @@
 """Reference retrieval and explicit source selection for the audit Agent."""
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 import webbrowser
 
-from . import connections, knowledge, settings
+from . import connections, dialogs as messagebox, knowledge, settings, theme
 
 
 class KnowledgePanel(tk.Frame):
     def __init__(self, app, parent):
-        super().__init__(parent, bg="#ffffff")
+        super().__init__(parent, bg=theme.SURFACE)
         self.app, self.refs, self.libraries = app, [], []
         self.lib_cursor = self.cursor = ""
         self.lib_query = ""

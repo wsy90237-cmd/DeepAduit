@@ -33,8 +33,12 @@ def build_arguments(compiler, jobs):
                "--assume-yes-for-downloads", f"--jobs={jobs}", "--lto=yes",
                f"--output-dir={output}", f"--output-filename={brand.EXECUTABLE}",
                f"--report={ROOT / 'build' / 'native-compilation-report.xml'}",
-               f"--product-name={APP_NAME}", f"--file-description={APP_NAME} Audit Workspace",
-               f"--file-version={__version__}", f"--product-version={__version__}"]
+               f"--product-name={brand.PRODUCT_NAME}", f"--file-description={brand.FILE_DESCRIPTION}",
+               f"--file-version={__version__}", f"--product-version={__version__}",
+               f"--windows-company-name={brand.COMPANY}", f"--windows-copyright={brand.COPYRIGHT}",
+               f"--windows-product-name={brand.PRODUCT_NAME}",
+               f"--windows-file-description={brand.FILE_DESCRIPTION}",
+               f"--windows-file-version={__version__}"]
     if compiler == "msvc":
         options.append("--msvc=latest")
     elif compiler == "zig":

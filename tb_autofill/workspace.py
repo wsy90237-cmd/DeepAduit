@@ -6,9 +6,9 @@ No slogans, no duplicated headings, no explanatory paragraphs; amounts stay loca
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
-from . import APP_NAME, __version__, theme, workflow
+from . import APP_NAME, __version__, brand, dialogs as messagebox, theme, workflow
 
 BG, INK, MUTED = theme.PAPER, theme.INK, theme.MUTED
 NAV, ACCENT = theme.RAIL, theme.ACCENT
@@ -166,7 +166,7 @@ def build_shell(app):
 
     footer = tk.Frame(sidebar, bg=NAV)
     footer.pack(side="bottom", fill="x", padx=22, pady=18)
-    tk.Label(footer, text=f"v{__version__}", bg=NAV, fg=theme.MUTED,
+    tk.Label(footer, text=f"v{__version__} · {brand.COPYRIGHT}", bg=NAV, fg=theme.MUTED,
              font=(theme.FAMILY["mono"], 8)).pack(anchor="w")
 
     app.content = tk.Frame(app, bg=BG)
@@ -351,7 +351,7 @@ def _build_settings(app):
     ttk.Button(actions, text="运行日志", style="Quiet.TButton",
                command=app._open_log).pack(side="left", padx=(2, 0))
     tk.Frame(page, bg=theme.HAIRLINE, height=1).grid(row=1, column=0, sticky="ew", padx=30, pady=(30, 0))
-    tk.Label(page, text=f"{APP_NAME}  v{__version__}", bg=BG, fg=theme.MUTED,
+    tk.Label(page, text=brand.FOOTER_TEXT, bg=BG, fg=theme.MUTED,
              font=(theme.FAMILY["mono"], 8)).grid(row=2, column=0, sticky="w", padx=30, pady=(14, 0))
     page.rowconfigure(3, weight=1)
 

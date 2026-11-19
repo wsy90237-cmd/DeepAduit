@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import weakref
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -62,6 +63,29 @@ def install(root):
     FAMILY["latin"] = _pick(root, _LATIN)
     FAMILY["mono"] = _pick(root, _MONO)
     root.configure(bg=PAPER)
+    # 下拉列表与 Listbox 由 Tk 自己创建，样式只能走 option 数据库；
+    # 不设的话弹出层仍是系统灰底黑字，与纸面脱节。
+    for option, value in (
+        ("*TCombobox*Listbox.background", SURFACE),
+        ("*TCombobox*Listbox.foreground", INK),
+        ("*TCombobox*Listbox.selectBackground", ACCENT_SOFT),
+        ("*TCombobox*Listbox.selectForeground", INK),
+        ("*TCombobox*Listbox.borderWidth", 1),
+        ("*TCombobox*Listbox.highlightThickness", 0),
+        ("*TCombobox*Listbox.font", (FAMILY["body"], 9)),
+        ("*Listbox.background", SURFACE),
+        ("*Listbox.foreground", INK),
+        ("*Listbox.selectBackground", ACCENT_SOFT),
+        ("*Listbox.selectForeground", INK),
+        ("*Listbox.highlightThickness", 1),
+        ("*Listbox.highlightBackground", HAIRLINE),
+        ("*Listbox.highlightColor", ACCENT),
+        ("*Listbox.borderWidth", 0),
+    ):
+        try:
+            root.option_add(option, value)
+        except tk.TclError:
+            continue
     style = ttk.Style(root)
     style.theme_use("clam")
     style.configure(".", font=(FAMILY["body"], 9), background=PAPER, foreground=INK)
@@ -78,12 +102,15 @@ def install(root):
     style.configure("TEntry", fieldbackground=SURFACE, bordercolor=HAIRLINE, lightcolor=HAIRLINE,
                     darkcolor=HAIRLINE, insertcolor=INK, padding=6, relief="flat")
     style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
-              darkcolor=[("focus", ACCENT)])
+              darkcolor=[("focus", ACCENT)], fieldbackground=[("readonly", SURFACE_ALT),
+                                                             ("disabled", PAPER_DEEP)],
+              foreground=[("disabled", MUTED)])
     style.configure("TCombobox", fieldbackground=SURFACE, background=SURFACE, bordercolor=HAIRLINE,
                     lightcolor=HAIRLINE, darkcolor=HAIRLINE, arrowcolor=MUTED, padding=5, relief="flat")
     style.map("TCombobox", fieldbackground=[("readonly", SURFACE)],
               bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
-              darkcolor=[("focus", ACCENT)], fieldforeground=[("readonly", INK)])
+              darkcolor=[("focus", ACCENT)], arrowcolor=[("active", ACCENT)],
+              fieldforeground=[("readonly", INK)])
     style.configure("TButton", background=SURFACE, foreground=INK, borderwidth=1,
                     bordercolor=HAIRLINE, lightcolor=HAIRLINE, darkcolor=HAIRLINE,
                     focusthickness=1, focuscolor=ACCENT, padding=(12, 6), relief="flat",
@@ -106,13 +133,17 @@ def install(root):
                     borderwidth=0, rowheight=px(root, ROW_HEIGHT), font=(FAMILY["body"], 9))
     style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
     style.configure("Treeview.Heading", background=SURFACE, foreground=MUTED, relief="flat",
-                    font=(FAMILY["body"], 8), padding=(8, 8))
+                    font=(FAMILY["body"], 8, "bold"), padding=(8, 8))
     style.map("Treeview.Heading", background=[("active", SURFACE_ALT)])
     style.map("Treeview", background=[("selected", ACCENT_SOFT)], foreground=[("selected", INK)])
+    # clam 自带的槽色与箭头会盖掉 troughcolor，这里显式声明，滚动条才和纸面一致。
     for bar in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
-        style.configure(bar, background=HAIRLINE, troughcolor=PAPER, borderwidth=0,
-                        arrowsize=px(root, 12), width=px(root, 9))
-        style.map(bar, background=[("active", HAIRLINE_STRONG)])
+        style.configure(bar, background=HAIRLINE, troughcolor=PAPER, bordercolor=HAIRLINE,
+                        darkcolor=HAIRLINE, lightcolor=PAPER, arrowcolor=MUTED, gripcount=0,
+                        borderwidth=0, relief="flat", arrowsize=px(root, 12), width=px(root, 9))
+        style.map(bar, background=[("active", HAIRLINE_STRONG), ("pressed", HAIRLINE_STRONG)],
+                  arrowcolor=[("active", ACCENT), ("pressed", ACCENT)],
+                  bordercolor=[("active", HAIRLINE_STRONG)])
     style.configure("TProgressbar", background=ACCENT, troughcolor=PAPER_DEEP, borderwidth=0,
                     thickness=3)
     return style
@@ -160,6 +191,28 @@ def work_area(root):
     return root.winfo_screenwidth(), root.winfo_screenheight()
 
 
+# 最近一次由框架设定的窗口外框位置。Tk 的 geometry("WxH+X+Y") 用的是**外框**原点，
+# 而 winfo_rootx/rooty 返回**客户区**原点（实测相差 8/31px）；若拿后者算「保持中心」，
+# 每修正一次窗口就会右移 8、下移 31。这里把设定值记下来，测量不到时用它兜底。
+_PLACEMENT = weakref.WeakKeyDictionary()
+
+
+def remember_placement(window, x, y, width, height):
+    """记录本模块给窗口设定的外框位置；窗口销毁后自动消失。"""
+    try:
+        _PLACEMENT[window] = (int(x), int(y), int(width), int(height))
+    except (TypeError, ValueError, tk.TclError):
+        pass
+
+
+def last_placement(window):
+    """取回上次设定的外框 (x, y, 宽, 高)；没有记录时返回 None。"""
+    try:
+        return _PLACEMENT.get(window)
+    except (TypeError, tk.TclError):
+        return None
+
+
 def fit_window(window, width, height, *, min_width=0, min_height=0, margin=12, fit_content=False):
     """把窗口限制在可用工作区内并居中，返回最终 (宽, 高)。
 
@@ -183,6 +236,7 @@ def fit_window(window, width, height, *, min_width=0, min_height=0, margin=12, f
     left = max(0, (area_w - final_w) // 2)
     top = max(0, (area_h - final_h) // 2)
     window.geometry(f"{final_w}x{final_h}+{left}+{top}")
+    remember_placement(window, left, top, final_w, final_h)
     return final_w, final_h
 
 
