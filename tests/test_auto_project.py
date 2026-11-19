@@ -83,6 +83,41 @@ class AutoProjectTests(unittest.TestCase):
         self.assertTrue(any('不符' in note for note in notes))
         self.assertNotEqual(self.store.root, ProjectStore(self.store.root.parent.parent, '合成公司 [A]', 2024).root)
 
+    def test_scanned_image_in_bank_folder_uses_rules_and_keeps_source(self):
+        self.listing()
+        image = self.bank / '回函.PNG'
+        image.write_bytes(b'synthetic image fixture')
+        (self.store.root / '1001 库存现金' / '错投.jpg').write_bytes(b'outside bank scope')
+        self.text = self.text.replace('01234567', '０１２３ ４５６７').replace('2025-12-31', '2025 一 12 一 31')
+        self.text = self.text.replace('1180000.00', '1,180,000 · 00').replace('户名：', '户名 ， ')
+        prepared, notes = self.prepare()
+        evidence = prepared[-1][1]
+        self.assertEqual((evidence['filename'], evidence['page']), (str(image.relative_to(self.store.root)), 1))
+        self.assertIn('-20000.00', evidence['comparison'])
+        self.assertTrue(any('错投.jpg' in note and '非银行自动填写范围' in note for note in notes))
+        image.write_bytes(b'synthetic ambiguous image')
+        self.text += '\n期末余额：1000000.00'
+        prepared, notes = self.prepare()
+        self.assertEqual(len(prepared[-1]), 1)
+        self.assertTrue(any('第1页' in note and '重复字段' in note for note in notes))
+        image.write_bytes(b'synthetic separated amounts')
+        self.text = self.text.split('\n期末余额')[0].replace('1,180,000 · 00', '1 180000 · 00')
+        prepared, notes = self.prepare()
+        self.assertEqual(len(prepared[-1]), 1)
+        self.assertTrue(any('银行证据余额格式不符合要求' in note for note in notes))
+
+    def test_unconfirmed_scope_does_not_read_dropped_files(self):
+        app = SimpleNamespace(rows=self.rows, loaded_subject=self.subject, paper_library=audit_index.bundled(),
+                              intake_status=Mock(), scan=None)
+        app.intake = session = auto_intake_ui.Intake(app, self.store)
+        (self.bank / '回函.jpg').write_bytes(b'synthetic fixture')
+        with patch.object(auto_intake_ui, 'Thread') as worker:
+            session.inspect()
+            session.inspect()
+        worker.assert_not_called()
+        self.assertFalse(session.running)
+        self.assertIn('未读取', session.notes[0])
+
     def test_background_batch_checks_context_before_publication(self):
         callbacks = Queue()
         app = SimpleNamespace(rows=self.rows, loaded_subject=self.subject, paper_library=audit_index.bundled(),

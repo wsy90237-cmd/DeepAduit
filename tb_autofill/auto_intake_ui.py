@@ -30,18 +30,20 @@ class Intake:
         self.app.intake_status.set(text)
 
     def start(self):
-        self.status(f'公司资料夹：{self.store.root}。放入资料后自动识别；首次出稿请确认自动底稿范围。')
+        self.status(f'公司资料夹：{self.store.root}。确认范围后，投放资料会在本机自动识别。')
         self.app.after(1500, self.poll)
 
-    def confirm(self):
+    def confirm(self, parent=None):
         if not self.current() or not self.app.scan or not self.app.template_var.get().strip():
             raise ValueError('请先读取账套并识别当前 TB 模板。')
         source = draft.source_key(self.app)
         paper = audit_index.find(self.library, '1-010')
         accounts, scoped = papers.report_scope(self.rows, paper, self.library)
+        if not any(row.name == '银行存款' for row in accounts):
+            raise ValueError('当前账套没有可用于货币资金自动底稿的银行存款科目。')
         summary = '、'.join(f'{row.code} {row.name}' for row in accounts)
         currency = simpledialog.askstring('确认自动底稿范围', f'{self.subject.label}\nTB：{self.app.template_var.get()}\n'
-            f'货币资金整册：{summary}\n确认以上来源和映射后，输入账套记账本位币（三位代码，如 CNY）：', parent=self.app)
+            f'货币资金整册：{summary}\n确认以上来源和映射后，输入账套记账本位币（三位代码，如 CNY）：', parent=parent or self.app)
         if currency is None:
             return
         currency = currency.strip().upper()
@@ -89,6 +91,7 @@ class Intake:
         entries = intake.inventory(self.directories)
         if entries != self.observed:
             self.observed = entries
+            self.notes = ['检测到投放目录有变动，等待文件稳定；旧草稿不代表当前资料状态。']
             self.status(f'发现 {len(entries)} 个文件，等候复制稳定。已有底稿请以复核后的新状态为准。')
             return
         approval = self.approval
@@ -110,21 +113,27 @@ class Intake:
             if not valid:
                 self.approval = None
                 self.finished = None
+                self.notes = ['账套或 TB 已变化，旧底稿待复核；请重新确认范围。']
                 self.status('账套或 TB 已变化，旧底稿待复核；请重新确认自动底稿范围。')
                 return
         if self.finished == (entries, approval):
             return
+        if not approval:
+            self.finished = (entries, None)
+            self.notes = ['尚未确认主体、期间、TB 和币种，未读取投放资料。']
+            self.status(f'已发现 {len(entries)} 个文件。请先确认范围，再本机识别和出稿。')
+            return
         self.running = True
         self.status('正在本机整理资料并核对来源…')
-        confirmed_data = self.data if approval else None
+        confirmed_data = self.data
         def work():
             temp, data, signature, error = None, None, None, None
             notes = []
             try:
-                source, currency = approval or ('', '')
+                source, currency = approval
                 prepared, notes = intake.prepare(self.store, entries, self.subject, self.rows, currency, self.library, source)
                 last = intake.last_export(self.store)
-                if prepared and approval and (prepared[-1] or last):
+                if prepared and (prepared[-1] or last):
                     signature, paper, accounts, scoped, _ = prepared
                     data = confirmed_data
                     reviewed = draft.confirmed_rows(self.store, paper.index_no, source)
@@ -141,7 +150,7 @@ class Intake:
             try:
                 if not self.current() or approval != self.approval or entries != intake.inventory(self.directories):
                     return
-                if approval and (not self.app.scan or draft.source_key(self.app) != approval[0]):
+                if not self.app.scan or draft.source_key(self.app) != approval[0]:
                     self.approval = None
                     raise ValueError('TB 已变化，请重新确认自动底稿范围。')
                 if error:
@@ -150,8 +159,8 @@ class Intake:
                 output = intake.publish(self.store, temp, signature) if temp else None
                 self.notes = notes or ['没有待核异常。']
                 self.finished = (entries, approval)
-                heading = f'已生成：{output.name}' if output else ('未产生新版本' if approval else '尚未确认自动底稿范围，未出稿')
-                self.status(f'{heading}。已扫描 {len(entries)} 个文件。' + (' '+notes[0] if notes else ''))
+                heading = f'已生成：{output.name}' if output else '未产生新版本'
+                self.status(f'{heading}。已检查 {len(entries)} 个投放文件。' + (' '+notes[0] if notes else ''))
             except Exception as exc:
                 self.notes = [str(exc)]
                 self.status(f'自动底稿待复核：{exc}')

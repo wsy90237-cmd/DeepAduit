@@ -1,4 +1,4 @@
-"""Read PDF text by page, using Windows OCR for pages without a text layer."""
+"""Read PDF text and recognize scanned pages or images with Windows OCR."""
 
 from __future__ import annotations
 
@@ -14,6 +14,16 @@ from pypdf import PdfReader
 
 class PdfExtractionError(ValueError):
     """The PDF could not be read in full."""
+
+
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
+
+
+def extract_evidence_pages(path: Path) -> list[tuple[int, str]]:
+    path = Path(path)
+    if path.suffix.lower() in IMAGE_SUFFIXES:
+        return [(1, _recognize_scans(path, [1])[0])]
+    return extract_pdf_pages(path)
 
 
 def _page_text(page) -> tuple[str, bool]:
@@ -59,13 +69,13 @@ def extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
 
 def _recognize_scans(path: Path, numbers: list[int]) -> list[str]:
     if os.name != "nt":
-        raise PdfExtractionError("扫描 PDF 需要 Windows 10 或 11 的本地 OCR。")
+        raise PdfExtractionError("扫描件需要 Windows 10 或 11 的本地 OCR。")
 
     powershell = Path(os.environ.get("SystemRoot", "C:/Windows"))
     powershell /= "System32/WindowsPowerShell/v1.0/powershell.exe"
     encoded_script = base64.b64encode(_OCR_SCRIPT.encode("utf-16-le")).decode("ascii")
     # ASCII JSON preserves all Unicode paths without depending on the active console code page.
-    request = json.dumps({"path": str(path.resolve()), "pages": numbers})
+    request = json.dumps({"path": str(path.resolve()), "pages": numbers, "image": path.suffix.lower() in IMAGE_SUFFIXES})
     try:
         process = subprocess.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script],
@@ -79,11 +89,11 @@ def _recognize_scans(path: Path, numbers: list[int]) -> list[str]:
         process.check_returncode()
         result = json.loads(process.stdout.decode("utf-8-sig"))
     except subprocess.TimeoutExpired as exc:
-        raise PdfExtractionError("本地 OCR 处理超时，请拆分 PDF 后重试。") from exc
+        raise PdfExtractionError("本地 OCR 处理超时，请拆分 PDF 或缩小图片后重试。") from exc
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         if isinstance(exc, PdfExtractionError):
             raise
-        raise PdfExtractionError("Windows 本地 OCR 无法处理扫描页，请检查系统 OCR 组件或重新导出 PDF。") from exc
+        raise PdfExtractionError("Windows 本地 OCR 无法处理扫描件，请检查 OCR 组件或重新导出文件。") from exc
     if not isinstance(result, list) or len(result) != len(numbers) or not all(isinstance(text, str) for text in result):
         raise PdfExtractionError("本地 OCR 返回的扫描页与 PDF 页码不一致。")
     # WinRT inserts spaces between recognized Chinese characters on the same line.
@@ -100,7 +110,9 @@ $null = [Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]
 $null = [Windows.Data.Pdf.PdfDocument,Windows.Data.Pdf,ContentType=WindowsRuntime]
 $null = [Windows.Data.Pdf.PdfPageRenderOptions,Windows.Data.Pdf,ContentType=WindowsRuntime]
 $null = [Windows.Storage.Streams.InMemoryRandomAccessStream,Windows.Storage.Streams,ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.IRandomAccessStreamWithContentType,Windows.Storage.Streams,ContentType=WindowsRuntime]
 $null = [Windows.Graphics.Imaging.BitmapDecoder,Windows.Graphics.Imaging,ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapTransform,Windows.Graphics.Imaging,ContentType=WindowsRuntime]
 $null = [Windows.Graphics.Imaging.SoftwareBitmap,Windows.Graphics.Imaging,ContentType=WindowsRuntime]
 $null = [Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime]
 $null = [Windows.Media.Ocr.OcrResult,Windows.Foundation,ContentType=WindowsRuntime]
@@ -138,7 +150,32 @@ if ($null -eq $engine) {
 }
 if ($null -eq $engine) { exit 2 }
 
+function Read-ImageText($stream) {
+    $decoder = Wait-Result ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    $transform = [Windows.Graphics.Imaging.BitmapTransform]::new()
+    $scale = [Math]::Min(1, [Windows.Media.Ocr.OcrEngine]::MaxImageDimension / [Math]::Max($decoder.PixelWidth, $decoder.PixelHeight))
+    $transform.ScaledWidth = [uint32][Math]::Max(1, [Math]::Floor($decoder.PixelWidth * $scale))
+    $transform.ScaledHeight = [uint32][Math]::Max(1, [Math]::Floor($decoder.PixelHeight * $scale))
+    $bitmap = Wait-Result ($decoder.GetSoftwareBitmapAsync('Bgra8', 'Ignore', $transform, 'RespectExifOrientation', 'DoNotColorManage')) ([Windows.Graphics.Imaging.SoftwareBitmap])
+    try {
+        $result = Wait-Result ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+        ($result.Lines | ForEach-Object { $_.Text }) -join "`n"
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
 $file = Wait-Result ([Windows.Storage.StorageFile]::GetFileFromPathAsync($request.path)) ([Windows.Storage.StorageFile])
+if ($request.image) {
+    $stream = Wait-Result ($file.OpenReadAsync()) ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
+    try {
+        $text = Read-ImageText $stream
+        [Console]::Write((ConvertTo-Json -Compress -InputObject @($text)))
+    } finally {
+        $stream.Dispose()
+    }
+    exit
+}
 $pdf = Wait-Result ([Windows.Data.Pdf.PdfDocument]::LoadFromFileAsync($file)) ([Windows.Data.Pdf.PdfDocument])
 $texts = foreach ($number in $request.pages) {
     $page = $pdf.GetPage([uint32]($number - 1))
@@ -152,14 +189,7 @@ $texts = foreach ($number in $request.pages) {
         $renderTask = $asTaskAction.Invoke($null, @($page.RenderToStreamAsync($stream, $options)))
         $null = $renderTask.GetAwaiter().GetResult()
         $stream.Seek(0)
-        $decoder = Wait-Result ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
-        $bitmap = Wait-Result ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
-        try {
-            $result = Wait-Result ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-            ($result.Lines | ForEach-Object { $_.Text }) -join "`n"
-        } finally {
-            $bitmap.Dispose()
-        }
+        Read-ImageText $stream
     } finally {
         $stream.Dispose()
         $page.Dispose()

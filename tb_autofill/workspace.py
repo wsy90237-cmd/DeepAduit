@@ -247,14 +247,15 @@ def _build_overview(app):
 
 
 def _build_papers(app):
-    """底稿：两个动作和当前待复核文件，没有流程图。"""
     page = scroll_page(app, "papers")
     actions = tk.Frame(page, bg=BG)
     actions.grid(row=0, column=0, sticky="ew", padx=30, pady=(34, 0))
-    ttk.Button(actions, text="制作报表项目底稿", style="Accent.TButton",
-               command=app._draft_paper).pack(side="left")
     from . import evidence_ui
-    ttk.Button(actions, text="项目资料与自动底稿",
+    ttk.Button(actions, text="本机 OCR 自动底稿", style="Accent.TButton",
+               command=lambda: evidence_ui.open_intake(app)).pack(side="left")
+    ttk.Button(actions, text="制作报表项目底稿",
+               command=app._draft_paper).pack(side="left", padx=(6, 0))
+    ttk.Button(actions, text="手工核对资料",
                command=lambda: evidence_ui.open_project(app)).pack(side="left", padx=6)
     ttk.Button(actions, text="选择待复核底稿", style="Quiet.TButton",
                command=lambda: app._attach_review_document("底稿")).pack(side="left", padx=(8, 0))

@@ -51,6 +51,61 @@ def open_project(app):
     window.grab_set()
 
 
+def open_intake(app):
+    if app.busy:
+        return
+    session = getattr(app, 'intake', None)
+    if not session or not session.current():
+        if not activate_project(app):
+            return
+        session = app.intake
+    from .auto_project import draft_folder
+
+    window = tk.Toplevel(app)
+    window.title('本机 OCR 自动底稿 · 货币资金')
+    window.transient(app)
+    panel = ttk.Frame(window, padding=16)
+    panel.pack(fill='both', expand=True)
+    ttk.Label(panel, text='① 放入对应科目文件夹   →   ② 确认范围   →   ③ 核对草稿和待办').pack(anchor='w')
+    ttk.Label(panel, wraplength=620, text='首批支持银行回函、对账单（PDF、PNG、JPG）及标准 Excel 余额清单。'
+              '只在本机识别并按规则核对，不调用 AI；草稿不等于审定结果。').pack(anchor='w', pady=(8, 12))
+    actions = ttk.Frame(panel)
+    actions.pack(fill='x')
+
+    def run(action):
+        if not session.current():
+            messagebox.showinfo('项目已切换', '请关闭此窗口并重新进入当前项目。', parent=window)
+        elif not app.busy:
+            try:
+                action()
+            except (OSError, ValueError) as exc:
+                messagebox.showerror('操作未完成', str(exc), parent=window)
+
+    def open_drafts():
+        path = draft_folder(session.store)
+        if not path.is_dir():
+            raise ValueError('目前没有可打开的自动草稿，请查看识别状态和待核清单。')
+        os.startfile(path)
+
+    def show_notes():
+        notes.configure(state='normal')
+        notes.delete('1.0', 'end')
+        notes.insert('1.0', '\n'.join(session.notes))
+        notes.configure(state='disabled')
+
+    for title, action in (
+        ('打开科目资料夹', lambda: os.startfile(session.store.root)),
+        ('确认范围', lambda: session.confirm(window)),
+        ('打开草稿目录', open_drafts),
+        ('查看待核清单', show_notes),
+    ):
+        ttk.Button(actions, text=title, command=lambda action=action: run(action)).pack(side='left', padx=(0, 6))
+    ttk.Label(panel, textvariable=app.intake_status, wraplength=620).pack(anchor='w', pady=12)
+    notes = ScrolledText(panel, height=8, width=72, wrap='word')
+    notes.pack(fill='both', expand=True)
+    show_notes()
+
+
 def current_store(app):
     store = getattr(app, "evidence_store", None)
     subject = app.loaded_subject
@@ -83,12 +138,6 @@ class EvidenceDialog(tk.Toplevel):
         bar.grid(row=0, column=0, sticky="ew", padx=12, pady=8)
         self.button(bar, "导入 PDF", self.import_pdf)
         self.button(bar, "打开公司资料夹", lambda: os.startfile(store.root))
-        intake = getattr(app, 'intake', None)
-        if intake and intake.store is store:
-            auto_bar = ttk.Frame(self)
-            auto_bar.grid(row=6, column=0, sticky='ew', padx=12, pady=6)
-            self.button(auto_bar, '自动收件详情', lambda: self.show_text('自动收件', '\n'.join(intake.notes)))
-            self.button(auto_bar, '确认自动底稿范围', intake.confirm)
         self.button(bar, "识别资料夹", lambda: self.import_files(sorted(store.inbox.glob("*.pdf"))))
         self.button(bar, "打开原页所在 PDF", self.open_pdf)
         self.button(bar, "已核对资料归属", self.review_doc)

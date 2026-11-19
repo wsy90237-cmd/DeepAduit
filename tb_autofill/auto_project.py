@@ -5,13 +5,14 @@ import json
 import os
 import re
 import tempfile
+import unicodedata
 from datetime import date
 from pathlib import Path
 
 from . import audit_index, dxn_paper, papers, paper_pack
 from .bank_evidence import BankBalance, reconcile_bank_balance
 from .bank_listing import read_listing
-from .pdf_ocr import extract_pdf_pages
+from .pdf_ocr import IMAGE_SUFFIXES, extract_evidence_pages
 
 
 def folders(store, rows):
@@ -47,8 +48,9 @@ def inventory(directories):
 
 
 def parse_page(text, subject, cutoff):
+    text = unicodedata.normalize('NFKC', text).replace('\r\n', '\n')
     def field(labels, optional=False):
-        values = re.findall(r'^(?:' + labels + r')[ \t]*[：:][ \t]*([^\r\n]+)$', text, re.M)
+        values = re.findall(r'^[ \t]*(?:' + labels + r')[ \t]*[:,][ \t]*([^\r\n]+)$', text, re.M)
         if optional and not values:
             return ''
         if len(values) != 1:
@@ -59,18 +61,23 @@ def parse_page(text, subject, cutoff):
         raise ValueError('不能唯一确定回函或对账单')
     name = field('户名|账户名称|银行账户户名')
     entity = field('被审计单位|主体', optional=True)
-    day = field('截止日|截止日期|余额截止日')
+    day = re.sub(r'[ \t]*(年|月|日|[-/一—–−])[ \t]*', r'\1', field('截止日|截止日期|余额截止日'))
+    day = re.sub(r'(?<=[0-9])[一—–−](?=[0-9])', '-', day)
+    dates = {cutoff.isoformat(), f'{cutoff.year}/{cutoff.month:02d}/{cutoff.day:02d}',
+             f'{cutoff.year}年{cutoff.month}月{cutoff.day}日', f'{cutoff.year}年{cutoff.month:02d}月{cutoff.day:02d}日'}
     amount = field('回函余额|期末余额|账户余额|银行余额' if kinds[0] == 'confirmation' else '期末余额|对账单余额')
     unit = field('金额单位|单位', optional=True)
     if amount.endswith('元'):
         unit = unit or '元'
         amount = amount[:-1].strip()
-    if (entity and entity != subject.name) or name != subject.name or day != cutoff.isoformat() or unit != '元':
+    amount = re.sub(r'^([+-]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+))[ \t]*[.·][ \t]*([0-9]{2})$', r'\1.\2', amount)
+    expected_name = unicodedata.normalize('NFKC', subject.name)
+    if (entity and entity != expected_name) or name != expected_name or day not in dates or unit != '元':
         raise ValueError('主体、截止日或金额单位不符')
     currency = field('币种')
-    if currency in ('人民币（CNY）', '人民币(CNY)'):
+    if currency == '人民币(CNY)':
         currency = 'CNY'
-    return kinds[0], BankBalance(name, field('完整账号|账号|银行账号'), currency, day, amount)
+    return kinds[0], BankBalance(subject.name, field('完整账号|账号|银行账号').replace(' ', ''), currency, cutoff, amount)
 
 
 def snapshot(store, source):
@@ -107,7 +114,7 @@ def snapshot(store, source):
             temp.unlink(missing_ok=True)
 
 
-def prepare(store, entries, subject, rows, currency, library, source, extractor=extract_pdf_pages):
+def prepare(store, entries, subject, rows, currency, library, source, extractor=extract_evidence_pages):
     cutoff = date(subject.year, subject.month, calendar.monthrange(subject.year, subject.month)[1])
     banks = [row for row in rows if row.level == 1 and row.name == '银行存款']
     if len(banks) != 1 or banks[0].ending is None:
@@ -126,7 +133,7 @@ def prepare(store, entries, subject, rows, currency, library, source, extractor=
         code = entries[path][0]
         label = str(path.relative_to(store.root))
         suffix = path.suffix.lower()
-        if code not in ('', bank.code) or suffix not in {'.xlsx', '.pdf'}:
+        if code not in ('', bank.code) or suffix not in {'.xlsx', '.pdf', *IMAGE_SUFFIXES}:
             issues.append(label + '：已归档，非银行自动填写范围')
             continue
         digest, copy = snapshot(store, path)
@@ -151,8 +158,12 @@ def prepare(store, entries, subject, rows, currency, library, source, extractor=
                         db.execute('UPDATE intake SET pages=? WHERE digest=?', (json.dumps(extracted), digest))
                 else:
                     extracted = json.loads(cached)
-                parsed = [(number, *parse_page(text.replace('\r\n', '\n'), subject, cutoff), text)
-                          for number, text in extracted]
+                parsed = []
+                for number, text in extracted:
+                    try:
+                        parsed.append((number, *parse_page(text, subject, cutoff), text))
+                    except ValueError as exc:
+                        raise ValueError(f'第{number}页：{exc}') from exc
                 if not parsed:
                     raise ValueError('未提取到有效页')
                 pages.extend((label, digest, *item) for item in parsed)
@@ -170,7 +181,7 @@ def prepare(store, entries, subject, rows, currency, library, source, extractor=
     elif listings:
         issues.append('多份不同余额清单，无法确定采用哪份，请移出旧版。')
     for label, digest, number, kind, evidence, text in pages:
-        book = lookup.get(evidence.account_number.replace(' ', ''))
+        book = lookup.get(evidence.account_number)
         if not book and not listings:
             details = [row for row in scoped if row.level > 1 and row.code.startswith(bank.code) and row.ending is not None
                        and not any(other.code != row.code and other.code.startswith(row.code) for other in scoped)
@@ -179,7 +190,8 @@ def prepare(store, entries, subject, rows, currency, library, source, extractor=
                 book = BankBalance(subject.name, evidence.account_number, currency, cutoff, details[0].ending)
         result = reconcile_bank_balance(book or BankBalance(), evidence, evidence_kind=kind)
         if result.difference is None:
-            issues.append(f'{label} 第{number}页：待核，缺少可比逐户余额或口径不一致')
+            reason = '缺少唯一可比的逐户账面余额' if not book else '、'.join(result.issues)
+            issues.append(f'{label} 第{number}页：待核，{reason}')
             continue
         if result.difference:
             issues.append(f'{label} 第{number}页：差异待核 {result.difference:.2f}')
@@ -210,10 +222,15 @@ def last_export(store):
         return db.execute('SELECT version,signature FROM auto_exports ORDER BY version DESC LIMIT 1').fetchone()
 
 
-def publish(store, temp, signature):
+def draft_folder(store):
     folder = store.root / '底稿草稿' / '货币资金'
     if folder.resolve() != folder:
         raise ValueError('底稿输出目录不能重定向。')
+    return folder
+
+
+def publish(store, temp, signature):
+    folder = draft_folder(store)
     folder.mkdir(parents=True, exist_ok=True)
     last_export(store)
     with store._connect() as db:
