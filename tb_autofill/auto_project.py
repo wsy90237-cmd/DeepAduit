@@ -11,7 +11,7 @@ from pathlib import Path
 from . import audit_index, dxn_paper, papers, paper_pack
 from .bank_evidence import BankBalance, reconcile_bank_balance
 from .bank_listing import read_listing
-from .pdf_ocr import extract_pdf_pages
+from .pdf_text import extract_pdf_pages
 
 
 def folders(store, rows):
@@ -47,6 +47,8 @@ def inventory(directories):
 
 
 def parse_page(text, subject, cutoff):
+    if not text.strip():
+        raise ValueError('此页没有可读取的 PDF 文字层')
     def field(labels, optional=False):
         values = re.findall(r'^(?:' + labels + r')[ \t]*[：:][ \t]*([^\r\n]+)$', text, re.M)
         if optional and not values:
@@ -135,8 +137,7 @@ def prepare(store, entries, subject, rows, currency, library, source, extractor=
         seen.add((digest, suffix))
         try:
             with store._connect() as db:
-                db.execute('CREATE TABLE IF NOT EXISTS intake(digest TEXT PRIMARY KEY, pages TEXT)')
-                db.execute('INSERT OR IGNORE INTO intake(digest) VALUES (?)', (digest,))
+                db.execute('CREATE TABLE IF NOT EXISTS intake_text(digest TEXT PRIMARY KEY, pages TEXT NOT NULL)')
                 db.execute('INSERT OR REPLACE INTO intake_origin VALUES (?,?)', (digest, label))
             if suffix == '.xlsx':
                 listing = read_listing(copy.read_bytes(), entity=subject.name, cutoff=cutoff, code=bank.code,
@@ -144,13 +145,13 @@ def prepare(store, entries, subject, rows, currency, library, source, extractor=
                 listings.append((label, listing, digest))
             else:
                 with store._connect() as db:
-                    cached = db.execute('SELECT pages FROM intake WHERE digest=?', (digest,)).fetchone()[0]
+                    cached = db.execute('SELECT pages FROM intake_text WHERE digest=?', (digest,)).fetchone()
                 if cached is None:
                     extracted = list(extractor(copy))
                     with store._connect() as db:
-                        db.execute('UPDATE intake SET pages=? WHERE digest=?', (json.dumps(extracted), digest))
+                        db.execute('INSERT OR IGNORE INTO intake_text VALUES (?,?)', (digest, json.dumps(extracted)))
                 else:
-                    extracted = json.loads(cached)
+                    extracted = json.loads(cached[0])
                 parsed = [(number, *parse_page(text.replace('\r\n', '\n'), subject, cutoff), text)
                           for number, text in extracted]
                 if not parsed:

@@ -4,7 +4,7 @@ from decimal import Decimal
 import unittest
 
 from tb_autofill.bank_evidence import BankBalance, complete_amount_at, reconcile_bank_balance
-from tb_autofill.bank_evidence_ui import _amount_in_excerpt, _bank_rows, _bank_summary, _evidence_date, _found_in_excerpt, _ocr_amount
+from tb_autofill.bank_evidence_ui import _amount_in_excerpt, _bank_rows, _bank_summary, _evidence_date, _found_in_excerpt, _normalize_amount_text
 from tb_autofill.models import LedgerRow, Subject
 
 
@@ -68,9 +68,9 @@ class BankEvidenceSelectionTests(unittest.TestCase):
         self.assertTrue(_found_in_excerpt("1,234.50", excerpt, "0-9.,+-"))
         self.assertEqual(_evidence_date("2025年12月31日"), date(2025, 12, 31))
 
-    def test_ocr_amount_only_joins_at_explicit_decimal_or_group_separator(self):
-        self.assertEqual(_ocr_amount("４５６ ． ７８"), "456.78")
-        self.assertEqual(_ocr_amount("４５６ ７８"), "456 78")
+    def test_amount_text_only_joins_at_explicit_decimal_or_group_separator(self):
+        self.assertEqual(_normalize_amount_text("４５６ ． ７８"), "456.78")
+        self.assertEqual(_normalize_amount_text("４５６ ７８"), "456 78")
         self.assertTrue(_amount_in_excerpt("456.78", "余额 ４５６ ． ７８"))
         self.assertFalse(_amount_in_excerpt("45678", "余额 ４５６ ７８"))
         self.assertFalse(_amount_in_excerpt("78", "余额 ４５６ ． ７８"))
@@ -90,5 +90,5 @@ class BankEvidenceSelectionTests(unittest.TestCase):
                 self.assertFalse(_amount_in_excerpt(nested, excerpt))
         excerpt = "余额 456 ． 78 元"
         self.assertTrue(complete_amount_at(excerpt, 3, 11))
-        self.assertEqual(_ocr_amount("（１，２３４．５０）"), "-1,234.50")
-        self.assertEqual(_ocr_amount("− 1234.50"), "-1234.50")
+        self.assertEqual(_normalize_amount_text("（１，２３４．５０）"), "-1,234.50")
+        self.assertEqual(_normalize_amount_text("− 1234.50"), "-1234.50")

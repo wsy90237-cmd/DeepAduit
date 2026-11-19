@@ -1,4 +1,6 @@
 from decimal import Decimal
+from hashlib import sha256
+import json
 from queue import Queue
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
@@ -6,6 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from openpyxl import Workbook, load_workbook
+from pypdf import PdfWriter
 
 from tb_autofill import audit_index, auto_intake_ui, auto_project as auto, bank_listing
 from tb_autofill.evidence_project import ProjectStore
@@ -113,3 +116,20 @@ class AutoProjectTests(unittest.TestCase):
             app.scan = None
             session.inspect()
             self.assertIsNone(session.approval)
+
+    def test_auto_intake_does_not_reuse_legacy_pdf_recognition_cache(self):
+        self.listing()
+        pdf = self.bank / '银行回函.pdf'
+        writer = PdfWriter()
+        writer.add_blank_page(300, 300)
+        writer.write(pdf)
+        digest = sha256(pdf.read_bytes()).hexdigest()
+        with self.store._connect() as db:
+            db.execute('CREATE TABLE intake(digest TEXT PRIMARY KEY, pages TEXT)')
+            db.execute('INSERT INTO intake VALUES (?,?)', (digest, json.dumps([(1, self.text)])))
+        prepared, notes = auto.prepare(self.store, auto.inventory(self.dirs), self.subject, self.rows, 'CNY',
+                                       audit_index.bundled(), 'confirmed')
+        self.assertEqual([row['field'] for row in prepared[-1]], ['逐户余额清单'])
+        self.assertTrue(any('文字层' in note for note in notes))
+        with self.store._connect() as db:
+            self.assertIsNotNone(db.execute('SELECT pages FROM intake WHERE digest=?', (digest,)).fetchone())

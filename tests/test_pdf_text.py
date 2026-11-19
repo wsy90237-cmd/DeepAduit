@@ -1,12 +1,11 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
 
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, NumberObject
 
-from tb_autofill import pdf_ocr
+from tb_autofill import pdf_text
 
 
 class PdfExtractionTests(unittest.TestCase):
@@ -15,7 +14,7 @@ class PdfExtractionTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.path = Path(folder.name) / "合成 PDF.pdf"
 
-    def test_text_layer_and_ocr_preserve_original_page_numbers(self):
+    def test_text_layer_preserves_original_page_numbers(self):
         writer = PdfWriter()
         writer.add_blank_page(400, 400)
         page = writer.add_blank_page(400, 400)
@@ -34,11 +33,7 @@ class PdfExtractionTests(unittest.TestCase):
         writer.add_blank_page(400, 400)
         writer.write(self.path)
 
-        with patch.object(pdf_ocr, "_recognize_scans", return_value=["合成扫描内容", ""]) as recognize:
-            pages = pdf_ocr.extract_pdf_pages(self.path)
-
-        recognize.assert_called_once_with(self.path, [1, 3])
-        self.assertEqual(pages, [(1, "合成扫描内容"), (2, "Synthetic text layer"), (3, "")])
+        self.assertEqual(pdf_text.extract_pdf_pages(self.path), [(1, ""), (2, "Synthetic text layer"), (3, "")])
 
     def test_password_protected_pdf_reports_specific_error(self):
         writer = PdfWriter()
@@ -46,10 +41,10 @@ class PdfExtractionTests(unittest.TestCase):
         writer.encrypt("synthetic-password")
         writer.write(self.path)
 
-        with self.assertRaisesRegex(pdf_ocr.PdfExtractionError, "密码保护"):
-            pdf_ocr.extract_pdf_pages(self.path)
+        with self.assertRaisesRegex(pdf_text.PdfExtractionError, "密码保护"):
+            pdf_text.extract_pdf_pages(self.path)
 
-    def test_thin_number_layer_over_large_image_still_goes_to_ocr(self):
+    def test_thin_number_layer_over_large_image_is_not_used_as_text(self):
         writer = PdfWriter()
         page = writer.add_blank_page(400, 400)
         image = DecodedStreamObject()
@@ -75,6 +70,5 @@ class PdfExtractionTests(unittest.TestCase):
         })
         writer.write(self.path)
 
-        with patch.object(pdf_ocr, "_recognize_scans", return_value=["合成扫描正文"]) as recognize:
-            self.assertEqual(pdf_ocr.extract_pdf_pages(self.path), [(1, "合成扫描正文")])
-        recognize.assert_called_once_with(self.path, [1])
+        with self.assertRaisesRegex(pdf_text.PdfExtractionError, "文字层"):
+            pdf_text.extract_pdf_pages(self.path)

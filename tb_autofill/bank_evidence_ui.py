@@ -52,7 +52,7 @@ def _found_in_excerpt(value, excerpt, adjacent):
         return True
     if adjacent == "0-9.,+-":
         return _amount_in_excerpt(value, excerpt)
-    # OCR and PDF text layers may add whitespace inside otherwise identical printed fields.
+    # PDF text layers may add whitespace inside otherwise identical printed fields.
     value = re.sub(r"\s+", "", value)
     pattern = r"[ \t]*".join(re.escape(char) for char in value)
     if not adjacent:
@@ -82,7 +82,7 @@ def _number_text(value):
     return re.sub(r"[ \t]*([.,])[ \t]*", r"\1", normalized)
 
 
-def _ocr_amount(value):
+def _normalize_amount_text(value):
     normalized = _number_text(value)
     financial_negative = re.fullmatch(r"\([ \t]*([0-9][0-9.,]*)[ \t]*\)", normalized)
     if financial_negative:
@@ -215,7 +215,7 @@ class _BankDialog(simpledialog.Dialog):
             def select(_):
                 book_amount.set(format(self.rows[self.account.current()].ending, "f"))
         self.account.bind("<<ComboboxSelected>>", select)
-        if re.fullmatch(r"[+-]?[0-9][0-9,.]*", _ocr_amount(self.value)):
+        if re.fullmatch(r"[+-]?[0-9][0-9,.]*", _normalize_amount_text(self.value)):
             self.entries[4][1].insert(0, self.value)
         preview = ScrolledText(frame, width=80, height=9, wrap="word")
         preview.insert("1.0", self.excerpt)
@@ -256,7 +256,7 @@ class _BankDialog(simpledialog.Dialog):
         if evidence[-1] and (not _amount_in_excerpt(evidence[-1], self.excerpt)
                              or not _amount_in_excerpt(evidence[-1], self.value)):
             raise ValueError("余额须同时见于银行证据摘录和草稿的证据原值。")
-        evidence_balance = BankBalance(*evidence[:3], _evidence_date(evidence[3]), _ocr_amount(evidence[4]))
+        evidence_balance = BankBalance(*evidence[:3], _evidence_date(evidence[3]), _normalize_amount_text(evidence[4]))
         book_balance = (self.listing[3][account_idx].balance if self.listing else
                         BankBalance(*book[:3], self.cutoff, row.ending))
         kind = ("confirmation", "statement")[self.kind.current()]

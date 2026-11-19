@@ -11,5 +11,5 @@ PRODUCT_MODULES = (
     "models", "paper_materials", "paper_pack", "paper_sheets", "papers", "sampling", "settings",
     "skills", "theme", "workbook", "workflow", "workspace",
     "bank_evidence", "bank_evidence_ui", "bank_listing", "evidence_draft", "evidence_ownership", "evidence_project",
-    "evidence_ui", "pdf_ocr",
+    "evidence_ui", "pdf_text",
 )

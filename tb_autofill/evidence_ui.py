@@ -10,7 +10,7 @@ from tkinter.scrolledtext import ScrolledText
 from . import ai, audit_index, evidence_draft as draft
 from .evidence_project import ProjectStore
 from .evidence_ownership import check_ownership
-from .pdf_ocr import extract_pdf_pages
+from .pdf_text import extract_pdf_pages
 
 
 def activate_project(app):
@@ -81,7 +81,7 @@ class EvidenceDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.close)
         bar = ttk.Frame(self)
         bar.grid(row=0, column=0, sticky="ew", padx=12, pady=8)
-        self.button(bar, "导入 PDF", self.import_pdf)
+        self.button(bar, "导入文字版 PDF", self.import_pdf)
         self.button(bar, "打开公司资料夹", lambda: os.startfile(store.root))
         intake = getattr(app, 'intake', None)
         if intake and intake.store is store:
@@ -89,7 +89,7 @@ class EvidenceDialog(tk.Toplevel):
             auto_bar.grid(row=6, column=0, sticky='ew', padx=12, pady=6)
             self.button(auto_bar, '自动收件详情', lambda: self.show_text('自动收件', '\n'.join(intake.notes)))
             self.button(auto_bar, '确认自动底稿范围', intake.confirm)
-        self.button(bar, "识别资料夹", lambda: self.import_files(sorted(store.inbox.glob("*.pdf"))))
+        self.button(bar, "批量读取 PDF", lambda: self.import_files(sorted(store.inbox.glob("*.pdf"))))
         self.button(bar, "打开原页所在 PDF", self.open_pdf)
         self.button(bar, "已核对资料归属", self.review_doc)
         self.button(bar, "已确认记录", self.history)
@@ -139,7 +139,8 @@ class EvidenceDialog(tk.Toplevel):
     def reload(self, selected=None):
         self.documents = sorted(self.store.list_documents(), key=lambda d: (not d["current"], d["name"]))
         self.docs.configure(values=[f"{d['name']}  v{d['version']}  " +
-            ("历史版本" if not d["current"] else "已核归属" if d["reviewed"] else "待核归属") for d in self.documents])
+            ("历史资料" if not d["text_layer"] or not d["current"] else "已核归属" if d["reviewed"] else "待核归属")
+            for d in self.documents])
         if self.documents:
             self.docs.current(next((i for i, d in enumerate(self.documents) if d["id"] == selected), 0))
         self.select_doc()
@@ -161,14 +162,16 @@ class EvidenceDialog(tk.Toplevel):
 
     def select_page(self):
         doc, page = self.current()
+        text = (page["text"] or "此页没有可读取的 PDF 文字层，请查看原件。") if doc["text_layer"] else (
+            "旧版提取结果不再用于底稿，可打开原件或重新导入文字版 PDF。")
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
-        self.text.insert("1.0", page["text"])
+        self.text.insert("1.0", text)
         self.text.configure(state="disabled")
         self.status.configure(text=f"第 {page['page']} 页 · {len(page['text'])} 字 · {doc['name']}")
 
     def import_pdf(self):
-        paths = filedialog.askopenfilenames(title="选择本项目的 PDF（可多选）", parent=self, filetypes=[("PDF", "*.pdf")])
+        paths = filedialog.askopenfilenames(title="选择本项目的文字版 PDF（可多选）", parent=self, filetypes=[("PDF", "*.pdf")])
         if paths:
             self.import_files(paths)
 
@@ -183,7 +186,7 @@ class EvidenceDialog(tk.Toplevel):
             for i, path in enumerate(paths, 1):
                 if self.stop_batch.is_set():
                     break
-                label = f"本机识别 {i}/{len(paths)} · {Path(path).name}"
+                label = f"本机读取 {i}/{len(paths)} · {Path(path).name}"
                 self.app._post(lambda text=label: self.status.configure(text=text))
                 try:
                     doc = self.store.import_pdf(path, lambda src: [s for _, s in extract_pdf_pages(src)])
@@ -201,7 +204,7 @@ class EvidenceDialog(tk.Toplevel):
                                        f"剩余 {len(paths) - completed - len(errors)} 份。")
             if errors:
                 self.show_text("未能导入的资料", "\n".join(errors))
-        self.app._async("正在本机复制与识别项目 PDF", work, done)
+        self.app._async("正在本机复制 PDF 并读取文字层", work, done)
 
     def open_pdf(self):
         doc, _ = self.current()
@@ -209,6 +212,8 @@ class EvidenceDialog(tk.Toplevel):
 
     def review_doc(self):
         doc, _ = self.current()
+        if not doc["text_layer"]:
+            raise ValueError("请重新导入文字版 PDF，旧版提取结果不再用于复核。")
         self.store.verify_document(doc["id"])
         checks = check_ownership([p["text"] for p in doc["pages"]], self.subject.name,
                                  self.subject.year, self.subject.month)
@@ -227,14 +232,14 @@ class EvidenceDialog(tk.Toplevel):
             raise ValueError("请先核对资料归属并选择报表项目。")
         region = self.text.tag_ranges("sel")
         excerpt = self.text.get(*region) if region else page["text"]
-        if not excerpt.strip() or len(excerpt) > 5000:
+        if not page["text"].strip() or not excerpt.strip() or len(excerpt) > 5000:
             raise ValueError("请选择本页 1 至 5000 字的有效摘录。")
         paper = self.papers[self.paper.current()]
         return doc, page, paper, excerpt, draft.source_key(self.app)
 
     def verify_current(self, doc):
         record = self.store.get_document(doc["id"])
-        if not record["current"] or not record["reviewed"]:
+        if not record["text_layer"] or not record["current"] or not record["reviewed"]:
             raise ValueError("资料已换版或归属待核，请重新选择并复核。")
         self.store.verify_document(doc["id"])
 

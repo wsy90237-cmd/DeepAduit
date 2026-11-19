@@ -210,13 +210,13 @@ class LocalReferenceTests(unittest.TestCase):
         with self.assertRaises(knowledge.KnowledgeError):
             knowledge.read_document(path)
 
-    def test_blank_or_encrypted_pdf_is_not_claimed_as_ocr(self):
+    def test_blank_or_encrypted_pdf_is_not_imported(self):
         path = self.root / "synthetic.pdf"
         writer = PdfWriter()
         writer.add_blank_page(width=100, height=100)
         with path.open("wb") as stream:
             writer.write(stream)
-        with self.assertRaisesRegex(knowledge.KnowledgeError, "OCR"):
+        with self.assertRaisesRegex(knowledge.KnowledgeError, "不识别扫描图"):
             knowledge.read_document(path)
         writer.encrypt("synthetic-password")
         with path.open("wb") as stream:

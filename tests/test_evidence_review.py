@@ -11,15 +11,14 @@ from openpyxl import load_workbook
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from tb_autofill import audit_index, dxn_paper, evidence_draft, evidence_ui, pdf_ocr
+from tb_autofill import audit_index, dxn_paper, evidence_draft, evidence_ui, pdf_text
 from tb_autofill.bank_evidence_ui import _found_in_excerpt
 from tb_autofill.evidence_project import ProjectStore
 from tb_autofill.models import LedgerRow, Subject
 
 
 class EvidenceReviewTests(unittest.TestCase):
-    def test_ocr_decimal_cannot_be_presented_as_whole_yuan(self):
-        # Windows OCR of a synthetic image containing "456.78" produced exactly this text.
+    def test_split_decimal_cannot_be_presented_as_whole_yuan(self):
         excerpt = "Balance 456 ． 78"
         for quote in ("456", excerpt):
             with self.subTest(quote=quote), self.assertRaises(ValueError):
@@ -49,7 +48,7 @@ class EvidenceReviewTests(unittest.TestCase):
                     NameObject("/BaseFont"): NameObject("/Helvetica")})})})
             writer.write(pdf)
             original = pdf.read_bytes()
-            doc = store.import_pdf(pdf, lambda path: [s for _, s in pdf_ocr.extract_pdf_pages(path)])
+            doc = store.import_pdf(pdf, lambda path: [s for _, s in pdf_text.extract_pdf_pages(path)])
             store.mark_reviewed(doc["id"])
             view = Mock()
             view.store = store

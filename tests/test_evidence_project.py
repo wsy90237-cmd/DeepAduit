@@ -76,6 +76,29 @@ class EvidenceProjectTests(unittest.TestCase):
             self.assertEqual(reopened.root, created.root)
             self.assertIsNone(ProjectStore.open_existing(root, '其他公司', 2025))
 
+    def test_legacy_text_stays_on_disk_but_cannot_be_reused_for_new_drafts(self):
+        with tempfile.TemporaryDirectory() as path:
+            source = Path(path) / 'source.pdf'
+            source.write_bytes(b'%PDF-1.4 original')
+            store = ProjectStore(path, '合成公司', 2025)
+            old = store.import_pdf(source, lambda _: ['旧版文本'])
+            store.mark_reviewed(old['id'])
+            refs = [old['pages'][0]['evidence_id']]
+            suggestion = store.add_suggestion('旧版确认', refs)
+            store.confirm_suggestion(suggestion)
+            with store._connect() as db:
+                db.execute('DROP TABLE text_layer_documents')
+            store = ProjectStore(path, '合成公司', 2025)
+            self.assertEqual(store.verify_document(old['id']).read_bytes(), source.read_bytes())
+            self.assertFalse(store.list_suggestions(current_only=True))
+            self.assertEqual(store.list_suggestions()[0]['id'], suggestion)
+            with self.assertRaises(ValueError):
+                store.add_suggestion('不得再次采用旧版', refs)
+            with self.assertRaises(ValueError):
+                store.confirm_suggestion(suggestion)
+            new = store.import_pdf(source, lambda _: ['来自文字层'])
+            self.assertEqual((new['version'], new['pages'][0]['text']), (2, '来自文字层'))
+
     def test_tamper_and_casefold(self):
         with tempfile.TemporaryDirectory() as path:
             root = Path(path)

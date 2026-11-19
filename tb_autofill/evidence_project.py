@@ -58,6 +58,7 @@ class ProjectStore:
                 CREATE TABLE IF NOT EXISTS pages (
                     document_id TEXT NOT NULL, page INTEGER NOT NULL, text TEXT NOT NULL,
                     PRIMARY KEY(document_id, page));
+                CREATE TABLE IF NOT EXISTS text_layer_documents (document_id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS suggestions (
                     id TEXT PRIMARY KEY, entity TEXT NOT NULL, year TEXT NOT NULL,
                     text TEXT NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0);
@@ -126,12 +127,13 @@ class ProjectStore:
         snapshot = self.files / (document_id + '.pdf')
         try:
             before = _digest(source)
-            latest_sql = ('SELECT * FROM documents WHERE entity=? AND year=? AND name=? COLLATE CASEFOLD '
+            latest_sql = ('SELECT *, id IN (SELECT document_id FROM text_layer_documents) AS text_layer '
+                          'FROM documents WHERE entity=? AND year=? AND name=? COLLATE CASEFOLD '
                           'ORDER BY version DESC LIMIT 1')
             lookup = (self.entity, self.year, source.name)
             with self._connect() as db:
                 prior = db.execute(latest_sql, lookup).fetchone()
-                if prior and prior['sha256'] == before:
+                if prior and prior['sha256'] == before and prior['text_layer']:
                     self._verified_path(prior)
                     return self.get_document(prior['id'])
             with source.open('rb') as src, snapshot.open('xb') as dst:
@@ -150,7 +152,7 @@ class ProjectStore:
             with self._connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 existing = db.execute(latest_sql, lookup).fetchone()
-                if existing and existing['sha256'] == before:
+                if existing and existing['sha256'] == before and existing['text_layer']:
                     self._verified_path(existing)
                     snapshot.unlink()
                     return self.get_document(existing['id'])
@@ -162,6 +164,7 @@ class ProjectStore:
                            (self.entity, self.year, source.name))
                 db.execute('INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
                            (document_id, self.entity, self.year, source.name, version, before, snapshot.name))
+                db.execute('INSERT INTO text_layer_documents VALUES (?)', (document_id,))
                 db.executemany('INSERT INTO pages VALUES (?, ?, ?)',
                                ((document_id, number, text) for number, text in enumerate(texts, 1)))
         except BaseException:
@@ -172,7 +175,7 @@ class ProjectStore:
     def list_documents(self):
         """返回轻量目录，不加载页面文字；旧版本也包含在内。"""
         with self._connect() as db:
-            rows = db.execute('SELECT *, version=(SELECT MAX(d2.version) FROM documents d2 WHERE d2.entity=d.entity AND d2.year=d.year AND d2.name=d.name COLLATE CASEFOLD) AS current FROM documents d WHERE entity=? AND year=? ORDER BY name, version', (self.entity, self.year)).fetchall()
+            rows = db.execute('SELECT *, id IN (SELECT document_id FROM text_layer_documents) AS text_layer, version=(SELECT MAX(d2.version) FROM documents d2 WHERE d2.entity=d.entity AND d2.year=d.year AND d2.name=d.name COLLATE CASEFOLD) AS current FROM documents d WHERE entity=? AND year=? ORDER BY name, version', (self.entity, self.year)).fetchall()
             result = []
             for row in rows:
                 item = dict(row)
@@ -184,7 +187,7 @@ class ProjectStore:
     def get_document(self, document_id):
         """按需加载选中版本的页文本和证据编号。"""
         with self._connect() as db:
-            row = db.execute('SELECT *, version=(SELECT MAX(d2.version) FROM documents d2 WHERE d2.entity=d.entity AND d2.year=d.year AND d2.name=d.name COLLATE CASEFOLD) AS current FROM documents d WHERE id=? AND entity=? AND year=?', (document_id, self.entity, self.year)).fetchone()
+            row = db.execute('SELECT *, id IN (SELECT document_id FROM text_layer_documents) AS text_layer, version=(SELECT MAX(d2.version) FROM documents d2 WHERE d2.entity=d.entity AND d2.year=d.year AND d2.name=d.name COLLATE CASEFOLD) AS current FROM documents d WHERE id=? AND entity=? AND year=?', (document_id, self.entity, self.year)).fetchone()
             if not row:
                 raise ValueError('资料不属于当前项目')
             item = dict(row)
@@ -212,9 +215,9 @@ class ProjectStore:
     def mark_reviewed(self, document_id):
         with self._connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute('SELECT * FROM documents WHERE id=? AND entity=? AND year=? AND version=(SELECT MAX(d2.version) FROM documents d2 WHERE d2.entity=documents.entity AND d2.year=documents.year AND d2.name=documents.name COLLATE CASEFOLD)', (document_id, self.entity, self.year)).fetchone()
+            row = db.execute('SELECT * FROM documents WHERE id=? AND entity=? AND year=? AND id IN (SELECT document_id FROM text_layer_documents) AND version=(SELECT MAX(d2.version) FROM documents d2 WHERE d2.entity=documents.entity AND d2.year=documents.year AND d2.name=documents.name COLLATE CASEFOLD)', (document_id, self.entity, self.year)).fetchone()
             if not row:
-                raise ValueError('资料不存在或不是当前版本')
+                raise ValueError('请使用当前版本的文字版 PDF 复核，旧版提取结果不能继续使用。')
             self._verified_path(row)
             db.execute('UPDATE documents SET reviewed=1 WHERE id=?', (document_id,))
 
@@ -232,7 +235,7 @@ class ProjectStore:
                     page = int(page)
                 except (ValueError, AttributeError):
                     raise ValueError('证据编号无效') from None
-                row = db.execute('SELECT d.* FROM documents d JOIN pages p ON p.document_id=d.id WHERE d.id=? AND p.page=? AND d.entity=? AND d.year=? AND d.version=(SELECT MAX(d2.version) FROM documents d2 WHERE d2.entity=d.entity AND d2.year=d.year AND d2.name=d.name COLLATE CASEFOLD)', (document_id, page, self.entity, self.year)).fetchone()
+                row = db.execute('SELECT d.* FROM documents d JOIN pages p ON p.document_id=d.id JOIN text_layer_documents t ON t.document_id=d.id WHERE d.id=? AND p.page=? AND d.entity=? AND d.year=? AND d.version=(SELECT MAX(d2.version) FROM documents d2 WHERE d2.entity=d.entity AND d2.year=d.year AND d2.name=d.name COLLATE CASEFOLD)', (document_id, page, self.entity, self.year)).fetchone()
                 if not row:
                     raise ValueError('证据不存在、属于其他项目或不是当前版本')
                 self._verified_path(row)
@@ -252,7 +255,8 @@ class ProjectStore:
                 item = dict(row)
                 refs = references.get(row['id'], [])
                 item['evidence_ids'] = [f"{ref['document_id']}:{ref['page']}" for ref in refs]
-                item['current'] = bool(refs) and all(ref['document_id'] in docs and docs[ref['document_id']]['current'] for ref in refs)
+                item['current'] = bool(refs) and all(ref['document_id'] in docs and docs[ref['document_id']]['current']
+                                                   and docs[ref['document_id']]['text_layer'] for ref in refs)
                 item['confirmed'] = bool(item['confirmed']) and item['current'] and all(docs[ref['document_id']]['reviewed'] for ref in refs)
                 if not current_only or item['current']:
                     result.append(item)
@@ -263,12 +267,14 @@ class ProjectStore:
             db.execute('BEGIN IMMEDIATE')
             suggestion = db.execute('SELECT id FROM suggestions WHERE id=? AND entity=? AND year=?',
                                     (suggestion_id, self.entity, self.year)).fetchone()
-            refs = db.execute('SELECT d.* FROM suggestion_evidence e JOIN documents d ON d.id=e.document_id WHERE e.suggestion_id=?', (suggestion_id,)).fetchall()
+            refs = db.execute('SELECT d.*, d.id IN (SELECT document_id FROM text_layer_documents) AS text_layer '
+                              'FROM suggestion_evidence e JOIN documents d ON d.id=e.document_id WHERE e.suggestion_id=?', (suggestion_id,)).fetchall()
             if not suggestion or not refs:
                 raise ValueError('建议或关联证据不存在')
             for row in refs:
                 latest = db.execute('SELECT MAX(version) FROM documents WHERE entity=? AND year=? AND name=? COLLATE CASEFOLD', (self.entity, self.year, row['name'])).fetchone()[0]
-                if row['entity'] != self.entity or row['year'] != self.year or row['version'] != latest or not row['reviewed']:
+                if (row['entity'] != self.entity or row['year'] != self.year or row['version'] != latest
+                        or not row['reviewed'] or not row['text_layer']):
                     raise ValueError('证据已过期或尚未复核')
                 self._verified_path(row)
             db.execute('UPDATE suggestions SET confirmed=1 WHERE id=?', (suggestion_id,))

@@ -95,7 +95,7 @@ def read_document(path):
         raise KnowledgeError("读取期间资料发生变化，请保存文件后重新导入。")
     text = text.replace("\x00", "").strip()
     if not text:
-        raise KnowledgeError("未提取到文字。扫描 PDF 需要先做 OCR，本版不会猜测扫描内容。")
+        raise KnowledgeError("未提取到文字。本版不识别扫描图，请改用文字版 PDF 或文本文件。")
     if len(text) > MAX_TEXT:
         raise KnowledgeError("文字超过 30 万字符，请拆分资料。")
     return text, hashlib.sha256(raw).hexdigest()

@@ -11,7 +11,7 @@ from . import APP_NAME
 ASSETS = Path(__file__).with_name("assets")
 ICON_SIZES = (32, 48, 256)
 EXECUTABLE = f"{APP_NAME}.exe"
-WINDOW_TITLE = f"{APP_NAME} · OCR 实验版"
+WINDOW_TITLE = f"{APP_NAME} · 审计工作台"
 PACKAGE_FILES = ("launch.py", "启动Attesta.cmd", "Attesta-trial.cmd", "requirements.txt")
 
 
