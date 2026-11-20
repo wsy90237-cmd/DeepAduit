@@ -10,11 +10,17 @@ from tb_autofill import APP_NAME, PRODUCT_MODULES, __version__
 def _selftest(report=None):
     """Offline packaged checks use synthetic data and never read user settings."""
     import importlib
-    from tb_autofill import audit_index, auditlog, brand, fields, gui, knowledge, matching, models, settings, workflow
+    from tb_autofill import (agent, agent_tools, audit_index, auditlog, brand, fields, gui,
+                              knowledge, matching, models, settings, workflow)
     from openpyxl import Workbook
     from pypdf import PdfReader, PdfWriter
     import tkinter as tk
     modules = tuple(importlib.import_module(f"tb_autofill.{name}") for name in PRODUCT_MODULES)
+    registry = agent_tools.build_registry()
+    if not {"export_tb_copy", "prepare_workpaper", "export_workpaper"} <= set(registry.specs):
+        raise RuntimeError("审计 Agent 工具自检失败")
+    if agent.AgentBudget(max_steps=1).max_steps != 1:
+        raise RuntimeError("审计 Agent 预算自检失败")
     result = matching.resolve_match(models.TargetField("Synthetic", "B2", "库存现金", "ending"),
                                     [models.LedgerRow("1001", "库存现金", ending=Decimal("100"))])
     if result.amount != 100 or not result.selected:
@@ -74,7 +80,7 @@ def _selftest(report=None):
         icon_root.destroy()
     native = {module.__name__: bool(getattr(module, "__compiled__", False)) for module in modules}
     value = {"product": APP_NAME, "version": __version__, "native_modules": native,
-             "checks": ["decimal_amount", "dpapi_key", "audit_checkpoint", "protected_header", "local_knowledge", "pdf_runtime", "report_readiness", "brand_assets", "paper_index"],
+             "checks": ["decimal_amount", "dpapi_key", "audit_checkpoint", "protected_header", "local_knowledge", "pdf_runtime", "report_readiness", "brand_assets", "paper_index", "agent_tools"],
              "data": "synthetic only"}
     if report:
         with Path(report).open("x", encoding="utf-8") as stream:

@@ -11,6 +11,10 @@ from .settings import DEFAULT_BASE_URL, MODELS, normalize_base_url, validate_key
 
 DEFAULT_MODEL = MODELS[0]
 SKILL_LIMIT = 5
+MAX_TOOL_CALLS = 8
+MAX_TOOL_ARGUMENT_CHARS = 16_000
+MAX_TOOL_CONTENT = 12_000
+TOOL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 
 
 class AIError(Exception):
@@ -298,6 +302,81 @@ class DeepSeekClient:
             f"鉴权与对话均已连通，但模型未按 JSON 返回（最近一次：{last or '空'}）。"
             "这不影响普通对话与问答，可直接保存 Key 后在对话中使用；"
             "若需要结构化复核建议，请改选支持 JSON 输出的模型。")
+
+    def chat_tools(self, messages, tools, *, max_tokens=4096, temperature=0.2):
+        """带工具定义的一轮对话；只解析、不执行工具。
+
+        Agent 运行时负责执行工具并把结果作为 ``role=tool`` 消息送回。这里不发送
+        ``response_format``：强制 JSON 与工具调用同时出现时，部分兼容服务会拒绝请求。
+        工具参数必须是 JSON 对象且不含超长内容，避免把任意指令塞进工具层。
+        """
+        if not isinstance(messages, list) or not messages:
+            raise AIError("对话消息不能为空")
+        if not isinstance(tools, list) or not tools:
+            raise AIError("未提供可调用的工具定义")
+        allowed = set()
+        for spec in tools:
+            function = spec.get("function") if isinstance(spec, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if isinstance(name, str) and TOOL_NAME.fullmatch(name.strip()):
+                allowed.add(name.strip())
+        if not allowed:
+            raise AIError("工具定义中没有可识别的函数名")
+        response = self._request("/chat/completions", {
+            "model": self.model, "messages": messages, "stream": False,
+            "thinking": {"type": "disabled"}, "temperature": temperature,
+            "max_tokens": max_tokens, "tools": tools,
+        })
+        try:
+            choice = response["choices"][0]
+            message = choice["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AIError("模型服务返回结构异常，未执行任何工具。") from exc
+        finish = choice.get("finish_reason")
+        if finish == "length":
+            raise AIError("模型返回被截断，未执行任何工具；请减少本轮任务后重试。")
+        if finish not in (None, "stop", "tool_calls"):
+            raise AIError(f"模型返回未完成（{finish}），未执行任何工具。")
+        content = message.get("content") or ""
+        if not isinstance(content, str):
+            raise AIError("模型返回的正文格式不正确，未执行任何工具。")
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            raise AIError("模型返回的工具调用格式不正确，未执行任何工具。")
+        if len(raw_calls) > MAX_TOOL_CALLS:
+            raise AIError(f"单轮工具调用超过 {MAX_TOOL_CALLS} 个，未执行任何工具。")
+        calls = []
+        for raw in raw_calls:
+            if not isinstance(raw, dict):
+                raise AIError("模型返回了无法识别的工具调用，未执行任何工具。")
+            call_id = raw.get("id")
+            function = raw.get("function")
+            if not isinstance(call_id, str) or not call_id.strip() or len(call_id) > 128:
+                raise AIError("模型返回的工具调用缺少有效编号，未执行任何工具。")
+            if not isinstance(function, dict):
+                raise AIError("模型返回的工具调用缺少函数信息，未执行任何工具。")
+            name = function.get("name")
+            if not isinstance(name, str) or not TOOL_NAME.fullmatch(name.strip()):
+                raise AIError("模型请求了未授权的工具名称，未执行任何工具。")
+            if name.strip() not in allowed:
+                raise AIError("模型请求了未授权的工具名称，未执行任何工具。")
+            arguments_text = function.get("arguments")
+            if arguments_text is None or (isinstance(arguments_text, str) and not arguments_text.strip()):
+                arguments_text = "{}"
+            if not isinstance(arguments_text, str) or len(arguments_text) > MAX_TOOL_ARGUMENT_CHARS:
+                raise AIError("模型返回的工具参数过大，未执行任何工具。")
+            try:
+                arguments = json.loads(arguments_text)
+            except ValueError:
+                raise AIError("模型返回的工具参数不是有效 JSON，未执行任何工具。") from None
+            if not isinstance(arguments, dict):
+                raise AIError("模型返回的工具参数必须是 JSON 对象，未执行任何工具。")
+            calls.append({"id": call_id.strip(), "name": name.strip(), "arguments": arguments,
+                          "raw": raw})
+        if not content.strip() and not calls:
+            raise AIError("模型没有返回正文或工具调用，本次请求未产生结果。")
+        return {"content": content[:MAX_TOOL_CONTENT], "tool_calls": calls,
+                "finish_reason": finish, "message": message}
 
     def assist(self, payload):
         system = (

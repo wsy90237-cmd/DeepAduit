@@ -12,7 +12,7 @@ from . import APP_NAME, __version__, brand, dialogs as messagebox, theme, workfl
 
 BG, INK, MUTED = theme.PAPER, theme.INK, theme.MUTED
 NAV, ACCENT = theme.RAIL, theme.ACCENT
-PAGES = {"overview": "工作台", "tb": "账套与 TB",
+PAGES = {"overview": "工作台", "agent": "审计 Agent", "tb": "账套与 TB",
          "papers": "审计底稿", "notes": "财务报表附注", "report": "报告中心",
          "security": "设置"}
 
@@ -195,6 +195,8 @@ def build_pages(app):
     app.overview_meta = tk.StringVar(value="")
     app.primary_action = tk.StringVar(value="读取账套")
     _build_overview(app)
+    from . import agent_ui
+    agent_ui.build(app)
     _build_papers(app)
     _build_notes(app)
     _build_report(app)
@@ -460,3 +462,6 @@ def refresh_context(app):
         tiles["accounts"].update_value(accounts)
         tiles["pending"].update_value(pending, tone=theme.WARN if pending else theme.INK)
         tiles["differences"].update_value(differences, tone=theme.BAD if differences else theme.INK)
+    if hasattr(app, "agent_context_var"):
+        from . import agent_ui
+        agent_ui.refresh(app)

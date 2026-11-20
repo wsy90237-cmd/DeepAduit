@@ -122,7 +122,11 @@ def account_choices(rows, limit=120, level=None):
 
 
 def primary_scope(rows, code):
-    """一份底稿绑定一个一级科目及其子树，不合并同报表项目下的其他一级科目。"""
+    """兼容旧单科目接口：只取一个一级科目及其子树。
+
+    整册底稿应使用 ``report_scope``，按报表项目合并全部已确认科目；本函数不再代表
+    当前出册口径。
+    """
     by_code = {}
     for row in rows:
         if row.code in by_code and by_code[row.code] != row:

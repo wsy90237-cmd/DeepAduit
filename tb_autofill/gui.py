@@ -1037,6 +1037,12 @@ class App(tk.Tk):
         self.library = knowledge.LocalLibrary()
         self.knowledge_refs = []
         self.review_document = None
+        self.agent_running = False
+        self.agent_runtime = None
+        self.agent_result = None
+        self.agent_context = None
+        self.agent_events = []
+        self.agent_audit_error = ""
         try:
             self.audit = auditlog.AuditLog()
         except Exception:
@@ -1083,6 +1089,12 @@ class App(tk.Tk):
         self._refresh_tree()
 
     def _request_close(self):
+        if getattr(self, "agent_running", False):
+            if messagebox.askyesno("审计 Agent 运行中", "Agent 仍在运行。是否停止并退出？\n"
+                                                        "当前本地写入完成前不会强制中断。", parent=self):
+                from . import agent_ui
+                agent_ui.stop(self)
+            return
         if self.busy or getattr(getattr(self, 'intake', None), 'running', False):
             messagebox.showinfo("任务进行中", "请等待当前任务完成后退出，以确保临时副本和输出文件正确关闭。")
             return
