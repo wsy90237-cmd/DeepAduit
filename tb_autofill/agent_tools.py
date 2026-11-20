@@ -389,6 +389,9 @@ def prepare_workpaper(context, arguments, runtime):
     except ai.AIError as exc:
         draft = {"kind": "local"}
         warnings.append(f"AI 文字未生成，仅保留本地事实：{exc}")
+    except ValueError as exc:
+        draft = {"kind": "local"}
+        warnings.append(f"AI 文字无法解析，仅保留本地事实：{str(exc)[:200]}")
     context.prepared_workpapers[index_no] = {"paper": paper, "data": data, "draft": draft,
                                              "request": request, "warnings": warnings}
     has_narrative = draft.get("kind") == "pack"
