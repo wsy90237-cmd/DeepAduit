@@ -126,7 +126,8 @@ class AgentUiSmokeTests(unittest.TestCase):
             save_signers=lambda *_args, **_kwargs: None,
         )
 
-    def _run_agent(self, *, stages, report_indexes=(), replies, out_dir_name):
+    def _run_agent(self, *, stages, report_indexes=(), replies, out_dir_name, template=True,
+                   message="复核 TB 并生成所需交付物"):
         """构造真实 App，跑一轮脚本化 Agent，返回运行结果与调用证据。"""
         fake_client = ScriptedClient(replies)
         out = self.root / out_dir_name
@@ -193,7 +194,7 @@ class AgentUiSmokeTests(unittest.TestCase):
             try:
                 # _autodetect 等在初始化时可能置 busy；快照与启动前显式复位。
                 app.busy = False
-                app.template_var.set(str(self.template))
+                app.template_var.set(str(self.template) if template else "")
                 app.period_var.set("ending")
                 # 账套事实在 App 初始化后再设，避免变量 trace 清空。
                 app.rows = ledger_rows()
@@ -205,7 +206,7 @@ class AgentUiSmokeTests(unittest.TestCase):
                 app.agent_stage_vars["papers"].set("papers" in stages)
                 app.agent_reports_var.set(",".join(report_indexes))
                 app.agent_output_var.set(str(out))
-                app.agent_input.insert("1.0", "复核 TB 并生成所需交付物")
+                app.agent_input.insert("1.0", message)
                 agent_ui._send(app)
             except Exception as exc:  # 界面回调里的异常不会让 mainloop 退出，必须自己转达
                 failures.append(exc)
@@ -259,6 +260,24 @@ class AgentUiSmokeTests(unittest.TestCase):
         self.assertEqual(run.result.error, "")
         self.assertNotEqual(run.result.status, "error")
         self.assertIn("已完成", run.state)
+
+    def test_workpaper_only_does_not_require_user_tb_template(self):
+        run = self._run_agent(
+            stages=("papers",),
+            report_indexes=("1-010",),
+            replies=[
+                reply([tool_call("finish", {"status": "done", "summary": "完成"},
+                                 call_id="call-finish")]),
+            ],
+            out_dir_name="out-papers-only",
+            template=False,
+            message="帮我做货币资金底稿")
+
+        self.assertEqual(run.result.status, "partial",
+                         f"{run.result.summary} / {run.result.gaps} / {run.result.error}")
+        self.assertFalse(any("模板" in gap for gap in run.result.gaps), run.result.gaps)
+        self.assertTrue(any("整册底稿未生成：1-010" in gap for gap in run.result.gaps),
+                        run.result.gaps)
 
     def test_papers_with_scope_but_missing_workpaper_is_partial(self):
         run = self._run_agent(

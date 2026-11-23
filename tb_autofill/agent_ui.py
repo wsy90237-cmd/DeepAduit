@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 import threading
@@ -15,7 +16,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 from . import agent as agent_module
-from . import agent_tools, ai, fields, settings, theme, workspace
+from . import agent_tools, ai, audit_index, fields, settings, theme, workspace
 from . import dialogs as messagebox
 from .models import ledger_digest
 
@@ -255,13 +256,33 @@ def _send(app):
     _append_message(app, "me", text)
     app.agent_input.delete("1.0", "end")
     if not app.rows or app.loaded_subject is None:
-        _append_message(app, "agent", "还没有读取账套。请先在工作台读取科目余额并选择模板。")
+        _append_message(app, "agent", "还没有读取账套。请先在工作台读取科目余额。")
         return
-    template = app.template_var.get().strip()
-    if not template or not Path(template).is_file():
-        _append_message(app, "agent", "还没有选择模板。请先在工作台选择模板。")
-        return
+    _infer_scope(app, text)
     start(app, objective=text)
+
+
+def _infer_scope(app, text):
+    """从自然语言里推断本次交付物和报表项目；不覆盖用户已在任务范围里选好的值。"""
+    content = str(text or "")
+    wants_papers = "底稿" in content
+    wants_tb = "TB" in content.upper() or "试算" in content or "审定表" in content
+    if wants_papers:
+        app.agent_stage_vars["papers"].set(True)
+        if not wants_tb:
+            app.agent_stage_vars["tb"].set(False)
+    elif wants_tb:
+        app.agent_stage_vars["tb"].set(True)
+    if app.agent_reports_var.get().strip():
+        return
+    match = re.search(r"\b\d-\d{3}\b", content)
+    if match:
+        app.agent_reports_var.set(match.group(0))
+        return
+    for paper in audit_index.bundled():
+        if paper.name and paper.name in content:
+            app.agent_reports_var.set(paper.index_no)
+            return
 
 
 def _clear(app):
@@ -311,14 +332,15 @@ def _results_digest(results):
 
 
 def _snapshot(app):
+    """底稿任务不依赖 TB 模板；TB 任务才在 start 中要求模板存在。"""
     subject = app.loaded_subject
-    template = Path(app.template_var.get().strip())
-    if not template.is_file():
-        raise ValueError("请先选择存在的模板文件。")
-    digest = fields.file_digest(template)
+    raw = app.template_var.get().strip()
+    template = Path(raw) if raw else None
+    digest = fields.file_digest(template) if template and template.is_file() else ""
     return agent_module.ProjectSnapshot(
         subject=subject, rows=tuple(app.rows), subject_label=app._subject_label(),
-        template_path=str(template), unit=app.unit_var.get(), periods=app._periods(),
+        template_path=str(template) if template else "", unit=app.unit_var.get(),
+        periods=app._periods(),
         scan=app.scan, results=tuple(app.results), paper_library=tuple(app.paper_library),
         install_path=app.install_var.get().strip(), evidence_root=getattr(app, "evidence_root", ""),
         prepared_by=getattr(app, "prepared_by", ""), reviewed_by=getattr(app, "reviewed_by", ""),
@@ -368,17 +390,24 @@ def start(app, objective=None):
         _append_message(app, "agent", "还没有启用模型。请先在「模型设置」输入 DeepSeek API Key 并启用。")
         return
     if not app.rows or app.loaded_subject is None:
-        _append_message(app, "agent", "还没有读取账套。请先在工作台读取科目余额并选择模板。")
+        _append_message(app, "agent", "还没有读取账套。请先在工作台读取科目余额。")
         return
+    stages, scope = _stage_scope(app)
+    if not stages:
+        _append_message(app, "agent", "请先在「任务范围」中选择至少一项交付物。")
+        return
+    if "tb" in stages:
+        template = app.template_var.get().strip()
+        if not template or not Path(template).is_file():
+            _append_message(app, "agent", "制作 TB 副本需要用户模板；底稿本身用内置模板，"
+                                          "如果只做底稿，请在任务范围里只勾选「整册底稿」。")
+            app.agent_state_var.set("TB 需要用户模板")
+            return
     try:
         snapshot = _snapshot(app)
         client = ai.DeepSeekClient.from_store(app.store)
     except (ValueError, ai.AIError, settings.SettingsError, OSError) as exc:
         _append_message(app, "agent", str(exc))
-        return
-    stages, scope = _stage_scope(app)
-    if not stages:
-        _append_message(app, "agent", "请先在「任务范围」中选择至少一项交付物。")
         return
     if objective is None:
         objective = app.agent_objective.get("1.0", "end").strip() if hasattr(app, "agent_objective") else ""

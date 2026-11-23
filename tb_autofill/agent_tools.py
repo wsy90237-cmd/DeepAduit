@@ -424,7 +424,13 @@ def prepare_workpaper(context, arguments, runtime):
 
 
 def _default_workpaper_path(context, paper):
-    base = context.output_dir or Path(context.template_path).parent / "底稿"
+    if context.output_dir:
+        base = context.output_dir
+    elif context.template_path:
+        base = Path(context.template_path).parent / "底稿"
+    else:
+        project = str(getattr(context.subject, "project_path", "") or "")
+        base = (Path(project).parent if project else Path.cwd()) / "Attesta底稿"
     candidate = base / f"{paper.index_no} {paper.name}-底稿.xlsx"
     if candidate.exists():
         candidate = base / f"{paper.index_no} {paper.name}-底稿-{datetime.now():%Y%m%d-%H%M%S}.xlsx"
