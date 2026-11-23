@@ -2136,7 +2136,7 @@ class App(tk.Tk):
         workspace.refresh_context(self)
         from . import evidence_ui
         if hasattr(self, 'intake_status'):
-            evidence_ui.activate_project(self)
+            evidence_ui.activate_project(self, interactive=False)
 
     # ---------- 模板识别 ----------
 

@@ -13,15 +13,20 @@ from .evidence_ownership import check_ownership
 from .pdf_text import extract_pdf_pages
 
 
-def activate_project(app):
+def activate_project(app, *, interactive=True):
     if app.busy:
         return
     subject = app.loaded_subject
     if subject is None:
-        messagebox.showinfo("项目资料", "请先在工作台读取主体和期间。", parent=app)
+        if interactive:
+            messagebox.showinfo("项目资料", "请先在工作台读取主体和期间。", parent=app)
         return
     root = getattr(app, 'evidence_root', '') or (app.store.data.get('evidence_root') if app.store else '')
     if not root:
+        if not interactive:
+            if hasattr(app, "intake_status"):
+                app.intake_status.set("未设置项目资料目录；可在「项目资料与自动底稿」中选择。")
+            return None
         root = filedialog.askdirectory(title="首次设置：选择各公司底稿的共同存放目录", parent=app)
     if not root:
         return
@@ -32,8 +37,12 @@ def activate_project(app):
         from .auto_intake_ui import Intake
         intake = Intake(app, store)
     except Exception as exc:
-        messagebox.showerror("无法打开项目资料", str(exc), parent=app)
-        return
+        text = f"项目资料目录不可用：{exc}"
+        if hasattr(app, "intake_status"):
+            app.intake_status.set(text + "；请在「项目资料与自动底稿」中重新选择目录。")
+        if interactive:
+            messagebox.showerror("无法打开项目资料", str(exc), parent=app)
+        return None
     app.evidence_store, app.evidence_root = store, root
     app.intake = intake
     intake.start()
