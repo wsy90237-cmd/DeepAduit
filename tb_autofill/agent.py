@@ -550,6 +550,12 @@ class AgentRuntime:
         result = self.registry.call(name, arguments, self.context, self)
         if not isinstance(result, dict):
             result = {"ok": False, "error": "工具未返回对象"}
+        if not result.get("ok"):
+            # 失败结果先只留错误文本，避免失败分支夹带 data 绕过 result_scope。
+            failed = {"ok": False, "error": str(result.get("error") or "工具未完成")[:600]}
+            if result.get("cancelled"):
+                failed["cancelled"] = True
+            result = failed
         required_scope = set(spec.result_scope) | set(result.get("_scope") or ())
         if required_scope:
             try:
@@ -557,12 +563,6 @@ class AgentRuntime:
             except (ScopeError, AgentCancelled) as exc:
                 result = {"ok": False, "error": str(exc), "scope_blocked": True}
         result.pop("_scope", None)
-        if not result.get("ok"):
-            # 失败结果只回错误文本，丢掉可能夹带的 data，避免绕过 result_scope。
-            failed = {"ok": False, "error": str(result.get("error") or "工具未完成")[:600]}
-            if result.get("cancelled"):
-                failed["cancelled"] = True
-            result = failed
         self.emit("tool_result", f"{name} {'完成' if result.get('ok') else '未完成'}",
                   str(result.get("summary") or result.get("error") or "")[:500],
                   {"tool": name, "ok": bool(result.get("ok"))})

@@ -259,9 +259,10 @@ class AgentUiSmokeTests(unittest.TestCase):
         self.assertNotEqual(run.result.status, "error")
         self.assertIn("已完成", run.state)
 
-    def test_papers_checked_without_report_scope_is_partial(self):
+    def test_papers_with_scope_but_missing_workpaper_is_partial(self):
         run = self._run_agent(
             stages=("tb", "papers"),
+            report_indexes=("1-010",),
             replies=[
                 reply([tool_call("scan_template", call_id="call-scan")]),
                 reply([tool_call("finish", {"status": "done", "summary": "已扫描模板"},
@@ -271,7 +272,7 @@ class AgentUiSmokeTests(unittest.TestCase):
 
         self.assertEqual(run.result.status, "partial",
                          f"{run.result.summary} / {run.result.gaps} / {run.result.error}")
-        self.assertTrue(any("整册底稿未指定报表项目范围" in gap for gap in run.result.gaps),
+        self.assertTrue(any("整册底稿未生成：1-010" in gap for gap in run.result.gaps),
                         run.result.gaps)
         self.assertTrue(any("未生成" in gap for gap in run.result.gaps), run.result.gaps)
         self.assertEqual(run.result.artifacts, ())

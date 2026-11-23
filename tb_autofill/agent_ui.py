@@ -87,7 +87,7 @@ def build(app):
     row.pack(fill="x", pady=4)
     _label(row, "报表项目索引", width=10).pack(side="left")
     ttk.Entry(row, textvariable=app.agent_reports_var, width=46).pack(side="left", padx=(6, 12))
-    _label(row, "留空则由 Agent 列出后询问", fg=SEC).pack(side="left")
+    _label(row, "整册底稿必填（如 1-010）；留空将无法开始", fg=SEC).pack(side="left")
     row = tk.Frame(form, bg=CARD)
     row.pack(fill="x", pady=4)
     _label(row, "关注点", width=10).pack(side="left")
@@ -270,6 +270,11 @@ def start(app):
             messagebox.showwarning("输出目录不可用", str(exc), parent=app)
             return
     indexes = tuple(item.strip() for item in app.agent_reports_var.get().split(",") if item.strip())
+    if "papers" in stages and not indexes:
+        messagebox.showinfo("缺少报表项目索引", "整册底稿需要填写报表项目索引（如 1-010）；"
+                                                  "留空将无法开始，请填写后再试。", parent=app)
+        app.agent_state_var.set("整册底稿需要报表项目索引，未开始。")
+        return
     config = {"objective": objective, "stages": stages, "report_indexes": indexes,
               "output_dir": output_dir, "max_steps": 20, "max_tool_calls": 40,
               "max_model_calls": 12}
@@ -284,23 +289,20 @@ def start(app):
             evidence_rows = {index: evidence_ui.paper_rows(app, index) for index in indexes}
         except Exception:
             evidence_rows = {}
-    def evidence_for(index):
-        try:
-            from . import evidence_ui
-            return evidence_ui.paper_rows(app, index)
-        except Exception:
-            return ()
-
     def current_fingerprint():
         # 只读普通 Python 属性；不要在运行线程里调 Tk 变量。
-        return (app._context_revision, snapshot.ledger_digest, snapshot.template_digest,
+        try:
+            disk_template = fields.file_digest(snapshot.template_path)
+        except OSError:
+            disk_template = ""
+        return (app._context_revision, snapshot.ledger_digest, disk_template,
                 snapshot.template_path, _results_digest(app.results))
 
     context = snapshot.context(
         output_dir=output_dir, objective=objective, stages=stages, report_indexes=indexes,
         focus=app.agent_focus_var.get().strip(), materiality=app.agent_materiality_var.get().strip(),
         allowed_scope=scope, current_fingerprint=current_fingerprint,
-        evidence_rows=evidence_rows, evidence_provider=evidence_for,
+        evidence_rows=evidence_rows,
         max_steps=config["max_steps"], max_tool_calls=config["max_tool_calls"],
         max_model_calls=config["max_model_calls"])
     app.agent_context = context

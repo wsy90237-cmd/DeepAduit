@@ -16,7 +16,10 @@ from .models import ledger_digest, money
 
 
 def _revision(context):
-    return list(context.snapshot.revision())
+    # 只给模型回传摘要哈希，不把本机绝对路径带进模型上下文。
+    snapshot = context.snapshot
+    return [snapshot.app_revision, snapshot.ledger_digest, snapshot.template_digest,
+            snapshot.results_digest]
 
 
 def _amount(value):
