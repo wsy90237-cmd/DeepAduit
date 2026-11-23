@@ -40,7 +40,7 @@
 - 真实 App + 脚本化模型的桌面冒烟：TB-only 产物与原模板不变，空 `report_indexes` 降级 partial；
 - 独立复核发现的 M1–M5、M7、L1 已修复；M6/L6/L9 已补请求审计、finish schema 与路径最小化。
 
-定向测试 `tests.test_agent*`、`tests.test_ai*`、`tests.test_reporting`、`tests.test_brand` 共 118 项通过，其中 1 项“真实 Excel COM 写入与重算”在 DSH 沙箱下跳过：Excel COM 可启动，但无法新建/打开工作簿（`-2147352567`）。`tools/qa/agent_excel_probe.py` 在沙箱内输出“未执行”并返回 2，不伪造通过；需在无沙箱的本机会话重跑以取得真实重算证据。
+定向测试 `tests.test_agent*`、`tests.test_ai*`、`tests.test_reporting`、`tests.test_brand` 共 119 项：118 项通过，1 项“真实 Excel COM 写入与重算”在 DSH 沙箱下跳过。Excel COM 可启动，但无法新建/打开工作簿（`-2147352567`）。`tools/qa/agent_excel_probe.py` 在沙箱内输出“未执行”并返回 2，不伪造通过；需在无沙箱的本机会话重跑以取得真实重算证据。
 
 真实 DeepSeek 请求、桌面真实 Excel 重算、正式发布 EXE 仍需在本机账户与真实环境中验证；合成测试不能替代这些联调。
 
