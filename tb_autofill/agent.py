@@ -136,10 +136,11 @@ class ProjectSnapshot:
     app_revision: int = 0
     ledger_digest: str = ""
     template_digest: str = ""
+    results_digest: str = ""
 
     def revision(self):
         return (self.app_revision, self.ledger_digest, self.template_digest,
-                str(self.template_path))
+                str(self.template_path), self.results_digest)
 
     def context(self, *, output_dir="", objective="", stages=(), report_indexes=(),
                 focus="", materiality="", pause_after_tb=True,

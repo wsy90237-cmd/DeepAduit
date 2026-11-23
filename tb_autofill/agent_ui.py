@@ -180,6 +180,17 @@ def _stage_scope(app):
     return stages, scope
 
 
+def _results_digest(results):
+    """TB 结果摘要；运行线程读普通属性，不触碰 Tk 变量。"""
+    try:
+        from hashlib import sha256
+        parts = [(item.target.id, item.status, bool(item.selected), str(item.amount),
+                  tuple(item.source_ids)) for item in (results or [])]
+        return sha256(repr(parts).encode("utf-8")).hexdigest()[:16]
+    except (AttributeError, TypeError, ValueError):
+        return ""
+
+
 def _snapshot(app):
     subject = app.loaded_subject
     template = Path(app.template_var.get().strip())
@@ -193,7 +204,7 @@ def _snapshot(app):
         install_path=app.install_var.get().strip(), evidence_root=getattr(app, "evidence_root", ""),
         prepared_by=getattr(app, "prepared_by", ""), reviewed_by=getattr(app, "reviewed_by", ""),
         app_revision=app._context_revision, ledger_digest=ledger_digest(app.rows or []),
-        template_digest=digest,
+        template_digest=digest, results_digest=_results_digest(app.results),
     )
 
 
@@ -203,7 +214,8 @@ def _current_fingerprint(app):
         digest = fields.file_digest(template) if template and Path(template).is_file() else ""
     except OSError:
         digest = ""
-    return (app._context_revision, ledger_digest(app.rows or []), digest, template)
+    return (app._context_revision, ledger_digest(app.rows or []), digest, template,
+            _results_digest(app.results))
 
 
 def _manifest_text(app, snapshot, stages, scope, client, config):
@@ -279,10 +291,15 @@ def start(app):
         except Exception:
             return ()
 
+    def current_fingerprint():
+        # 只读普通 Python 属性；不要在运行线程里调 Tk 变量。
+        return (app._context_revision, snapshot.ledger_digest, snapshot.template_digest,
+                snapshot.template_path, _results_digest(app.results))
+
     context = snapshot.context(
         output_dir=output_dir, objective=objective, stages=stages, report_indexes=indexes,
         focus=app.agent_focus_var.get().strip(), materiality=app.agent_materiality_var.get().strip(),
-        allowed_scope=scope, current_fingerprint=lambda: snapshot.revision(),
+        allowed_scope=scope, current_fingerprint=current_fingerprint,
         evidence_rows=evidence_rows, evidence_provider=evidence_for,
         max_steps=config["max_steps"], max_tool_calls=config["max_tool_calls"],
         max_model_calls=config["max_model_calls"])
