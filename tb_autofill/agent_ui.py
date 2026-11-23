@@ -52,10 +52,10 @@ def build(app):
     app.agent_context = None
     app.agent_audit_error = ""
     app.agent_context_var = tk.StringVar(value="尚未读取账套")
-    app.agent_state_var = tk.StringVar(value="在工作台准备账套与模板后，直接在下方输入任务。")
+    app.agent_state_var = tk.StringVar(value="尚未开始")
     app.agent_stage_vars = {
         "tb": tk.BooleanVar(value=True),
-        "papers": tk.BooleanVar(value=True),
+        "papers": tk.BooleanVar(value=False),
     }
     app.agent_reports_var = tk.StringVar(value="")
     app.agent_focus_var = tk.StringVar(value="")
@@ -65,14 +65,13 @@ def build(app):
     top = tk.Frame(page, bg=BG)
     top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=24, pady=(20, 8))
     _label(top, "审计 Agent", fg=TX, size=20, weight="bold", bg=BG).pack(anchor="w")
-    _label(top, "用对话布置任务；金额本地计算，写文件前确认。附注/报告草稿下一阶段。",
-           bg=BG).pack(anchor="w", pady=(4, 0))
     context = tk.Frame(top, bg=BG)
-    context.pack(fill="x", pady=(10, 0))
+    context.pack(fill="x", pady=(6, 0))
     tk.Label(context, textvariable=app.agent_context_var, bg=BG, fg=SEC, font=theme.font(9),
              anchor="w").pack(side="left", fill="x", expand=True)
     ttk.Button(context, text="模型设置", command=app._open_ai_settings).pack(side="right")
     ttk.Button(context, text="工作台", command=lambda: workspace.navigate(app, "tb")).pack(side="right", padx=6)
+    ttk.Button(context, text="任务范围", command=lambda: _open_scope(app)).pack(side="right")
 
     main = tk.Frame(page, bg=BG)
     main.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=24, pady=(0, 16))
@@ -82,46 +81,23 @@ def build(app):
 
     chat = tk.Frame(main, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
     chat.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-    chat.rowconfigure(2, weight=1)
+    chat.rowconfigure(1, weight=1)
     chat.columnconfigure(0, weight=1)
-    _label(chat, "对话", fg=TX, size=10, weight="bold").grid(row=0, column=0, sticky="w", padx=14, pady=(10, 2))
-
-    scope = tk.Frame(chat, bg=CARD)
-    scope.grid(row=1, column=0, sticky="ew", padx=14, pady=(2, 6))
-    scope.columnconfigure(1, weight=1)
-    row = tk.Frame(scope, bg=CARD)
-    row.grid(row=0, column=0, sticky="ew", pady=(0, 3))
-    _label(row, "本次范围", width=8).pack(side="left")
-    for key, text in (("tb", "TB 副本"), ("papers", "整册底稿")):
-        ttk.Checkbutton(row, text=text, variable=app.agent_stage_vars[key]).pack(side="left", padx=(6, 0))
-    _label(row, "附注/报告下一阶段", fg=SEC).pack(side="left", padx=(12, 0))
-    row = tk.Frame(scope, bg=CARD)
-    row.grid(row=1, column=0, sticky="ew", pady=2)
-    _label(row, "报表项目", width=8).pack(side="left")
-    ttk.Entry(row, textvariable=app.agent_reports_var, width=24).pack(side="left", padx=(6, 6))
-    _label(row, "整册底稿必填，如 1-010", fg=SEC).pack(side="left")
-    row = tk.Frame(scope, bg=CARD)
-    row.grid(row=2, column=0, sticky="ew", pady=2)
-    _label(row, "关注点", width=8).pack(side="left")
-    ttk.Entry(row, textvariable=app.agent_focus_var, width=34).pack(side="left", padx=(6, 6))
-    _label(row, "重要性", width=6).pack(side="left")
-    ttk.Entry(row, textvariable=app.agent_materiality_var, width=12).pack(side="left", padx=(4, 6))
-    ttk.Button(row, text="输出目录…", command=lambda: _choose_output(app)).pack(side="left")
 
     app.agent_chat = tk.Text(chat, state="disabled", wrap="word", relief="flat", borderwidth=0,
                              width=1, height=1, bg=CARD, fg=TX, font=theme.font(9),
-                             padx=14, pady=4, cursor="arrow")
-    app.agent_chat.grid(row=2, column=0, sticky="nsew")
+                             padx=14, pady=10, cursor="arrow")
+    app.agent_chat.grid(row=1, column=0, sticky="nsew")
     app.agent_chat.tag_configure("me", foreground=ACC, font=theme.font(9, weight="bold"), spacing3=4)
     app.agent_chat.tag_configure("agent", foreground=TX, spacing3=4, lmargin2=10)
     app.agent_chat.tag_configure("sys", foreground=SEC, font=theme.font(8), spacing3=4)
     app.agent_chat.tag_configure("warning", foreground=theme.BAD, spacing3=4)
     scroll = ttk.Scrollbar(chat, orient="vertical", command=app.agent_chat.yview)
-    scroll.grid(row=2, column=1, sticky="ns")
+    scroll.grid(row=1, column=1, sticky="ns")
     app.agent_chat.configure(yscrollcommand=scroll.set)
 
     composer = tk.Frame(chat, bg=CARD)
-    composer.grid(row=3, column=0, columnspan=2, sticky="ew", padx=14, pady=(6, 12))
+    composer.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(6, 12))
     composer.columnconfigure(0, weight=1)
     app.agent_input = tk.Text(composer, height=3, width=1, wrap="word", relief="flat", borderwidth=0,
                               bg=theme.SURFACE_ALT, fg=TX, font=theme.font(9), padx=9, pady=7,
@@ -130,7 +106,6 @@ def build(app):
     app.agent_input.bind("<Return>", _on_send_key)
     buttons = tk.Frame(composer, bg=CARD)
     buttons.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-    _label(buttons, "Enter 发送，Shift+Enter 换行", fg=SEC).pack(side="left")
     app.agent_stop_btn = ttk.Button(buttons, text="停止", command=lambda: stop(app), state="disabled")
     app.agent_stop_btn.pack(side="right")
     app.agent_start_btn = ttk.Button(buttons, text="发送", style="Accent.TButton",
@@ -175,8 +150,6 @@ def build(app):
     app.agent_gaps = tk.Text(gaps, height=5, width=1, state="disabled", wrap="word", relief="flat", bd=0,
                              bg=CARD, fg=SEC, font=theme.font(8), padx=12, pady=2)
     app.agent_gaps.pack(fill="x", padx=0, pady=(0, 8))
-    _append_message(app, "sys", "在工作台准备账套与模板后，直接在下方输入任务。"
-                                   "例如：复核 2025 年 TB，重点看货币资金。")
     refresh(app)
 
 
@@ -184,6 +157,65 @@ def _choose_output(app):
     path = filedialog.askdirectory(title="选择 Agent 输出目录", parent=app)
     if path:
         app.agent_output_var.set(path)
+
+
+def _open_scope(app):
+    ScopeDialog(app)
+
+
+class ScopeDialog(tk.Toplevel):
+    """任务范围只在需要时弹出，不在对话页常驻字段说明。"""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("任务范围")
+        self.transient(app)
+        theme.fit_window(self, 460, 360, min_width=380, min_height=300)
+        self.tb_var = tk.BooleanVar(value=app.agent_stage_vars["tb"].get())
+        self.papers_var = tk.BooleanVar(value=app.agent_stage_vars["papers"].get())
+        self.reports = tk.StringVar(value=app.agent_reports_var.get())
+        self.focus = tk.StringVar(value=app.agent_focus_var.get())
+        self.materiality = tk.StringVar(value=app.agent_materiality_var.get())
+        self.output = tk.StringVar(value=app.agent_output_var.get())
+        body = tk.Frame(self, bg=CARD)
+        body.pack(fill="both", expand=True, padx=16, pady=14)
+        _label(body, "本次范围", fg=TX, size=11, weight="bold").pack(anchor="w")
+        for text, variable in (("TB 副本", self.tb_var), ("整册底稿", self.papers_var)):
+            ttk.Checkbutton(body, text=text, variable=variable).pack(anchor="w", pady=(4, 0))
+        row = tk.Frame(body, bg=CARD)
+        row.pack(fill="x", pady=(8, 0))
+        _label(row, "报表项目").pack(side="left")
+        ttk.Entry(row, textvariable=self.reports, width=22).pack(side="left", padx=6)
+        row = tk.Frame(body, bg=CARD)
+        row.pack(fill="x", pady=(4, 0))
+        _label(row, "关注点").pack(side="left")
+        ttk.Entry(row, textvariable=self.focus, width=22).pack(side="left", padx=6)
+        ttk.Entry(row, textvariable=self.materiality, width=10).pack(side="left")
+        row = tk.Frame(body, bg=CARD)
+        row.pack(fill="x", pady=(4, 0))
+        _label(row, "输出目录").pack(side="left")
+        ttk.Entry(row, textvariable=self.output, width=26).pack(side="left", padx=6)
+        ttk.Button(row, text="选择", command=self._choose).pack(side="left")
+        buttons = tk.Frame(self, bg=CARD)
+        buttons.pack(fill="x", padx=16, pady=(0, 14))
+        ttk.Button(buttons, text="确定", style="Accent.TButton", command=self._ok).pack(side="right")
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right", padx=8)
+        self.grab_set()
+
+    def _choose(self):
+        path = filedialog.askdirectory(title="选择输出目录", parent=self)
+        if path:
+            self.output.set(path)
+
+    def _ok(self):
+        self.app.agent_stage_vars["tb"].set(self.tb_var.get())
+        self.app.agent_stage_vars["papers"].set(self.papers_var.get())
+        self.app.agent_reports_var.set(self.reports.get().strip())
+        self.app.agent_focus_var.set(self.focus.get().strip())
+        self.app.agent_materiality_var.set(self.materiality.get().strip())
+        self.app.agent_output_var.set(self.output.get().strip())
+        self.destroy()
 
 
 def _append_message(app, role, text):
@@ -220,12 +252,15 @@ def _send(app):
     text = app.agent_input.get("1.0", "end").strip()
     if not text:
         return
-    if not app.rows or app.loaded_subject is None:
-        _append_message(app, "sys", "请先在「工作台」读取科目余额并选择模板。")
-        workspace.navigate(app, "tb")
-        return
     _append_message(app, "me", text)
     app.agent_input.delete("1.0", "end")
+    if not app.rows or app.loaded_subject is None:
+        _append_message(app, "agent", "还没有读取账套。请先在工作台读取科目余额并选择模板。")
+        return
+    template = app.template_var.get().strip()
+    if not template or not Path(template).is_file():
+        _append_message(app, "agent", "还没有选择模板。请先在工作台选择模板。")
+        return
     start(app, objective=text)
 
 
@@ -330,24 +365,20 @@ def start(app, objective=None):
         _append_message(app, "sys", "当前任务尚未完成，请先停止或等待。")
         return
     if getattr(app, "store", None) is None or not app.store.has_key or not app.store.data.get("ai_enabled"):
-        _append_message(app, "sys", "请先在「模型设置」输入 DeepSeek API Key 并启用。")
-        messagebox.showinfo("需要模型服务", "请先在「模型设置」输入 DeepSeek API Key 并启用。", parent=app)
+        _append_message(app, "agent", "还没有启用模型。请先在「模型设置」输入 DeepSeek API Key 并启用。")
         return
     if not app.rows or app.loaded_subject is None:
-        _append_message(app, "sys", "请先在「工作台」读取科目余额并选择模板。")
-        messagebox.showinfo("缺少账套", "请先在「工作台」读取科目余额。", parent=app)
-        workspace.navigate(app, "tb")
+        _append_message(app, "agent", "还没有读取账套。请先在工作台读取科目余额并选择模板。")
         return
     try:
         snapshot = _snapshot(app)
         client = ai.DeepSeekClient.from_store(app.store)
     except (ValueError, ai.AIError, settings.SettingsError, OSError) as exc:
-        _append_message(app, "warning", str(exc))
-        messagebox.showwarning("无法开始", str(exc), parent=app)
+        _append_message(app, "agent", str(exc))
         return
     stages, scope = _stage_scope(app)
     if not stages:
-        _append_message(app, "sys", "请至少选择一项交付物。")
+        _append_message(app, "agent", "请先在「任务范围」中选择至少一项交付物。")
         return
     if objective is None:
         objective = app.agent_objective.get("1.0", "end").strip() if hasattr(app, "agent_objective") else ""
@@ -361,10 +392,8 @@ def start(app, objective=None):
             return
     indexes = tuple(item.strip() for item in app.agent_reports_var.get().split(",") if item.strip())
     if "papers" in stages and not indexes:
-        text = "整册底稿需要填写报表项目索引（如 1-010）；留空将无法开始。"
-        _append_message(app, "sys", text)
-        messagebox.showinfo("缺少报表项目索引", text, parent=app)
-        app.agent_state_var.set("整册底稿需要报表项目索引，未开始。")
+        _append_message(app, "agent", "整册底稿需要在「任务范围」中填写报表项目索引（如 1-010）。")
+        app.agent_state_var.set("需要报表项目索引")
         return
     config = {"objective": objective, "stages": stages, "report_indexes": indexes,
               "output_dir": output_dir, "max_steps": 20, "max_tool_calls": 40,
