@@ -194,6 +194,7 @@ class AgentContext:
     current_fingerprint: Callable[[], tuple] | None = None
     evidence_rows: dict = field(default_factory=dict)
     evidence_provider: Callable[[str], tuple] | None = None
+    model_requests: list = field(default_factory=list)
     budget: AgentBudget = field(default_factory=AgentBudget)
     prepared_workpapers: dict = field(default_factory=dict)
     drafts: dict = field(default_factory=dict)
@@ -235,6 +236,8 @@ class AgentContext:
         self.check_cancel()
         self.budget.spend_model()
         self.ensure_scope(scope)
+        self.model_requests.append({"scope": sorted(str(item) for item in scope),
+                                    "at": _now()})
 
     def record_artifact(self, kind, path, *, source="", note="", target=""):
         target_path = Path(path)
@@ -729,6 +732,15 @@ class AgentRuntime:
                 self.context.budget.spend_step()
                 reply = self.client.chat_tools(self._messages, self.registry.schemas())
                 self.context.budget.spend_model()
+                chars = sum(len(str(item.get("content") or "")) for item in self._messages)
+                self.context.model_requests.append({"scope": sorted(self.context.allowed_scope),
+                                                    "at": _now(), "source": "agent"})
+                self.emit("model_request", "模型请求",
+                          f"{len(self._messages)} 条消息 / {chars} 字符",
+                          {"messages": len(self._messages), "chars": chars,
+                           "scope": sorted(self.context.allowed_scope)})
+                self._audit("agent_model_request", messages=len(self._messages), chars=chars,
+                            scope=sorted(self.context.allowed_scope))
                 calls = reply.get("tool_calls") or []
                 if calls:
                     assistant = {"role": "assistant", "content": reply.get("content") or "",
@@ -736,6 +748,12 @@ class AgentRuntime:
                     self._messages.append(assistant)
                     for call in calls:
                         if call.get("name") == "finish":
+                            spec = self.registry.get("finish")
+                            problem = (_validate_arguments(spec.parameters, call.get("arguments") or {})
+                                       if spec is not None else "finish 未注册")
+                            if problem:
+                                self._append_tool_result(call.get("id"), {"ok": False, "error": problem})
+                                continue
                             return self._finish(call)
                         result = self._execute(call)
                         self._append_tool_result(call.get("id"), result)

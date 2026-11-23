@@ -78,7 +78,9 @@ def get_project_context(context, arguments, runtime):
         "periods": list(context.periods),
         "counts": _counts(context.results),
         "pending": pending,
-        "artifacts": list(context.artifacts),
+        "artifacts": [{"kind": item.get("kind", ""), "name": item.get("name", ""),
+                       "target": item.get("target", ""), "sha256": item.get("sha256", "")}
+                      for item in context.artifacts],
         "tb_exported": context.tb_exported,
         "notes_ready": context.notes_ready,
     })
@@ -126,7 +128,7 @@ def scan_template(context, arguments, runtime):
     scan = _ensure_scan(context)
     warnings = list(getattr(scan, "warnings", ()) or ())
     return _ok(context, f"模板扫描完成：{len(context.results)} 个字段。", {
-        "template": str(scan.path),
+        "template": Path(scan.path).name,
         "unit": scan.unit,
         "counts": _counts(context.results),
         "warnings": warnings,
@@ -162,6 +164,8 @@ def run_tb_ai_fill(context, arguments, runtime):
         context.check_cancel()
         context.ensure_current()
         context.spend_model_call(["tb", "ledger"])
+        runtime._audit("agent_model_request", source="run_tb_ai_fill",
+                       scope=["tb", "ledger"], messages=len(batch.get("targets") or ()))
         try:
             decisions = ai.review(runtime.client, context.results, context.rows,
                                   payload=batch, include_unconfirmed=True)
@@ -307,7 +311,7 @@ def export_tb_copy(context, arguments, runtime):
         context.record_artifact("tb_pending", report, source=scan.source_digest or "",
                                 note="TB 待处理清单", target="tb_pending")
     return _ok(context, f"已生成 TB 副本：{saved.name}；待处理 {len(unresolved)} 项。", {
-        "output": str(saved), "pending_report": str(report) if report else "",
+        "output": saved.name, "pending_report": report.name if report else "",
         "selected": selected, "unresolved": len(unresolved), "gaps": len(gaps),
         "balance": notes[:10],
     }, notes)
@@ -379,6 +383,8 @@ def prepare_workpaper(context, arguments, runtime):
         if data.journal is None:
             return _error("未取得序时账，无法结合凭证生成审计说明；请先核对账套来源。")
         context.spend_model_call(["workpaper", "journal", "knowledge"])
+        runtime._audit("agent_model_request", source="prepare_workpaper",
+                       scope=["workpaper", "journal", "knowledge"], messages=1)
         texts = [item.text for item in paper_pack.procedures(paper.index_no, paper.name)]
         focus = str(arguments.get("focus") or context.focus or "")[:500]
         request = papers.pack_request(rows=data.rows, paper=paper, procedures=texts,
@@ -493,7 +499,7 @@ def export_workpaper(context, arguments, runtime):
                                  f"证据 {len(evidence)} 条",
                             target=index_no)
     return _ok(context, f"已生成整册底稿：{output.name}。", {
-        "output": str(output), "index_no": index_no,
+        "output": output.name, "index_no": index_no,
         "has_narrative": bool(narrative), "evidence": len(evidence),
     }, warnings)
 

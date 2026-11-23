@@ -252,6 +252,17 @@ class RuntimeTests(unittest.TestCase):
         AgentRuntime(client, make_registry(extra=[spec]), context, audit=lambda *_: None).run()
         self.assertNotIn("JOURNAL-SECRET", client.messages[1][-1]["content"])
 
+    def test_finish_schema_is_validated_before_completion(self):
+        context = snapshot().context(stages=())
+        client = FakeClient([
+            reply(calls=[tool_call("finish", {"status": "done", "summary": "完成",
+                                              "injected_path": "C:/outside.xlsx"})]),
+            reply(calls=[tool_call("finish", {"status": "done", "summary": "完成"})]),
+        ])
+        result = AgentRuntime(client, make_registry(), context, audit=lambda *_: None).run()
+        self.assertEqual(result.status, "done")
+        self.assertIn("未定义参数", client.messages[1][-1]["content"])
+
     def test_cancel_during_write_approval_prevents_write(self):
         calls = []
 
