@@ -398,8 +398,8 @@ class DxnLedgerDB:
                 ledger_id = str(identities[0]["ndid"])
             cursor.execute(
                 "SELECT kjmonth,kmbh,kmmc,kmjc,jdfx,qcs,jffse,dffse,fse,qms,sjkmmc "
-                "FROM c_kmyek WHERE dwid=%s AND ndid=%s AND kjyear=%s AND kjmonth BETWEEN %s AND %s "
-                "ORDER BY kmbh,kjmonth", (int(subject.id), int(ledger_id), subject.year, 1, subject.month))
+                "FROM c_kmyek WHERE dwid=%s AND ndid=%s AND kjyear=%s AND kjmonth BETWEEN %s AND %s",
+                (int(subject.id), int(ledger_id), subject.year, 1, subject.month))
             rows = cursor.fetchall()
         if not any(_integer(row["kjmonth"], "月份") == subject.month for row in rows):
             raise ValueError("科目余额库没有所选主体和截止月份的数据，不自动改用其他月份")
@@ -487,7 +487,7 @@ class DxnLedgerDB:
         with self.connection.cursor() as cursor:
             cursor.execute("SELECT kjmonth,kmbh,kmmc,kmjc,jdfx,qcs,jffse,dffse,fse,qms,sjkmmc "
                            "FROM c_kmyek WHERE dwid=%s AND ndid=%s AND kjyear=%s "
-                           f"AND kjmonth BETWEEN 1 AND %s AND ({previous_condition}) ORDER BY kmbh,kjmonth",
+                           f"AND kjmonth BETWEEN 1 AND %s AND ({previous_condition})",
                            (*parameters, subject.year - 1, subject.month, *(code + "%" for code in previous_roots)))
             previous = cursor.fetchall()
             cursor.execute("SELECT kmbh,ws_fse,sn_ws_fse FROM c_cwkmk "
@@ -502,7 +502,7 @@ class DxnLedgerDB:
                 cursor.execute("SELECT kjmonth,kmbh,kmmc,jdfx,hsxmlxbh,hsxmlxmc,hsxmbh,hsxmmc,"
                                "hsxmjc,hsxmsfmx,qcs,jffse,dffse,qms FROM c_hsxm_yye "
                                "WHERE dwid=%s AND ndid=%s AND kjyear=%s AND kjmonth BETWEEN 1 AND %s "
-                               f"AND ({condition}) ORDER BY kmbh,hsxmlxbh,hsxmbh,kjmonth",
+                               f"AND ({condition})",
                                (*parameters, subject.year, subject.month, *patterns))
                 auxiliary = cursor.fetchall()
         rows = _paper_occurrences(rows, previous, annual, subject)
