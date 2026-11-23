@@ -724,7 +724,7 @@ class PaperDialog(tk.Toplevel):
         if not self._ensure_fresh_choices():
             return
         if not self.app.rows:
-            self.state.set("请先在「账套与 TB」读取科目余额。")
+            self.state.set("请先在「工作台」读取科目余额。")
             return
         code = self._synced_code
         if not code:
@@ -1142,7 +1142,7 @@ class App(tk.Tk):
         self._build_log()
         workspace.build_pages(self)
         self._build_chat()
-        workspace.navigate(self, "overview")
+        workspace.navigate(self, "tb")
         self.workspace.bind("<Configure>", self._on_workspace_resize, add="+")
         if self._pending_error:
             self._log("设置读取失败：" + self._pending_error, error=True)
@@ -1212,8 +1212,7 @@ class App(tk.Tk):
 
         right = tk.Frame(inner, bg=BG)
         right.grid(row=0, column=1, sticky="e")
-        ttk.Button(right, text="审计对话",
-                   command=self._toggle_chat).pack(side="left")
+        # 对话统一在「审计 Agent」页；页头不再放重复入口。
 
     def _build_source(self):
         _outer, body, _head = self._form_card("数据源", 0)
@@ -1837,7 +1836,7 @@ class App(tk.Tk):
         if self.busy:
             return
         if not self.rows or self.loaded_subject is None:
-            messagebox.showinfo("缺少科目余额", "请先在「账套与 TB」读取科目余额并确认主体、期间。", parent=self)
+            messagebox.showinfo("缺少科目余额", "请先在「工作台」读取科目余额并确认主体、期间。", parent=self)
             return
         self._save_signers()
         PaperDialog(self, "paper")

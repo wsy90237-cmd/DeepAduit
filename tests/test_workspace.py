@@ -21,8 +21,8 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_navigation_retains_available_work_and_removes_placeholder_pages(self):
         self.assertEqual(list(workspace.PAGES),
-                         ["overview", "agent", "tb", "papers", "notes", "report", "security"])
-        self.assertEqual(workspace.PAGES["overview"], "工作台")
+                         ["tb", "agent", "papers", "notes", "report", "security"])
+        self.assertEqual(workspace.PAGES["tb"], "工作台")
         self.assertEqual(workspace.PAGES["agent"], "审计 Agent")
         self.assertEqual(workspace.PAGES["security"], "设置")
 

@@ -18,7 +18,7 @@ def activate_project(app):
         return
     subject = app.loaded_subject
     if subject is None:
-        messagebox.showinfo("项目资料", "请先在账套与 TB 中读取主体和期间。", parent=app)
+        messagebox.showinfo("项目资料", "请先在工作台读取主体和期间。", parent=app)
         return
     root = getattr(app, 'evidence_root', '') or (app.store.data.get('evidence_root') if app.store else '')
     if not root:

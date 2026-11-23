@@ -205,7 +205,8 @@ class AgentUiSmokeTests(unittest.TestCase):
                 app.agent_stage_vars["papers"].set("papers" in stages)
                 app.agent_reports_var.set(",".join(report_indexes))
                 app.agent_output_var.set(str(out))
-                agent_ui.start(app)
+                app.agent_input.insert("1.0", "复核 TB 并生成所需交付物")
+                agent_ui._send(app)
             except Exception as exc:  # 界面回调里的异常不会让 mainloop 退出，必须自己转达
                 failures.append(exc)
                 app.quit()

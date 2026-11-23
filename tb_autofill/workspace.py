@@ -12,9 +12,8 @@ from . import APP_NAME, __version__, brand, dialogs as messagebox, theme, workfl
 
 BG, INK, MUTED = theme.PAPER, theme.INK, theme.MUTED
 NAV, ACCENT = theme.RAIL, theme.ACCENT
-PAGES = {"overview": "工作台", "agent": "审计 Agent", "tb": "账套与 TB",
-         "papers": "审计底稿", "notes": "财务报表附注", "report": "报告中心",
-         "security": "设置"}
+PAGES = {"tb": "工作台", "agent": "审计 Agent", "papers": "底稿",
+         "notes": "附注", "report": "报告", "security": "设置"}
 
 
 class ScrollArea(tk.Frame):
@@ -157,7 +156,7 @@ def build_shell(app):
 
     app.nav_buttons = {}
     app.nav_rows = {}
-    app.active_page = "overview"
+    app.active_page = "tb"
     for key, title in PAGES.items():
         item = NavItem(sidebar, title, lambda key=key: navigate(app, key))
         item.pack(fill="x", padx=10, pady=1)
@@ -173,7 +172,7 @@ def build_shell(app):
     app.content.grid(row=0, column=1, sticky="nsew")
     app.content.columnconfigure(0, weight=1)
     app.content.rowconfigure(1, weight=1)
-    app.page_title = tk.StringVar(value=PAGES["overview"])
+    app.page_title = tk.StringVar(value=PAGES["tb"])
     app.page_context = tk.StringVar(value="尚未读取账套")
     host = tk.Frame(app.content, bg=BG)
     host.grid(row=1, column=0, sticky="nsew")
@@ -194,7 +193,6 @@ def build_pages(app):
     app.overview_entity = tk.StringVar(value="尚未读取账套")
     app.overview_meta = tk.StringVar(value="")
     app.primary_action = tk.StringVar(value="读取账套")
-    _build_overview(app)
     from . import agent_ui
     agent_ui.build(app)
     _build_papers(app)
