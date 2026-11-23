@@ -268,7 +268,10 @@ def _tb_approval_details(context, arguments):
 
 
 def export_tb_copy(context, arguments, runtime):
-    scan = _ensure_scan(context)
+    try:
+        scan = _ensure_scan(context)
+    except (OSError, ValueError) as exc:
+        return _error(f"无法扫描模板，未写入：{exc}")
     context.ensure_current()
     selected = sum(1 for item in context.results if item.selected)
     has_confirmed = any(item.target.basis == "book" and item.status == "matched"

@@ -521,7 +521,7 @@ class AgentRuntime:
         if spec is None:
             return {"ok": False, "error": "模型请求了未授权的工具"}
         if name in self._blocked_tools:
-            return {"ok": False, "error": "用户已拒绝该工具，本次运行不再重试"}
+            return {"ok": False, "error": "用户已拒绝该工具；本次运行不再执行，继续重复调用会消耗预算并可能结束运行"}
         summary = ""
         try:
             summary = spec.summary(arguments) if callable(spec.summary) else ""
@@ -542,10 +542,14 @@ class AgentRuntime:
                 return {"ok": False, "error": "用户拒绝写入，本次运行不再重试该工具",
                         "cancelled": True}
             self._approved_path = decision.path
+            # 确认等待期间用户可能已点“停止”；批准后再次检查，避免停止后仍落盘。
+            try:
+                self.context.check_cancel()
+            except AgentCancelled:
+                self._audit("agent_write_cancelled", tool=name, path=decision.path)
+                raise
             self._audit("agent_write_approved", tool=name, path=decision.path,
                         auto_confirm_rest=decision.auto_confirm_rest)
-            # 确认等待期间用户可能已点“停止”；批准后再次检查，避免停止后仍落盘。
-            self.context.check_cancel()
 
         result = self.registry.call(name, arguments, self.context, self)
         if not isinstance(result, dict):
@@ -661,7 +665,7 @@ class AgentRuntime:
             if not self.context.tb_exported:
                 missing.append("TB 副本未生成")
             elif not self._artifact_ok("tb"):
-                missing.append("TB 副本文件缺失或已被移动")
+                missing.append("TB 副本文件缺失、被移动或哈希不符")
             if not self._artifact_ok("tb_pending"):
                 missing.append("TB 待处理清单未生成")
         if "papers" in stages:
@@ -731,7 +735,13 @@ class AgentRuntime:
                 self.context.check_cancel()
                 self.context.ensure_current()
                 self.context.budget.spend_step()
-                reply = self.client.chat_tools(self._messages, self.registry.schemas())
+                try:
+                    reply = self.client.chat_tools(self._messages, self.registry.schemas())
+                except Exception as exc:
+                    self._audit("agent_model_request", status="failed",
+                                messages=len(self._messages), scope=sorted(self.context.allowed_scope),
+                                error=type(exc).__name__)
+                    raise
                 self.context.budget.spend_model()
                 chars = sum(len(str(item.get("content") or "")) for item in self._messages)
                 self.context.model_requests.append({"scope": sorted(self.context.allowed_scope),

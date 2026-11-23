@@ -209,7 +209,8 @@ def _snapshot(app):
 
 
 def _current_fingerprint(app):
-    template = app.template_var.get().strip()
+    raw = app.template_var.get().strip()
+    template = str(Path(raw)) if raw else ""
     try:
         digest = fields.file_digest(template) if template and Path(template).is_file() else ""
     except OSError:
