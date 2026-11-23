@@ -13,7 +13,7 @@ from .evidence_ownership import check_ownership
 from .pdf_text import extract_pdf_pages
 
 
-def activate_project(app, *, interactive=True):
+def activate_project(app, *, interactive=True, root_override=None):
     if app.busy:
         return
     subject = app.loaded_subject
@@ -21,7 +21,7 @@ def activate_project(app, *, interactive=True):
         if interactive:
             messagebox.showinfo("项目资料", "请先在工作台读取主体和期间。", parent=app)
         return
-    root = getattr(app, 'evidence_root', '') or (app.store.data.get('evidence_root') if app.store else '')
+    root = root_override or getattr(app, 'evidence_root', '') or (app.store.data.get('evidence_root') if app.store else '')
     if not root:
         if not interactive:
             if hasattr(app, "intake_status"):
@@ -42,6 +42,10 @@ def activate_project(app, *, interactive=True):
             app.intake_status.set(text + "；请在「项目资料与自动底稿」中重新选择目录。")
         if interactive:
             messagebox.showerror("无法打开项目资料", str(exc), parent=app)
+            if messagebox.askyesno("重新选择目录", "是否选择一个新的项目资料目录？", parent=app):
+                selected = filedialog.askdirectory(title="选择项目资料目录", parent=app)
+                if selected:
+                    return activate_project(app, interactive=True, root_override=selected)
         return None
     app.evidence_store, app.evidence_root = store, root
     app.intake = intake
