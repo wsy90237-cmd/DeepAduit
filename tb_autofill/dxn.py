@@ -147,7 +147,7 @@ def _journal_code(code) -> str:
     """序时账科目编码只接受纯数字：既防 LIKE 通配，也防注入。"""
     value = str(code or "").strip()
     if not _CODE.match(value):
-        raise ValueError("科目编码不合法，无法读取序时账")
+        raise ValueError(f"科目编码不合法，无法读取序时账：{value[:20]!r}")
     return value
 
 
