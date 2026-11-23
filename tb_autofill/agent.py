@@ -228,7 +228,7 @@ class AgentContext:
         if self.scope_approver is None:
             raise ScopeError("本次请求包含启动确认之外的数据类别：" + "、".join(sorted(extra)))
         if not self.scope_approver(extra):
-            raise AgentCancelled("用户未同意扩大发送范围，本次结果未发送。")
+            raise ScopeError("用户未同意扩大发送范围，本次结果未发送。")
         self.allowed_scope.update(extra)
 
     def spend_model_call(self, scope=()):
@@ -510,14 +510,14 @@ class AgentRuntime:
     def _execute(self, call):
         name = call.get("name")
         arguments = call.get("arguments") or {}
+        self.context.check_cancel()
+        self.context.budget.spend_tool()
+        self._check_repeat(name, arguments)
         spec = self.registry.get(name)
         if spec is None:
             return {"ok": False, "error": "模型请求了未授权的工具"}
         if name in self._blocked_tools:
             return {"ok": False, "error": "用户已拒绝该工具，本次运行不再重试"}
-        self._check_repeat(name, arguments)
-        self.context.check_cancel()
-        self.context.budget.spend_tool()
         summary = ""
         try:
             summary = spec.summary(arguments) if callable(spec.summary) else ""
@@ -540,17 +540,25 @@ class AgentRuntime:
             self._approved_path = decision.path
             self._audit("agent_write_approved", tool=name, path=decision.path,
                         auto_confirm_rest=decision.auto_confirm_rest)
+            # 确认等待期间用户可能已点“停止”；批准后再次检查，避免停止后仍落盘。
+            self.context.check_cancel()
 
         result = self.registry.call(name, arguments, self.context, self)
         if not isinstance(result, dict):
             result = {"ok": False, "error": "工具未返回对象"}
         required_scope = set(spec.result_scope) | set(result.get("_scope") or ())
-        if required_scope and result.get("ok"):
+        if required_scope:
             try:
                 self.context.ensure_scope(required_scope)
             except (ScopeError, AgentCancelled) as exc:
                 result = {"ok": False, "error": str(exc), "scope_blocked": True}
         result.pop("_scope", None)
+        if not result.get("ok"):
+            # 失败结果只回错误文本，丢掉可能夹带的 data，避免绕过 result_scope。
+            failed = {"ok": False, "error": str(result.get("error") or "工具未完成")[:600]}
+            if result.get("cancelled"):
+                failed["cancelled"] = True
+            result = failed
         self.emit("tool_result", f"{name} {'完成' if result.get('ok') else '未完成'}",
                   str(result.get("summary") or result.get("error") or "")[:500],
                   {"tool": name, "ok": bool(result.get("ok"))})
@@ -637,7 +645,7 @@ class AgentRuntime:
             if target is not None and str(artifact.get("target") or "") != str(target):
                 continue
             path = Path(str(artifact.get("path") or ""))
-            if path.is_file() and artifact.get("sha256"):
+            if path.is_file() and artifact.get("sha256") == _sha256(path):
                 return True
         return False
 
@@ -654,8 +662,6 @@ class AgentRuntime:
                 missing.append("TB 待处理清单未生成")
         if "papers" in stages:
             targets = list(self.context.report_indexes)
-            if not targets:
-                targets = list(self.context.prepared_workpapers)
             if not targets:
                 missing.append("整册底稿未指定报表项目范围")
             for index in targets:

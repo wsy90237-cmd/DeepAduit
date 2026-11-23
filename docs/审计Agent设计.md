@@ -56,7 +56,7 @@ AgentRuntime（预算 · 取消 · 来源核对 · 范围复核 · 工具调度 
 | `ToolRegistry` | 工具白名单、最小 JSON Schema 参数校验、工具类型、结果数据类别 `result_scope` | 初版已有（`agent_tools.py`） |
 | 现有业务模块 | 取数、匹配、金额计算、底稿构建与导出；附注/报告模块为下一阶段 | 已存在（`reporting.py` 初版代码已有，未接入） |
 | `ApprovalBridge` | 在后台线程与界面之间阻塞等待确认，返回结构化决定 | 初版已有（M1 验收中） |
-| `AgentRecorder` | 事件与审计记录写入 `auditlog` 与本次运行记录，不含 Key、原文与凭证 | 初版已有（M1 验收中） |
+| `AgentRecorder` | 事件与审计记录写入 `auditlog` 与本次运行记录；不含 Key、完整工作簿、原库或凭证，模型答复按文字保存 | 初版已有（M1 验收中） |
 
 ### 3.2 运行上下文
 
@@ -76,8 +76,8 @@ AgentRuntime（预算 · 取消 · 来源核对 · 范围复核 · 工具调度 
 
 - `ApprovalRequest`：`kind=write|scope|question`，附带标题、摘要、明细、默认路径与批次键；界面返回 `ApprovalDecision(approved, path, auto_confirm_rest, note)`。
 - **拒绝写文件后不得重试**：运行时把该工具加入本次运行的拒绝集合，模型收到“用户拒绝写入，本次运行不再重试该工具”，应改用不落盘方式或 `finish(status=blocked)`。
-- **审计事件**：`agent_run_start / agent_tool_call / agent_tool_result / agent_write_approved / agent_write_denied / agent_run_end`。只记录工具名、类型、参数结构摘要（字符串截 160 字符、数组只记条数）、模型 ID 与 API 地址；不记录 Key、Authorization、账套原文或长文本。
-- **运行记录**：每次运行另存 `%LOCALAPPDATA%\ZSZH-TB\agent\runs\<run_id>.json`（本次配置与结果，含产物哈希与缺口）；写入失败如实提示，不冒充已留痕。
+- **审计事件**：`agent_run_start / agent_tool_call / agent_tool_result / agent_write_approved / agent_write_denied / agent_run_end`。只记录工具名、类型、参数结构摘要（字符串截 160 字符、数组只记条数）、模型 ID 与 API 地址；不记录 Key、Authorization、完整工作簿、原库或凭证。
+- **运行记录**：每次运行另存 `%LOCALAPPDATA%\ZSZH-TB\agent\runs\<run_id>.json`（本次配置与结果，含产物哈希与缺口）。模型最终答复与工具参数摘要按文字保存，可能含模型复述的客户信息；不保存完整工作簿、原库或凭证。写入失败如实提示，不冒充已留痕。
 
 ## 4. 用户流程与必要确认
 
@@ -200,7 +200,7 @@ AgentRuntime（预算 · 取消 · 来源核对 · 范围复核 · 工具调度 
 ### 6.6 凭证与日志
 
 - Key 只存在于 `SettingsStore`（`%LOCALAPPDATA%\ZSZH-TB\connections.json`，DPAPI 加密）与本次 `DeepSeekClient` 内存；不进入运行上下文、工具参数、事件、错误文本或日志。切换 API 地址必须重新输入该服务 Key，沿用现有规则；重定向仍拒绝。
-- `auditlog` 记录运行与工具摘要，保留哈希链与 DPAPI 检查点；不记录账套原文、客户资料、提示词全文或 Key。
+- `auditlog` 记录运行与工具摘要，保留哈希链与 DPAPI 检查点；不记录完整工作簿、原库、凭证、提示词全文或 Key。运行 JSON 会保存模型答复与参数摘要，可能含模型复述的客户信息，按本机敏感文件保护。
 - 测试断言运行结果序列化后不含 `sk-` 前缀。
 
 ## 7. 测试与验收
@@ -238,7 +238,7 @@ AgentRuntime（预算 · 取消 · 来源核对 · 范围复核 · 工具调度 
 5. 整册底稿按 `report_indexes` 生成，金额可回溯到本地账套；货币资金未关联银行回函时，底稿证据页与缺口清单明确标注“未关联已确认的银行回函/对账单”。
 6. 模型调用 `finish(done)` 但产物缺失或哈希无效时，界面显示“部分完成”并列出缺项，不显示完成。
 7. 运行中改变主体、期间、模板或复核资料后，本次运行停止且不再写文件，原模板/原账套哈希前后不变。
-8. 运行记录含工具、参数摘要、产物哈希与缺口；无 Key、无客户原文；停止按钮可用，停止后不产生新的写文件。
+8. 运行记录含工具、参数摘要、产物哈希与缺口；无 Key、无完整工作簿/原库/凭证，模型答复按文字保存；停止按钮可用，确认等待中也可停止，停止后不产生新的写文件。
 9. 附注/报告草稿在 M3 前不作为交付物、界面无可用生成按钮；关闭 Excel 或卸载 pywin32 时提示准确。
 
 ### 7.5 第一版已实现的验收口径

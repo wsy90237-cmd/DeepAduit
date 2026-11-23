@@ -161,7 +161,7 @@ def run_tb_ai_fill(context, arguments, runtime):
     for index, batch in enumerate(batches[:max_batches], 1):
         context.check_cancel()
         context.ensure_current()
-        context.spend_model_call(["tb"])
+        context.spend_model_call(["tb", "ledger"])
         try:
             decisions = ai.review(runtime.client, context.results, context.rows,
                                   payload=batch, include_unconfirmed=True)
@@ -242,6 +242,12 @@ def _default_tb_path(context):
 
 
 def _tb_approval_details(context, arguments):
+    # 确认先于写入；若尚未扫描，先在本地补扫描，确保“将写入几个字段”与实际一致。
+    if context.scan is None:
+        try:
+            _ensure_scan(context)
+        except (OSError, ValueError) as exc:
+            return (("工具", "export_tb_copy"), ("无法预先扫描模板", str(exc)[:300]))
     selected = sum(1 for item in context.results if item.selected)
     overwrite = sum(1 for item in context.results if item.selected and item.overwrite)
     pending = _pending(context, 1)[1]
@@ -279,6 +285,8 @@ def export_tb_copy(context, arguments, runtime):
         return _error(str(exc))
     except (OSError, ValueError, KeyError) as exc:
         return _error(f"未生成 Excel：{exc}")
+    except Exception as exc:
+        return _error(f"Excel 写入或重算失败：{str(exc)[:300]}")
     notes = workbook.tb_balance_summary(checks, context.results) if checks else ["重算后未识别到可核验的合计。"]
     gaps = matching.tb_ledger_gaps(context.results, context.rows)
     notes.extend(f"{'期初' if period == 'opening' else '期末'}非零科目未确认完整入表：{code} {name} {amount} 元"
@@ -370,7 +378,7 @@ def prepare_workpaper(context, arguments, runtime):
         _validate_paper_data(context, data, scoped)
         if data.journal is None:
             return _error("未取得序时账，无法结合凭证生成审计说明；请先核对账套来源。")
-        context.spend_model_call(["workpaper", "journal"])
+        context.spend_model_call(["workpaper", "journal", "knowledge"])
         texts = [item.text for item in paper_pack.procedures(paper.index_no, paper.name)]
         focus = str(arguments.get("focus") or context.focus or "")[:500]
         request = papers.pack_request(rows=data.rows, paper=paper, procedures=texts,
@@ -436,6 +444,14 @@ def export_workpaper(context, arguments, runtime):
         raise AgentError("请先调用 prepare_workpaper 准备该报表项目")
     context.ensure_current()
     paper, data, draft = prepared["paper"], prepared["data"], prepared["draft"]
+    try:
+        if getattr(data, "source_path", ""):
+            if not dxn.validate_paper_data_source(data):
+                gap = "账套来源已变化或一致副本失效，底稿未导出，请重新准备该报表项目。"
+                context.add_gap(gap)
+                return _error(gap)
+    except (OSError, ValueError) as exc:
+        return _error(f"无法重验账套来源：{exc}")
     path = Path(runtime.approved_path).resolve() if runtime.approved_path else _default_workpaper_path(context, paper)
     if path.exists():
         return _error("底稿输出文件已存在，请选择新的文件名。")
@@ -466,11 +482,12 @@ def export_workpaper(context, arguments, runtime):
         os.replace(temporary, path)
         output = path
     except (OSError, ValueError, KeyError) as exc:
+        return _error(f"未生成底稿：{exc}")
+    finally:
         try:
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
-        return _error(f"未生成底稿：{exc}")
     context.record_artifact("workpaper", output, source=str(data.source_fingerprint)[:400],
                             note=f"{paper.index_no} {paper.name}；{'含' if narrative else '未含'}模型文字；"
                                  f"证据 {len(evidence)} 条",

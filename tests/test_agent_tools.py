@@ -178,6 +178,28 @@ class AgentToolTests(unittest.TestCase):
         self.assertIn("将写入字段", details)
         self.assertIn("待处理字段", details)
 
+    def test_tb_approval_details_scan_before_counting(self):
+        # 未预先扫描时，确认信息也必须等于实际扫描后的字段数，而不是 0。
+        fresh = context(self.template)
+        details = dict(agent_tools._tb_approval_details(fresh, {}))
+        self.assertNotIn("0 个；允许覆盖", details["将写入字段"])
+        self.assertEqual(len(fresh.results), 2)
+
+    def test_workpaper_export_rechecks_source_snapshot(self):
+        paper = audit_index.find(self.ctx.paper_library, "1-010")
+        data = PaperData(rows=tuple(self.ctx.rows), journal=JournalRows([]),
+                         source_path=str(self.root / "source"))
+        self.ctx.prepared_workpapers["1-010"] = {
+            "paper": paper, "data": data, "draft": {"kind": "local"}, "warnings": [],
+        }
+        output = self.root / "out" / "stale.xlsx"
+        with patch.object(agent_tools.dxn, "validate_paper_data_source", return_value=False):
+            value = agent_tools.export_workpaper(self.ctx, {"index_no": "1-010"},
+                                                 runtime(str(output)))
+        self.assertFalse(value["ok"])
+        self.assertFalse(output.exists())
+        self.assertTrue(any("一致副本" in gap for gap in self.ctx.gaps))
+
 
 if __name__ == "__main__":
     unittest.main()

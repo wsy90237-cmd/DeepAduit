@@ -237,6 +237,43 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("journal-secret", client.messages[1][-1]["content"])
         self.assertIn("未同意", client.messages[1][-1]["content"])
 
+    def test_failed_tool_result_cannot_carry_unauthorized_data(self):
+        def failed(context, arguments, runtime):
+            return {"ok": False, "error": "失败", "data": {"secret": "JOURNAL-SECRET"}}
+
+        spec = ToolSpec("get_journal", "读取序时账", {"type": "object", "properties": {},
+                       "additionalProperties": False}, "read", failed,
+                       lambda _args: "读取序时账", result_scope=("journal",))
+        context = snapshot().context(allowed_scope={"tb"}, scope_approver=lambda _extra: False)
+        client = FakeClient([
+            reply(calls=[tool_call("get_journal")]),
+            reply(calls=[tool_call("finish", {"status": "done", "summary": "结束"})]),
+        ])
+        AgentRuntime(client, make_registry(extra=[spec]), context, audit=lambda *_: None).run()
+        self.assertNotIn("JOURNAL-SECRET", client.messages[1][-1]["content"])
+
+    def test_cancel_during_write_approval_prevents_write(self):
+        calls = []
+
+        def write(context, arguments, runtime):
+            calls.append("written")
+            return {"ok": True, "summary": "写入了"}
+
+        spec = ToolSpec("export_tb_copy", "写 TB", {"type": "object", "properties": {},
+                       "additionalProperties": False}, "write", write, lambda _args: "准备写 TB")
+        context = snapshot().context(stages=("tb",))
+
+        def approve(_request):
+            context.cancelled.set()
+            return ApprovalDecision(True, path="synthetic-out.xlsx")
+
+        result = AgentRuntime(FakeClient([
+            reply(calls=[tool_call("export_tb_copy")]),
+        ]), make_registry(writes=spec), context, approve=approve,
+            audit=lambda *_: None).run()
+        self.assertEqual(calls, [])
+        self.assertEqual(result.status, "cancelled")
+
     def test_ask_user_cancellation_aborts(self):
         asked = []
 

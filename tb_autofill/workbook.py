@@ -290,6 +290,9 @@ def write_results(scan, results, output, *, rows=None, allow_empty=False, preser
             book = None
         except (ImportError, ModuleNotFoundError) as exc:
             raise ValueError("保存与重算需要 Windows Microsoft Excel 和 pywin32；请先安装。") from exc
+        except Exception as exc:
+            # Excel COM 的“内存/磁盘空间不足”“文件被占用”“受保护视图”等异常不能裸传给界面。
+            raise ValueError(f"Excel 写入或重算失败：{str(exc)[:200]}") from exc
         finally:
             cell = None
             if book is not None:

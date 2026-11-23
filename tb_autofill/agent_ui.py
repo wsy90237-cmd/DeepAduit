@@ -282,7 +282,7 @@ def start(app):
     context = snapshot.context(
         output_dir=output_dir, objective=objective, stages=stages, report_indexes=indexes,
         focus=app.agent_focus_var.get().strip(), materiality=app.agent_materiality_var.get().strip(),
-        allowed_scope=scope, current_fingerprint=lambda: _current_fingerprint(app),
+        allowed_scope=scope, current_fingerprint=lambda: snapshot.revision(),
         evidence_rows=evidence_rows, evidence_provider=evidence_for,
         max_steps=config["max_steps"], max_tool_calls=config["max_tool_calls"],
         max_model_calls=config["max_model_calls"])
@@ -461,6 +461,7 @@ class ApprovalDialog(tk.Toplevel):
         buttons.pack(fill="x", padx=18, pady=(0, 14))
         ttk.Button(buttons, text="允许并继续", style="Accent.TButton", command=self._allow).pack(side="right")
         ttk.Button(buttons, text="拒绝", command=self._deny).pack(side="right", padx=8)
+        ttk.Button(buttons, text="停止本次运行", command=self._stop).pack(side="left")
         self.protocol("WM_DELETE_WINDOW", self._deny)
         self.grab_set()
 
@@ -478,6 +479,14 @@ class ApprovalDialog(tk.Toplevel):
 
     def _deny(self):
         self.result = agent_module.ApprovalDecision(False, note="用户拒绝")
+        self.destroy()
+
+    def _stop(self):
+        self.result = agent_module.ApprovalDecision(False, note="用户停止本次运行")
+        try:
+            stop(self.master)
+        except Exception:
+            pass
         self.destroy()
 
 
