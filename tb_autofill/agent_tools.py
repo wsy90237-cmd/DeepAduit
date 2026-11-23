@@ -383,7 +383,9 @@ def prepare_workpaper(context, arguments, runtime):
     if not accounts:
         raise AgentError("该报表项目没有可列示的一级科目")
     try:
-        data = dxn.read_paper_data(context.subject, tuple(row.code for row in scoped),
+        # 与桌面底稿一致：只把报表项目的根科目交给取数层，由它读取完整子树；
+        # 把全部明细编码传进去会被当成多个根，遇到非纯数字子编码时会误报科目编码不合法。
+        data = dxn.read_paper_data(context.subject, tuple(row.code for row in accounts),
                                    context.install_path, with_journal=True)
         _validate_paper_data(context, data, scoped)
         if data.journal is None:
