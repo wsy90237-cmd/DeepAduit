@@ -337,8 +337,6 @@ class PaperDialog(tk.Toplevel):
         heading.pack(fill="x", padx=24, pady=(20, 0))
         tk.Label(heading, text="制作底稿草稿", bg=BG, fg=TX,
                  font=(theme.FAMILY["display"], 18, "bold")).pack(anchor="w")
-        tk.Label(heading, text="金额取自本机账套，模型只写文字。",
-                 bg=BG, fg=SEC, font=(theme.FAMILY["body"], 8)).pack(anchor="w", pady=(3, 0))
         shell = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1, padx=14, pady=12)
         shell.pack(fill="both", expand=True, padx=24, pady=(14, 18))
         shell.columnconfigure(1, weight=1)
@@ -346,7 +344,7 @@ class PaperDialog(tk.Toplevel):
         self.shell = shell
 
         tk.Label(shell, text="报表项目", bg=CARD, fg=SEC, font=(FONT, 9)).grid(row=0, column=0, sticky="w")
-        self.state = tk.StringVar(value="选择科目后生成；金额取自本机账套。")
+        self.state = tk.StringVar(value="")
         pick = tk.Frame(shell, bg=CARD)
         pick.grid(row=0, column=1, sticky="ew", padx=8)
         self.choices = []
@@ -396,8 +394,6 @@ class PaperDialog(tk.Toplevel):
         self.focus_text = tk.Text(focus_area, height=2, wrap="word", font=(FONT, 9), relief="flat",
                                   highlightthickness=1, highlightbackground=BORDER, padx=8, pady=6)
         self.focus_text.pack(fill="x")
-        tk.Label(focus_area, text="例如：关注期末跨期、异常往来或大额变动；留空则按账套事实分析。",
-                 bg=CARD, fg=SEC, font=(FONT, 8), anchor="w").pack(fill="x", pady=(3, 0))
 
         self.view = tk.Text(shell, wrap="word", font=(FONT, 9), relief="flat", state="disabled",
                             highlightthickness=1, highlightbackground=BORDER, padx=12, pady=10)
@@ -1075,9 +1071,7 @@ class App(tk.Tk):
         self._context_revision += 1
         self.scan, self.results = None, []
         self._chat_clear()
-        self.report_btn.configure(state="disabled")
-        self.write_btn.configure(state="disabled")
-        self.scan_state.set("参数已变化，请重新识别")
+        self.scan_state.set("来源或设置已变化，请在审计对话中重新复核 TB")
         if clear_ledger:
             self.rows, self.loaded_subject = [], None
             self.knowledge_refs, self.review_document = [], None
@@ -1119,61 +1113,31 @@ class App(tk.Tk):
 
     def _build(self):
         self.chat_visible = False
-        self._fit_job = None
         workspace.build_shell(self)
         self._build_header()
-        # 表单区独立滚动：宽屏时 ①② 并排，窄屏时上下堆叠，余量全部留给结果表。
-        self.form_scroll = workspace.ScrollArea(self.workspace, bg=BG, height=280)
-        self.form_scroll.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
-        # 表单固定单列堆叠：高分屏缩放后两列会把「填列期间」「识别并匹配」挤出卡片，
-        # 单列在全部分辨率下都能完整显示，纵向空间由表单滚动区消化。
-        self.form_wide = False
-        area_w, area_h = theme.work_area(self)
-        self.minsize(min(theme.px(self, 1000), area_w - theme.px(self, 24)),
-                     min(theme.px(self, 620), area_h - theme.px(self, 24)))
-        self.form_row = self.form_scroll.body
-        if self.form_wide:
-            self.form_row.columnconfigure(0, weight=3)
-            self.form_row.columnconfigure(1, weight=2)
-        self._build_source()
-        self._build_template()
-        self._build_result()
-        self._build_actions()
+        self._build_source(workspace.build_home(self))
+        self.template_var = tk.StringVar()
+        self.period_var = tk.StringVar(value="both")
+        self.unit_var = tk.StringVar(value="自动")
+        self._build_tb_review()
         self._build_log()
         workspace.build_pages(self)
         self._build_chat()
         workspace.navigate(self, "tb")
-        self.workspace.bind("<Configure>", self._on_workspace_resize, add="+")
         if self._pending_error:
             self._log("设置读取失败：" + self._pending_error, error=True)
 
-    def _on_workspace_resize(self, event):
-        # 拖动/切换尺寸时 Configure 会连发多次；延迟到布局稳定后按最终高度重算，
-        # 否则会拿到中间态高度，表单区高度偏小或偏大。
-        if self._fit_job is not None:
-            try:
-                self.after_cancel(self._fit_job)
-            except (tk.TclError, ValueError):
-                pass
-        self._fit_job = self.after(24, self._fit_form)
-
-    def _fit_form(self):
-        self._fit_job = None
-        try:
-            self.form_scroll.fit(self.workspace.winfo_height())
-        except tk.TclError:
-            pass
-
-    def _card(self, row, title, pady=(10, 0), parent=None, column=0, padx=16):
+    def _card(self, row, title, pady=(10, 0), parent=None, column=0, padx=32):
         """白底卡片：1px 边框 + 标题，替代有年代感的 LabelFrame。"""
         outer = tk.Frame(parent or self.workspace, bg=CARD, highlightbackground=BORDER,
                          highlightthickness=1, bd=0)
         outer.grid(row=row, column=column, sticky="nsew", padx=padx, pady=pady)
         head = tk.Frame(outer, bg=CARD)
-        head.pack(fill="x", padx=14, pady=(6, 0))
-        tk.Label(head, text=title, bg=CARD, fg=SEC, font=(FONT, 9, "bold")).pack(side="left")
+        head.pack(fill="x", padx=16, pady=(12, 0))
+        tk.Label(head, text=title, bg=CARD, fg=TX,
+                 font=theme.font(11, weight="bold", family="display")).pack(side="left")
         body = tk.Frame(outer, bg=CARD)
-        body.pack(fill="both", expand=True, padx=14, pady=(4, 8))
+        body.pack(fill="both", expand=True, padx=16, pady=(8, 12))
         return outer, body, head
 
     def _fit_popdown(self, box, values):
@@ -1191,63 +1155,59 @@ class App(tk.Tk):
         except tk.TclError:
             return
 
-    def _form_card(self, title, index):
-        """表单卡片：宽屏并排两列，窄屏堆叠单列，两种布局都保持完整可见。"""
-        if self.form_wide:
-            padx = (16, 8) if index == 0 else (8, 16)
-            return self._card(0, title, parent=self.form_row, column=index, padx=padx)
-        return self._card(index, title, parent=self.form_row, column=0)
-
     def _build_header(self):
-        """页头只有页面名和两个全局动作；上下文留在各页面的数据里。"""
+        """页头：页面名（衬线）+ 当前项目一行；右侧只放项目的三个数字。"""
         bar = tk.Frame(self.content, bg=BG)
+        self.page_header = bar
         bar.grid(row=0, column=0, sticky="ew")
-        tk.Frame(bar, bg=BORDER, height=1).pack(side="bottom", fill="x")
         inner = tk.Frame(bar, bg=BG)
-        inner.pack(fill="x", padx=30, pady=12)
+        inner.pack(fill="x", padx=32, pady=(22, 14))
         inner.columnconfigure(0, weight=1)
         tk.Label(inner, textvariable=self.page_title, bg=BG, fg=TX,
-                 font=theme.font(17, weight="bold"), anchor="w").grid(
+                 font=theme.font(20, weight="bold", family="display"), anchor="w").grid(
             row=0, column=0, sticky="w")
+        tk.Label(inner, textvariable=self.page_context, bg=BG, fg=MUTED,
+                 font=theme.mono(9), anchor="w").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        tk.Label(inner, textvariable=self.header_stats, bg=BG, fg=SEC,
+                 font=theme.mono(9), anchor="e").grid(row=0, column=1, rowspan=2, sticky="e")
 
-        right = tk.Frame(inner, bg=BG)
-        right.grid(row=0, column=1, sticky="e")
-        # 对话统一在「审计 Agent」页；页头不再放重复入口。
-
-    def _build_source(self):
-        _outer, body, _head = self._form_card("数据源", 0)
+    def _build_source(self, parent):
+        self.home_source, body, head = self._card(2, "账套来源", parent=parent, padx=0, pady=(8, 0))
+        self.home_source.grid_remove()
+        tk.Label(head, text="鼎信诺", bg=CARD, fg=SEC, font=theme.font(9)).pack(side="right")
         body.columnconfigure(1, weight=1)
 
         ttk.Label(body, text="安装目录", style="Card.TLabel").grid(row=0, column=0, sticky="w")
         self.install_var = tk.StringVar()
-        ttk.Entry(body, textvariable=self.install_var).grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Button(body, text="自动探测", command=self._autodetect).grid(row=0, column=2)
-        ttk.Button(body, text="选择", command=self._choose_install).grid(row=0, column=3, padx=(6, 0))
+        install = ttk.Entry(body, textvariable=self.install_var, width=1)
+        install.grid(row=0, column=1, sticky="ew", padx=12)
+        self.install_entry = install
+        HoverTip(install, self.install_var)
+        ttk.Button(body, text="自动探测", command=self._autodetect).grid(row=0, column=2, sticky="ew")
+        ttk.Button(body, text="浏览…", command=self._choose_install).grid(row=0, column=3, padx=(8, 0))
 
         ttk.Label(body, text="项目", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.project_var = tk.StringVar()
-        self.project_box = ttk.Combobox(body, textvariable=self.project_var, state="readonly")
-        self.project_box.grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
+        self.project_box = ttk.Combobox(body, textvariable=self.project_var, state="readonly", width=1)
+        self.project_box.grid(row=1, column=1, sticky="ew", padx=12, pady=(8, 0))
         self.project_box.bind("<<ComboboxSelected>>", lambda _event: self._load_subjects())
-        HoverTip(self.project_box, self.project_var)
-        ttk.Button(body, text="扫描项目", command=self._scan_projects).grid(row=1, column=2, pady=(8, 0))
+        self.project_full = tk.StringVar()
+        HoverTip(self.project_box, self.project_full)
+        ttk.Button(body, text="扫描项目", command=self._scan_projects).grid(row=1, column=2, sticky="ew", pady=(8, 0))
 
         # 主体 / 期间分两行排布：一行塞满 8 个控件时，150% 缩放下「截止月」
         # 与「读取科目余额」会被卡片裁掉。
-        line = tk.Frame(body, bg=CARD)
-        line.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
-        line.columnconfigure(1, weight=1)
-        ttk.Label(line, text="主体单位", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(body, text="主体单位", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.subject_var = tk.StringVar()
-        self.subject_box = ttk.Combobox(line, textvariable=self.subject_var, state="readonly")
-        self.subject_box.grid(row=0, column=1, sticky="ew", padx=8)
+        self.subject_box = ttk.Combobox(body, textvariable=self.subject_var, state="readonly", width=1)
+        self.subject_box.grid(row=2, column=1, sticky="ew", padx=12, pady=(8, 0))
         self.subject_box.bind("<<ComboboxSelected>>", self._on_subject)
         self.subject_full = tk.StringVar()
         HoverTip(self.subject_box, self.subject_full)
-        ttk.Button(line, text="选择主体", command=self._pick_subject).grid(row=0, column=2, sticky="e")
+        ttk.Button(body, text="检索主体", command=self._pick_subject).grid(row=2, column=2, sticky="ew", pady=(8, 0))
 
         period = tk.Frame(body, bg=CARD)
-        period.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        period.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(12, 0))
         ttk.Label(period, text="年度", style="Card.TLabel").pack(side="left")
         self.year_var = tk.StringVar()
         ttk.Combobox(period, textvariable=self.year_var, width=6,
@@ -1256,40 +1216,32 @@ class App(tk.Tk):
         self.month_var = tk.StringVar()
         ttk.Combobox(period, textvariable=self.month_var, width=4,
                      values=[str(month) for month in range(1, 13)]).pack(side="left", padx=8)
-        ttk.Button(period, text="读取科目余额", style="Accent.TButton",
-                   command=self._read_ledger).pack(side="left", padx=(12, 0))
-        self.ledger_state = tk.StringVar(value="")
-        self.ledger_label = tk.Label(period, textvariable=self.ledger_state, bg=CARD, fg=MUTED,
-                                     font=(FONT, 8), anchor="w")
-        self.ledger_label.pack(side="left", padx=10)
+        tk.Frame(body, bg=BORDER, height=1).grid(row=4, column=0, columnspan=4, sticky="ew", pady=(16, 10))
+        footer = tk.Frame(body, bg=CARD)
+        footer.grid(row=5, column=0, columnspan=4, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        self.ledger_state = tk.StringVar()
+        self.status_var = tk.StringVar(value="原账套只读")
+        status = tk.Label(footer, textvariable=self.status_var, bg=CARD, fg=MUTED, width=1,
+                          font=theme.font(9), anchor="w", justify="left")
+        status.grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 3))
+        status.bind("<Configure>", lambda event: status.configure(wraplength=max(1, event.width)), add="+")
+        self.home_read = ttk.Button(footer, text="读取科目余额", style="Accent.TButton", command=self._read_ledger)
+        self.home_read.grid(row=0, column=1, sticky="e")
+        self.progress = ttk.Progressbar(footer, mode="indeterminate", length=theme.px(self, 120))
 
-    def _build_template(self):
-        _outer, body, _head = self._form_card("模板与期间", 1)
-        body.columnconfigure(1, weight=1)
-
-        ttk.Label(body, text="模板文件", style="Card.TLabel").grid(row=0, column=0, sticky="w")
-        self.template_var = tk.StringVar()
-        ttk.Entry(body, textvariable=self.template_var).grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Button(body, text="浏览", command=self._choose_template).grid(row=0, column=2)
-
-        # 填列期间与金额单位各占一行：单行排列在 125%/150% 缩放下会超出卡片宽度。
-        line = tk.Frame(body, bg=CARD)
-        line.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        ttk.Label(line, text="填列期间", style="Card.TLabel").pack(side="left")
-        self.period_var = tk.StringVar(value="both")
-        for text, value in (("仅期初", "opening"), ("仅期末", "ending"), ("期初+期末", "both")):
-            ttk.Radiobutton(line, text=text, value=value, variable=self.period_var,
-                            style="Card.TRadiobutton").pack(side="left", padx=(10, 0))
-
-        unit_row = tk.Frame(body, bg=CARD)
-        unit_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-        ttk.Label(unit_row, text="金额单位", style="Card.TLabel").pack(side="left")
-        self.unit_var = tk.StringVar(value="自动")
-        ttk.Combobox(unit_row, textvariable=self.unit_var, state="readonly", width=6,
-                     values=("自动", "元", "千元", "万元", "亿元")).pack(side="left", padx=8)
-
-    def _build_result(self):
-        outer, body, _head = self._card(1, "TB 填列草稿")
+    def _build_tb_review(self):
+        window = tk.Toplevel(self)
+        window.withdraw()
+        self.tb_review = window
+        window.title(f"{APP_NAME} · TB 核对明细")
+        window.configure(bg=BG)
+        window.transient(self)
+        window.protocol("WM_DELETE_WINDOW", window.withdraw)
+        window.bind("<Escape>", lambda _event: window.withdraw())
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        outer, body, _head = self._card(0, "TB 核对明细", parent=window, padx=18, pady=18)
         outer.grid_configure(sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
@@ -1298,10 +1250,8 @@ class App(tk.Tk):
         bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         action = tk.Frame(bar, bg=CARD)
         action.pack(fill="x", pady=(0, 10))
+        self.tb_review_summary = action
         self.scan_state = tk.StringVar(value="")
-        self.ai_btn = ttk.Button(action, text="AI 制作 TB", style="Accent.TButton", command=self._draft_tb)
-        self.ai_btn.pack(side="left")
-        ttk.Button(action, text="仅本地匹配", command=self._recognize).pack(side="left", padx=8)
         tk.Label(action, textvariable=self.scan_state, bg=CARD, fg=MUTED,
                  font=theme.font(8)).pack(side="left", padx=4)
         self.period_state = tk.StringVar(value="")
@@ -1316,10 +1266,17 @@ class App(tk.Tk):
                                values=("全部", "需我处理", "可写入", "已匹配", "待确认", "未匹配", "公式保护", "已选中"))
         chooser.pack(side="left")
         chooser.bind("<<ComboboxSelected>>", lambda _event: self._refresh_tree())
-        for text, command in (("全选可写入", self._select_all_fillable), ("清空", self._clear_selection),
-                              ("允许覆盖", self._allow_overwrite), ("指定来源", self._manual_source),
-                              ("变动分析", self._analyze_movements)):
+        for text, command in (("全选可写入", self._select_all_fillable), ("指定来源", self._manual_source)):
             ttk.Button(controls, text=text, command=command).pack(side="left", padx=(6, 0))
+        # 低频动作收进「更多」，工具栏只留最常用的两个。
+        more = ttk.Menubutton(controls, text="更多")
+        menu = tk.Menu(more, tearoff=False, bg=CARD, fg=TX, activebackground=theme.ACCENT_SOFT,
+                       activeforeground=TX, bd=0, font=(FONT, 9))
+        for text, command in (("允许覆盖", self._allow_overwrite), ("清空选择", self._clear_selection),
+                              ("变动分析", self._analyze_movements)):
+            menu.add_command(label=text, command=command)
+        more.configure(menu=menu)
+        more.pack(side="left", padx=(6, 0))
         self.stats = tk.StringVar(value="")
         tk.Label(bar, textvariable=self.stats, bg=CARD, fg=MUTED, font=(FONT, 8), anchor="w").pack(
             fill="x", pady=(7, 0))
@@ -1359,6 +1316,14 @@ class App(tk.Tk):
         theme.wrap_to_parent(self.detail_label, padding=4)
         self.tree.bind("<<TreeviewSelect>>", self._show_reason)
 
+    def _open_tb_review(self):
+        if self.busy or not self.scan:
+            return
+        theme.fit_window(self.tb_review, 1050, 620, min_width=630, min_height=420)
+        self.tb_review.deiconify()
+        self.tb_review.lift()
+        self.tree.focus_set()
+
     def _show_reason(self, _event=None):
         selected = self.tree.selection()
         if not selected:
@@ -1371,25 +1336,6 @@ class App(tk.Tk):
             return
         self.reason_detail.set(f"{result.target.label}：{result.reason or '暂无说明'}")
         self.detail_label.grid(row=3, column=0, sticky="ew", pady=(6, 0))
-
-    def _build_actions(self):
-        bar = tk.Frame(self.workspace, bg=BG)
-        bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(10, 0))
-        self.report_btn = ttk.Button(bar, text="导出核对表", command=self._export_report, state="disabled")
-        self.report_btn.pack(side="left")
-        self.write_btn = ttk.Button(bar, text="另存 Excel", style="Accent.TButton",
-                                    command=self._write_excel, state="disabled")
-        self.write_btn.pack(side="left", padx=8)
-        ttk.Button(bar, text="退出", command=self._request_close).pack(side="right")
-        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=120)
-        self.status_var = tk.StringVar(value="就绪")
-        state = tk.Frame(bar, bg=BG)
-        state.pack(side="right", padx=(0, 12))
-        self.status_dot = tk.Label(state, text="●", bg=BG, fg=theme.ACCENT,
-                                   font=(theme.FAMILY["body"], 7))
-        self.status_dot.pack(side="left")
-        tk.Label(state, textvariable=self.status_var, bg=BG, fg=SEC,
-                 font=(theme.FAMILY["body"], 8)).pack(side="left", padx=(5, 0))
 
     def _build_log(self):
         """运行日志保留在内存中，按需打开；主界面只显示一行状态。"""
@@ -1968,13 +1914,14 @@ class App(tk.Tk):
 
     def _set_busy(self, busy, text=""):
         self.busy = busy
+        self.home_read.configure(state="disabled" if busy or self.current_subject is None else "normal")
         if busy:
-            self.progress.pack(side="right", padx=(0, 10))
+            self.progress.grid(row=1, column=0, sticky="w", pady=(5, 0))
             self.progress.start(12)
             self.status_var.set(text)
         else:
             self.progress.stop()
-            self.progress.pack_forget()
+            self.progress.grid_remove()
 
     def _async(self, text, work, done=None, *, guard_context=True):
         if self.busy:
@@ -2041,10 +1988,14 @@ class App(tk.Tk):
 
     def _on_projects(self, projects):
         self.projects = list(projects)
-        project_values = [str(item) for item in self.projects]
+        names = [Path(item).name or str(item) for item in self.projects]
+        project_values = [name if names.count(name) == 1 else f"{name} · {item}"
+                          for name, item in zip(names, self.projects)]
         self.project_box.configure(values=project_values)
         self._fit_popdown(self.project_box, project_values)
         if not self.projects:
+            self.project_full.set("")
+            self.project_var.set("")
             self._log("未找到含科目余额数据库的项目目录。")
             return
         self._log(f"发现 {len(self.projects)} 个项目。")
@@ -2056,21 +2007,18 @@ class App(tk.Tk):
         if index < 0 or index >= len(self.projects):
             return
         project = self.projects[index]
+        self.project_full.set(str(project))
         self._async("正在读取项目底稿信息…", lambda: dxn.list_subjects(str(project)), self._on_subjects)
-
-    @staticmethod
-    def _short_label(label, limit=20):
-        """下拉框只放短名：公司主体部分，超长截断；完整名称在弹窗与悬浮提示中看。"""
-        text = str(label).strip()
-        head = text.split("/")[0].strip() or text
-        return head if len(head) <= limit else head[:limit - 1] + "…"
 
     def _on_subjects(self, subjects):
         self.subjects = list(subjects)
-        labels = [self._short_label(item.label) for item in self.subjects]
+        labels = [item.label for item in self.subjects]
         self.subject_box.configure(values=labels)
         self._fit_popdown(self.subject_box, labels)
         if not labels:
+            self.current_subject = None
+            self.subject_var.set("")
+            self.subject_full.set("")
             self._log("该项目未识别到可用主体。")
             return
         self._log(f"识别到 {len(labels)} 个主体 / 期间。")
@@ -2140,20 +2088,6 @@ class App(tk.Tk):
 
     # ---------- 模板识别 ----------
 
-    def _choose_template(self):
-        if self.busy:
-            return
-        path = filedialog.askopenfilename(title="选择用户模板", filetypes=[
-            ("Excel 模板", "*.xlsx *.xlsm"), ("所有文件", "*.*")])
-        if not path:
-            return
-        self.template_var.set(path)
-        self.scan = None
-        self.scan_state.set("模板已更换，请重新识别")
-        # 科目余额已就绪时换模板直接重算，省去再点一次“识别并匹配”。
-        if self.rows and not self.busy:
-            self._recognize()
-
     def _periods(self):
         value = self.period_var.get()
         return ("opening", "ending") if value == "both" else (value,)
@@ -2199,8 +2133,6 @@ class App(tk.Tk):
         for warning in scan.warnings:
             self._log("提示：" + warning)
         self._refresh_tree()
-        self.report_btn.configure(state="normal")
-        self.write_btn.configure(state="normal")
 
     # ---------- 结果表 ----------
 
@@ -2254,7 +2186,7 @@ class App(tk.Tk):
         warning = self.scan.period_warning if self.scan else ""
         self.period_state.set(warning)
         if warning:
-            self.period_notice.pack(fill="x", after=self.ai_btn.master, pady=(0, 8))
+            self.period_notice.pack(fill="x", after=self.tb_review_summary, pady=(0, 8))
         else:
             self.period_notice.pack_forget()
         if not self.results:
@@ -2410,7 +2342,6 @@ class App(tk.Tk):
     def _sync_ai_state(self):
         if self.store is None:
             self.ai_state.set("设置不可用")
-            self.ai_btn.configure(state="disabled")
             return
         has_key = self.store.has_key
         enabled = bool(self.store.data.get("ai_enabled"))
@@ -2418,13 +2349,10 @@ class App(tk.Tk):
         model = model if len(model) <= 18 else model[:17] + "…"
         if has_key and enabled:
             self.ai_state.set(f"已启用 · {model}")
-            self.ai_btn.configure(state="normal")
         elif has_key:
             self.ai_state.set("已配置 · 未启用")
-            self.ai_btn.configure(state="disabled")
         else:
             self.ai_state.set("未配置模型")
-            self.ai_btn.configure(state="disabled")
 
     def _open_ai_settings(self):
         if self.busy:

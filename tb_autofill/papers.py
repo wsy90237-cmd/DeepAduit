@@ -192,7 +192,8 @@ def _report_facts(rows, accounts, paper, journal):
             facts["subject"].pop(key)
         facts["subject"]["previous_period"] = _amount(total["previous_period"])
     if journal is not None:
-        facts["journal"] = _journal_facts(journal, SimpleNamespace(debit=total["debit"], credit=total["credit"]))
+        facts["journal"] = _journal_facts(journal, SimpleNamespace(debit=total["debit"], credit=total["credit"]),
+                                          names={row.code: row.name for row in rows})
     return facts
 
 
@@ -233,7 +234,68 @@ def _journal_samples(journal):
     return picked[:JOURNAL_SAMPLES]
 
 
-def _journal_facts(journal, ledger):
+JOURNAL_LARGE = 20
+LARGE_ROUND = Decimal("1000000")
+ROUND_UNIT = Decimal("10000")
+
+
+def _entry(row):
+    return {"date": row.date, "voucher": row.voucher, "line": row.line, "summary": row.summary,
+            "code": row.code, "debit": _amount(row.debit), "credit": _amount(row.credit),
+            "contra": row.contra}
+
+
+def _journal_insights(journal, names):
+    """本地统计序时账的审计线索，让模型直接引用而不是自己加总。
+
+    全部金额由本地逐笔累加；模型只能引用这里给出的值。
+    """
+    eligible = [row for row in journal if not sampling.is_profit_closing(row)]
+    by_account = {}
+    for row in eligible:
+        slot = by_account.setdefault(row.code, {"debit": ZERO, "credit": ZERO, "count": 0, "contra": {}})
+        slot["debit"] += row.debit or ZERO
+        slot["credit"] += row.credit or ZERO
+        slot["count"] += 1
+        if row.contra:
+            side = "贷方" if (row.credit or ZERO) else "借方"
+            box = slot["contra"].setdefault((row.contra, side), [ZERO, 0])
+            box[0] += row.amount
+            box[1] += 1
+    accounts = []
+    for code, slot in sorted(by_account.items()):
+        top = sorted(slot["contra"].items(), key=lambda item: (-item[1][0], item[0]))[:3]
+        accounts.append({"code": code, "name": (names or {}).get(code, ""), "count": slot["count"],
+                         "debit": _amount(slot["debit"]), "credit": _amount(slot["credit"]),
+                         "top_contra": [{"name": name, "side": side, "amount": _amount(box[0]),
+                                         "count": box[1]} for (name, side), box in top]})
+    own = {str(name) for name in (names or {}).values() if name}
+    internal = [row for row in eligible if row.contra and
+                all(part in own for part in row.contra.split("、") if part)]
+    round_large = [row for row in eligible if row.amount >= LARGE_ROUND and row.amount % ROUND_UNIT == 0]
+    year_end = [row for row in eligible if row.month == 12 and str(row.date)[-2:].isdigit()
+                and int(str(row.date)[-2:]) >= 25]
+    largest = sorted(eligible, key=lambda row: (-row.amount, row.month, row.voucher, row.line))[:JOURNAL_LARGE]
+
+    def total(rows):
+        return {"count": len(rows), "debit": _amount(sum((row.debit or ZERO) for row in rows)),
+                "credit": _amount(sum((row.credit or ZERO) for row in rows))}
+
+    return {
+        "by_account": accounts,
+        "largest": [_entry(row) for row in largest],
+        "internal_transfers": {**total(internal),
+                               "note": "对方科目也在本报表项目内的分录（如账户间互转），不构成对外收付。"},
+        "round_large": {**total(round_large), "threshold": _amount(LARGE_ROUND),
+                        "entries": [_entry(row) for row in round_large[:10]],
+                        "note": "金额不低于阈值且为万元整数的分录，常需关注交易实质与授权。"},
+        "year_end": {**total(year_end), "entries": [_entry(row) for row in
+                                                    sorted(year_end, key=lambda row: -row.amount)[:10]],
+                     "note": "12 月 25 日及以后的分录，用于截止测试线索。"},
+    }
+
+
+def _journal_facts(journal, ledger, names=None):
     """序时账事实：笔数、月度分布、对方科目与抽样凭证，并与科目发生额做勾稽。"""
     debit = sum((row.debit or ZERO) for row in journal)
     credit = sum((row.credit or ZERO) for row in journal)
@@ -273,6 +335,8 @@ def _journal_facts(journal, ledger):
                      "contra": row.contra} for row in _journal_samples(journal)],
         "note": "序时账只到凭证分录层级；原始凭证、合同、银行回单与实物盘点未包含。",
         "note_contra": "top_contra 按对方科目与借贷方向分别汇总，不要把同一对方科目的借方与贷方相加。",
+        "insights": _journal_insights(journal, names),
+        "note_insights": "insights 中的合计、笔数均为本地逐笔统计；需要其他合计时写“需本地统计”，不要自行相加。",
     }
     if checked:
         facts["tie"] = {
@@ -497,6 +561,8 @@ def pack_request(*, rows, code="", paper, procedures, subject_label="", focus=""
         '"review": "一级复核自检结论（一句话）"}\n'
         "audit_notes 围绕本科目实际情况写自然段，必要时引用明细表索引；"
         "结合序时账的月份分布、主要对方科目及分录摘要，解释值得关注的具体交易，"
+        "优先引用 facts.journal.insights：分明细科目的发生额与主要对方科目、最大 20 笔分录、"
+        "本项目内互转、大额整数分录和年末分录；这些数字已由本地统计，原样引用，不要再相加或推算；"
         "以自然流畅的审计人员口吻说明账面观察、待核实原因和下一步检查，不堆砌数字或重复套话；"
         "序时账缺失、不完整或与发生额未勾稽时明确说明，不能编造凭证及检查结论；"
         "审计说明可参照实际底稿逐条列示具体核对与检查事项，引用 workpaper_indexes 中的本册索引；"

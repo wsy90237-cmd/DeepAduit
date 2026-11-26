@@ -9,10 +9,11 @@ from __future__ import annotations
 from datetime import datetime
 import os
 from pathlib import Path
+from tempfile import gettempdir
 
-from . import ai, audit_index, dxn, dxn_paper, fields, matching, paper_pack, papers, skills, workbook
-from .agent import AgentContext, AgentError, ToolRegistry, ToolSpec
-from .models import ledger_digest, money
+from . import ai, audit_index, brand, dxn, dxn_paper, fields, matching, paper_pack, papers, skills, workbook
+from .agent import AgentError, ToolRegistry, ToolSpec
+from .models import can_write, ledger_digest, money
 
 
 def _revision(context):
@@ -156,6 +157,8 @@ def get_tb_status(context, arguments, runtime):
 
 
 def run_tb_ai_fill(context, arguments, runtime):
+    if context.tb_exported:
+        return _error("本次 TB 副本已保存。请发起新任务后再调整并另存。")
     _ensure_scan(context)
     batch_size = max(1, min(int(arguments.get("batch_size", 12)), 20))
     max_batches = max(1, min(int(arguments.get("max_batches", 8)), 20))
@@ -206,6 +209,8 @@ def run_tb_ai_fill(context, arguments, runtime):
 
 
 def stage_tb_sources(context, arguments, runtime):
+    if context.tb_exported:
+        return _error("本次 TB 副本已保存。请发起新任务后再调整并另存。")
     items = arguments.get("items") or []
     if not isinstance(items, list) or not 1 <= len(items) <= 20:
         raise AgentError("每次最多暂存 20 个字段的来源")
@@ -239,13 +244,88 @@ def stage_tb_sources(context, arguments, runtime):
         "applied": applied_total, "items": details}, warnings)
 
 
-def _default_tb_path(context):
-    base = context.output_dir or Path(context.template_path).parent
-    stem = Path(context.template_path).stem if context.template_path else "TB"
-    candidate = base / f"{stem}-Attesta副本.xlsx"
+_UNSAFE_NAME = str.maketrans({ch: "-" for ch in '\\/:*?"<>|'})
+
+
+def _can_write(directory):
+    """挑选默认输出位置用：只试写一次，见 models.can_write。"""
+    try:
+        return can_write(directory)
+    except OSError:
+        return False
+
+
+def fallback_output_dir(context):
+    """兜底目录：用户主目录下的 Attesta输出/<主体 期间>。
+
+    不用「我的文档」「桌面」：Windows「受控文件夹访问」默认保护这些位置，会拒绝本程序写入。
+    """
+    home = Path(os.environ.get("USERPROFILE") or Path.home())
+    label = (context.subject_label or "未命名项目").translate(_UNSAFE_NAME).strip() or "未命名项目"
+    return home / f"{brand.APP_NAME}输出" / label
+
+
+def last_resort_dir(context):
+    """当前账号的程序数据目录。"""
+    base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    label = (context.subject_label or "未命名项目").translate(_UNSAFE_NAME).strip() or "未命名项目"
+    return base / brand.APP_NAME / "输出" / label
+
+
+def _output_dirs(context, *preferred):
+    home_output = fallback_output_dir(context)
+    for directory in (context.output_dir, *preferred, home_output, last_resort_dir(context)):
+        if directory:
+            yield Path(os.path.abspath(directory))
+    yield Path(gettempdir()).resolve() / brand.APP_NAME / "导出" / home_output.name
+
+
+def _output_dir(context, *preferred):
+    return next((directory for directory in _output_dirs(context, *preferred)
+                 if _can_write(directory)), None)
+
+
+def _unique(base, name):
+    if base is None:
+        return None
+    candidate = Path(base) / f"{name}.xlsx"
     if candidate.exists():
-        candidate = base / f"{stem}-Attesta副本-{datetime.now():%Y%m%d-%H%M%S}.xlsx"
+        candidate = Path(base) / f"{name}-{datetime.now():%Y%m%d-%H%M%S%f}.xlsx"
     return candidate
+
+
+def _write_output(context, path, write):
+    """目录试写通过后，真实的 Excel 保存仍可能被 Windows 拒绝。"""
+    tried = set()
+
+    def targets():
+        yield path
+        for directory in _output_dirs(context):
+            yield _unique(directory, path.stem)
+
+    for target in targets():
+        directory = target.parent
+        if directory in tried:
+            continue
+        tried.add(directory)
+        if _can_write(directory):
+            try:
+                return write(target)
+            except PermissionError:
+                continue
+    raise PermissionError("确认的位置和备用目录均无法写入")
+
+
+def _relocation_note(requested, saved):
+    if saved == requested:
+        return ""
+    return "所选位置无法写入，文件已改存。可在「产物」中打开所在文件夹。"
+
+
+def _default_tb_path(context):
+    template_dir = Path(context.template_path).parent if context.template_path else None
+    stem = Path(context.template_path).stem if context.template_path else "TB"
+    return _unique(_output_dir(context, template_dir), f"{stem}-Attesta副本")
 
 
 def _tb_approval_details(context, arguments):
@@ -262,7 +342,7 @@ def _tb_approval_details(context, arguments):
               for item in context.results if item.selected][:5]
     return (("将写入字段", f"{selected} 个；允许覆盖模板已有值 {overwrite} 个"),
             ("待处理字段", f"{pending} 项"),
-            ("默认输出", str(_default_tb_path(context))),
+            ("默认输出", str(_default_tb_path(context) or "")),
             ("金额来源", "本地账套与模板公式保护；原模板不修改"),
             ("写入示例", "；".join(sample) or "无选中字段"))
 
@@ -281,23 +361,33 @@ def export_tb_copy(context, arguments, runtime):
     if not selected and not has_confirmed:
         return _error("没有可写入的金额；请先完成匹配或指定来源。")
     path = Path(runtime.approved_path).resolve() if runtime.approved_path else _default_tb_path(context)
+    if path is None:
+        return _error("未生成 TB 副本：默认目录均没有写入权限。请在保存确认中另选位置。")
     if path == Path(scan.path).resolve():
         return _error("不能覆盖原始模板，请选择新文件。")
     if path.exists():
         return _error("输出文件已存在，请选择新的文件名。")
+    def write(target):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return workbook.write_results(scan, context.results, target,
+                                      rows=tuple(context.rows), allow_empty=has_confirmed,
+                                      preserve_tb_balance=True)
+
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        saved = workbook.write_results(scan, context.results, path,
-                                       rows=tuple(context.rows), allow_empty=has_confirmed,
-                                       preserve_tb_balance=True)
+        saved = _write_output(context, path, write)
         checks = workbook.tb_balance_checks(saved, scan)
     except workbook.TBBalanceRegression as exc:
         return _error(str(exc))
+    except PermissionError:
+        return _error("未生成 Excel：没有写入权限。请在保存确认中另选位置后重试。")
     except (OSError, ValueError, KeyError) as exc:
         return _error(f"未生成 Excel：{exc}")
     except Exception as exc:
         return _error(f"Excel 写入或重算失败：{str(exc)[:300]}")
     notes = workbook.tb_balance_summary(checks, context.results) if checks else ["重算后未识别到可核验的合计。"]
+    relocated = _relocation_note(path, saved)
+    if relocated:
+        notes.insert(0, relocated)
     gaps = matching.tb_ledger_gaps(context.results, context.rows)
     notes.extend(f"{'期初' if period == 'opening' else '期末'}非零科目未确认完整入表：{code} {name} {amount} 元"
                  for period, code, name, amount in gaps)
@@ -323,13 +413,16 @@ def export_tb_copy(context, arguments, runtime):
     }, notes)
 
 
-def list_report_projects(context, arguments, runtime):
-    limit = max(1, min(int(arguments.get("limit", 100)), 200))
-    names = {row.code: row.name for row in context.rows if getattr(row, "code", "")}
-    raw = papers.account_choices(context.rows, level=papers.PRIMARY_LEVEL, limit=None)
+def report_projects(rows, library, *, limit=200):
+    """按报表项目归集一级科目：返回 (可出册项目, 未映射科目)。
+
+    Agent 工具与「底稿」页共用这一份口径；未映射的科目不会静默套用底稿。
+    """
+    names = {row.code: row.name for row in rows if getattr(row, "code", "")}
+    raw = papers.account_choices(rows, level=papers.PRIMARY_LEVEL, limit=None)
     grouped, unmapped = {}, []
     for code, _label in raw:
-        paper, basis = audit_index.resolve(code, names.get(code, ""), context.paper_library)
+        paper, basis = audit_index.resolve(code, names.get(code, ""), library)
         if paper is None:
             unmapped.append({"code": code, "name": names.get(code, "")})
             continue
@@ -337,13 +430,13 @@ def list_report_projects(context, arguments, runtime):
         if code not in grouped[paper.index_no]["codes"]:
             grouped[paper.index_no]["codes"].append(code)
     projects = []
-    for index_no in [paper.index_no for paper in audit_index.options(context.paper_library)]:
+    for index_no in [paper.index_no for paper in audit_index.options(library)]:
         entry = grouped.get(index_no)
         if not entry:
             continue
         paper = entry["paper"]
         try:
-            accounts, _scoped = papers.report_scope(context.rows, paper, context.paper_library)
+            accounts, _scoped = papers.report_scope(rows, paper, library)
         except ValueError as exc:
             projects.append({"index_no": index_no, "name": paper.name, "error": str(exc)})
             continue
@@ -358,9 +451,51 @@ def list_report_projects(context, arguments, runtime):
                          "mapped_basis": entry["basis"]})
         if len(projects) >= limit:
             break
+    return projects, unmapped
+
+
+def list_report_projects(context, arguments, runtime):
+    limit = max(1, min(int(arguments.get("limit", 100)), 200))
+    projects, unmapped = report_projects(context.rows, context.paper_library, limit=limit)
     return _ok(context, f"识别到 {len(projects)} 个可出册报表项目。", {
         "projects": projects, "unmapped": unmapped[:30],
         "note": "未映射项目不会静默套用底稿；请人工确认归属。"})
+
+
+# 缺少外部证据时可执行的替代程序：只是建议清单，执行与结论仍由项目组完成。
+ALTERNATIVE_PROCEDURES = {
+    "1-010": ("取得全部银行账户年末对账单，编制银行存款余额调节表",
+              "检查未达账项的期后银行回单，确认期后到账或付出",
+              "对监管、冻结或受限账户单独函证并核对监管协议",
+              "库存现金未监盘时，结合期后盘点倒推至资产负债表日"),
+    "1-070": ("检查期后收款的银行回单，与明细余额逐户核对",
+              "抽查销售合同、发票、出库或验收单，核对交易真实性与截止",
+              "对未回函客户执行替代程序并记录理由，必要时二次函证"),
+    "1-130": ("检查往来形成原因、相关合同或协议",
+              "检查期后收回或结算情况，评估可收回性"),
+    "1-150": ("未监盘时检查期后出入库记录，倒推至资产负债表日",
+              "抽查采购发票、入库单与成本结转记录"),
+    "2-070": ("检查期后付款回单，与明细余额逐户核对",
+              "取得主要供应商对账单，检查未入账发票与暂估"),
+    "4-010": ("检查资产负债表日前后发货、验收单据与收入确认期间",
+              "抽查销售合同、发票与收款，核对金额与客户"),
+    "5-010": ("核对成本结转与收入的配比，抽查出库单与成本计算"),
+}
+
+
+def alternative_procedures(index_no):
+    value = ALTERNATIVE_PROCEDURES.get(str(index_no), ())
+    return (value,) if isinstance(value, str) else tuple(value)
+
+
+def _progress(runtime, text):
+    """长步骤里的进度行：让用户看到正在做什么（运行时不支持时静默跳过）。"""
+    emit = getattr(runtime, "emit", None)
+    if callable(emit):
+        try:
+            emit("progress", text)
+        except Exception:
+            pass
 
 
 def _validate_paper_data(context, data, accounts):
@@ -374,6 +509,8 @@ def _validate_paper_data(context, data, accounts):
 
 def prepare_workpaper(context, arguments, runtime):
     index_no = str(arguments.get("index_no") or "").strip()
+    if context.report_indexes and index_no not in context.report_indexes:
+        raise AgentError("该索引不在本次已确认的报表项目中。")
     paper = audit_index.find(context.paper_library, index_no)
     if paper is None:
         raise AgentError("未找到该报表项目索引")
@@ -426,17 +563,19 @@ def prepare_workpaper(context, arguments, runtime):
 
 
 def _default_workpaper_path(context, paper):
-    if context.output_dir:
-        base = context.output_dir
-    elif context.template_path:
-        base = Path(context.template_path).parent / "底稿"
-    else:
-        project = str(getattr(context.subject, "project_path", "") or "")
-        base = (Path(project).parent if project else Path.cwd()) / "Attesta底稿"
-    candidate = base / f"{paper.index_no} {paper.name}-底稿.xlsx"
-    if candidate.exists():
-        candidate = base / f"{paper.index_no} {paper.name}-底稿-{datetime.now():%Y%m%d-%H%M%S}.xlsx"
-    return candidate
+    template_dir = Path(context.template_path).parent / "底稿" if context.template_path else None
+    return _unique(_output_dir(context, template_dir), f"{paper.index_no} {paper.name}-底稿")
+
+
+def default_write_path(context, tool, arguments):
+    """写入确认框里预填的路径：用户能看到、也能改。"""
+    if tool == "export_tb_copy":
+        return str(_default_tb_path(context) or "") if context.template_path else ""
+    if tool == "export_workpaper":
+        prepared = context.prepared_workpapers.get(str(arguments.get("index_no") or "").strip()) or {}
+        paper = prepared.get("paper")
+        return str(_default_workpaper_path(context, paper) or "") if paper is not None else ""
+    return ""
 
 
 def _workpaper_approval_details(context, arguments):
@@ -453,7 +592,7 @@ def _workpaper_approval_details(context, arguments):
     return (("报表项目", getattr(paper, "label", index_no)),
             ("模型文字", "含" if (prepared.get("draft") or {}).get("kind") == "pack" else "仅本地事实"),
             ("证据", missing),
-            ("默认输出", str(_default_workpaper_path(context, paper)) if paper else ""),
+            ("默认输出", str(_default_workpaper_path(context, paper) or "") if paper else ""),
             ("金额来源", "本机账套与序时账；原文件不修改"))
 
 
@@ -466,6 +605,7 @@ def export_workpaper(context, arguments, runtime):
     paper, data, draft = prepared["paper"], prepared["data"], prepared["draft"]
     try:
         if getattr(data, "source_path", ""):
+            _progress(runtime, "核对账套来源是否变化…")
             if not dxn.validate_paper_data_source(data):
                 gap = "账套来源已变化或一致副本失效，底稿未导出，请重新准备该报表项目。"
                 context.add_gap(gap)
@@ -473,6 +613,8 @@ def export_workpaper(context, arguments, runtime):
     except (OSError, ValueError) as exc:
         return _error(f"无法重验账套来源：{exc}")
     path = Path(runtime.approved_path).resolve() if runtime.approved_path else _default_workpaper_path(context, paper)
+    if path is None:
+        return _error("未生成底稿：默认目录均没有写入权限。可在「产物」中重新导出并选择保存位置。")
     if path.exists():
         return _error("底稿输出文件已存在，请选择新的文件名。")
     narrative = draft if draft.get("kind") == "pack" else {}
@@ -484,37 +626,62 @@ def export_workpaper(context, arguments, runtime):
             evidence = ()
     evidence = tuple(evidence or ())
     warnings = list(prepared.get("warnings") or [])
-    if not evidence and paper.index_no == "1-010":
-        warning = "货币资金未关联已确认的银行回函/对账单，底稿证据页需项目组补充。"
+    next_steps = list(alternative_procedures(paper.index_no)) if not evidence else []
+    if not evidence:
+        if paper.index_no == "1-010":
+            warning = "货币资金未关联已确认的银行回函/对账单，底稿证据页需项目组补充。"
+        else:
+            warning = f"{paper.index_no} {paper.name}未关联已确认的外部证据，底稿证据页需项目组补充。"
+        if next_steps:
+            warning += "建议替代程序：" + "；".join(next_steps) + "。"
         context.add_gap(warning)
         warnings.append(warning)
-    temporary = path.with_name(f".attesta-{paper.index_no}-{datetime.now():%H%M%S%f}.xlsx")
+    def write(target):
+        temporary = target.with_name(f".attesta-{paper.index_no}-{datetime.now():%H%M%S%f}.xlsx")
+        _progress(runtime, f"生成底稿 Excel：{target}")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            dxn_paper.build(
+                temporary, paper=paper, subject_label=context.subject_label, rows=data.rows,
+                resolve=lambda code, name: audit_index.resolve(
+                    code, name, context.paper_library)[0],
+                prepared_by=context.prepared_by, reviewed_by=context.reviewed_by,
+                when=datetime.now().strftime("%Y-%m-%d"),
+                procedures=paper_pack.procedures(paper.index_no, paper.name),
+                narrative=narrative, journal=data.journal, paper_data=data, evidence_rows=evidence)
+            # 与 workbook 一致：Windows 的 rename 拒绝覆盖已存在目标，包括检查之后才出现的同名文件。
+            os.rename(temporary, target)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return target
+
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        dxn_paper.build(
-            temporary, paper=paper, subject_label=context.subject_label, rows=data.rows,
-            resolve=lambda code, name: audit_index.resolve(
-                code, name, context.paper_library)[0],
-            prepared_by=context.prepared_by, reviewed_by=context.reviewed_by,
-            when=datetime.now().strftime("%Y-%m-%d"),
-            procedures=paper_pack.procedures(paper.index_no, paper.name),
-            narrative=narrative, journal=data.journal, paper_data=data, evidence_rows=evidence)
-        os.replace(temporary, path)
-        output = path
+        output = _write_output(context, path, write)
+    except FileExistsError:
+        return _error("底稿输出文件已存在，请选择新的文件名。")
+    except PermissionError:
+        return _error("未生成底稿：确认的位置和备用目录均没有写入权限。"
+                      "可在「产物」中重新导出并选择保存位置。")
     except (OSError, ValueError, KeyError) as exc:
         return _error(f"未生成底稿：{exc}")
-    finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
+    moved_note = _relocation_note(path, output)
+    if moved_note:
+        warnings.append(moved_note)
+        _progress(runtime, f"文件已改存：{output}")
     context.record_artifact("workpaper", output, source=str(data.source_fingerprint)[:400],
                             note=f"{paper.index_no} {paper.name}；{'含' if narrative else '未含'}模型文字；"
                                  f"证据 {len(evidence)} 条",
                             target=index_no)
+    missing_file = f"整册底稿未生成：{index_no}"
+    if missing_file in context.gaps:
+        context.gaps.remove(missing_file)
     return _ok(context, f"已生成整册底稿：{output.name}。", {
         "output": output.name, "index_no": index_no,
         "has_narrative": bool(narrative), "evidence": len(evidence),
+        "relocated": bool(moved_note), "next_steps": next_steps,
     }, warnings)
 
 
@@ -546,12 +713,12 @@ def finish(context, arguments, runtime):
     return {"ok": True, "summary": "结束"}
 
 
-def build_registry(*, include_papers=True):
+def build_registry(*, include_papers=True, include_tb=True, write_tb=True):
     specs = [
         ToolSpec("get_project_context", "读取当前主体、期间、模板、字段和待处理摘要。",
                  {"type": "object", "properties": {}, "additionalProperties": False},
                  "read", get_project_context, lambda _args: "读取项目上下文",
-                 result_scope=("ledger",)),
+                 result_scope=("ledger", "tb") if include_tb else ("ledger",)),
         ToolSpec("search_accounts", "按编码、名称或路径查找账套科目及余额。",
                  {"type": "object", "properties": {
                      "query": {"type": "string", "maxLength": 200},
@@ -566,6 +733,11 @@ def build_registry(*, include_papers=True):
                      "required": ["codes"], "additionalProperties": False},
                  "read", get_account_facts,
                  lambda args: f"读取 {len(args.get('codes') or [])} 个科目事实",
+                 result_scope=("ledger",)),
+        ToolSpec("list_report_projects", "列出可出册的报表项目、索引号和包含科目。",
+                 {"type": "object", "properties": {"limit": {"type": "integer"}},
+                  "additionalProperties": False},
+                 "read", list_report_projects, lambda _args: "列出报表项目",
                  result_scope=("ledger",)),
         ToolSpec("scan_template", "在本地扫描用户模板并执行规则匹配（不联网）。",
                  {"type": "object", "properties": {}, "additionalProperties": False},
@@ -592,7 +764,8 @@ def build_registry(*, include_papers=True):
         ToolSpec("export_tb_copy", "另存 TB 副本、重算并导出待处理清单（需用户确认）。",
                  {"type": "object", "properties": {}, "additionalProperties": False},
                  "write", export_tb_copy, lambda _args: "另存 TB 副本",
-                 approval_details=_tb_approval_details),
+                 approval_details=_tb_approval_details,
+                 default_path=lambda ctx, args: default_write_path(ctx, "export_tb_copy", args)),
         ToolSpec("search_knowledge", "检索本地内置财会知识，返回可引用的 K 编号。",
                  {"type": "object", "properties": {
                      "query": {"type": "string", "maxLength": 500},
@@ -617,11 +790,6 @@ def build_registry(*, include_papers=True):
     ]
     if include_papers:
         specs.extend([
-            ToolSpec("list_report_projects", "列出可出册的报表项目、索引号和包含科目。",
-                     {"type": "object", "properties": {"limit": {"type": "integer"}},
-                      "additionalProperties": False},
-                     "read", list_report_projects, lambda _args: "列出报表项目",
-                     result_scope=("ledger", "tb")),
             ToolSpec("prepare_workpaper", "读取项目科目与序时账，生成整册底稿文字草稿。",
                      {"type": "object", "properties": {
                          "index_no": {"type": "string", "maxLength": 20},
@@ -636,6 +804,12 @@ def build_registry(*, include_papers=True):
                       "required": ["index_no"], "additionalProperties": False},
                      "write", export_workpaper,
                      lambda args: f"导出底稿：{args.get('index_no', '')}",
-                     approval_details=_workpaper_approval_details),
+                     approval_details=_workpaper_approval_details,
+                     default_path=lambda ctx, args: default_write_path(ctx, "export_workpaper", args)),
         ])
-    return ToolRegistry(specs)
+    excluded = set()
+    if not include_tb:
+        excluded.update(("scan_template", "get_tb_status"))
+    if not (include_tb and write_tb):
+        excluded.update(("run_tb_ai_fill", "stage_tb_sources", "export_tb_copy"))
+    return ToolRegistry(spec for spec in specs if spec.name not in excluded)

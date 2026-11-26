@@ -14,7 +14,7 @@ from openpyxl.formula import Tokenizer
 from openpyxl.utils.cell import coordinate_to_tuple
 
 from .fields import file_digest
-from .models import ledger_digest, money
+from .models import ledger_digest, money, require_writable
 
 
 def tb_has_gap(difference):
@@ -255,6 +255,7 @@ def write_results(scan, results, output, *, rows=None, allow_empty=False, preser
     if output.exists():
         raise ValueError("输出文件已存在，请使用新的文件名。")
     output.parent.mkdir(parents=True, exist_ok=True)
+    require_writable(output.parent)
     handle, draft_name = tempfile.mkstemp(prefix=".zszh-", suffix=output.suffix, dir=output.parent)
     os.close(handle)
     draft = Path(draft_name)

@@ -25,11 +25,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
-from tb_autofill import agent_tools, agent_ui, gui
+from tb_autofill import agent_tools, agent_ui, gui, workspace
 from tb_autofill.agent import ApprovalDecision
-from tb_autofill.models import LedgerRow, Subject
+from tb_autofill.models import JournalRows, LedgerRow, MatchResult, PaperData, Subject, TargetField
 
 BUILD = Path(__file__).resolve().parents[1] / "build"
 TIMEOUT_SECONDS = 60
@@ -96,12 +96,17 @@ class ScriptedClient:
     def __init__(self, replies):
         self.replies = list(replies)
         self.calls = 0
+        self.sent = []
 
     def chat_tools(self, messages, tools):
         self.calls += 1
+        self.sent.append(json.dumps(messages, ensure_ascii=False))
         if not self.replies:
             raise RuntimeError("脚本化模型回复已用尽")
         return self.replies.pop(0)
+
+    def paper_text(self, _request):
+        return {"intent": "audit", "answer": "{}"}
 
 
 class AgentUiSmokeTests(unittest.TestCase):
@@ -126,8 +131,9 @@ class AgentUiSmokeTests(unittest.TestCase):
             save_signers=lambda *_args, **_kwargs: None,
         )
 
-    def _run_agent(self, *, stages, report_indexes=(), replies, out_dir_name, template=True,
-                   message="复核 TB 并生成所需交付物"):
+    def _run_agent(self, *, replies, out_dir_name, template=True,
+                   message="复核 TB 并生成所需交付物", block_workpaper_locations=False,
+                   retry_workpaper=False, choose_template_in_chat=False, previous_scan=False):
         """构造真实 App，跑一轮脚本化 Agent，返回运行结果与调用证据。"""
         fake_client = ScriptedClient(replies)
         out = self.root / out_dir_name
@@ -140,10 +146,39 @@ class AgentUiSmokeTests(unittest.TestCase):
             "showerror": MagicMock(),
         }
         approvals = []
+        temp_output = self.root / "user-temp"
+        temp_output.mkdir()
+        paper_path = out / "货币资金底稿.xlsx"
+        retry_path = self.root / "另选位置" / paper_path.name
+        denied_paths = []
+        before_retry = []
+
+        if block_workpaper_locations:
+            self.stack.enter_context(patch.dict(os.environ, {
+                "USERPROFILE": str(self.root), "LOCALAPPDATA": str(self.root / "local")}))
+            self.stack.enter_context(patch.object(agent_tools, "gettempdir", return_value=str(temp_output)))
+            data = PaperData(rows=tuple(ledger_rows()), journal=JournalRows())
+            self.stack.enter_context(patch.object(agent_tools.dxn, "read_paper_data", return_value=data))
+            self.stack.enter_context(patch.object(agent_tools.papers, "pack_result", return_value={"kind": "local"}))
+            check_write = agent_tools.dxn_paper.require_writable
+
+            def require_temp_output(directory):
+                allowed = directory == retry_path.parent if retry_workpaper else directory.is_relative_to(temp_output)
+                if not allowed:
+                    denied_paths.append(directory)
+                    raise PermissionError(13, "synthetic permission failure", str(directory))
+                return check_write(directory)
+
+            self.stack.enter_context(patch.object(agent_tools.dxn_paper, "require_writable",
+                                                  side_effect=require_temp_output))
+            if retry_workpaper:
+                self.stack.enter_context(patch.object(agent_ui, "prompt_approval",
+                    side_effect=lambda _app, _request, done: done(ApprovalDecision(True, str(retry_path)))))
 
         def approve(_app, request):
             approvals.append(request)
-            return ApprovalDecision(True, path=str(tb_copy))
+            path = paper_path if "导出底稿" in request.summary else tb_copy
+            return ApprovalDecision(True, path=str(path))
 
         def fake_write_results(_scan, _results, path, **_kwargs):
             path = Path(path)
@@ -167,10 +202,19 @@ class AgentUiSmokeTests(unittest.TestCase):
         self.stack.enter_context(patch.object(gui.App, "_autodetect"))
         self.stack.enter_context(patch.object(gui.auditlog, "AuditLog", return_value=MagicMock()))
         self.stack.enter_context(patch.object(gui.knowledge, "LocalLibrary", return_value=MagicMock()))
-        self.stack.enter_context(patch.object(agent_ui, "_save_run_record", return_value=None))
+        if not retry_workpaper:
+            self.stack.enter_context(patch.object(agent_ui, "_save_run_record", return_value=None))
         self.stack.enter_context(patch.object(agent_ui.ai.DeepSeekClient, "from_store",
                                               return_value=fake_client))
         self.stack.enter_context(patch.object(agent_ui, "_ask_approval", side_effect=approve))
+        starts = []
+
+        def confirm(_app, _title, lines, on_done):
+            # 开始确认已改为对话页内的面板：测试里记录内容后直接点「开始」。
+            starts.append(lines)
+            on_done(True)
+
+        self.stack.enter_context(patch.object(agent_ui, "confirm_start", side_effect=confirm))
         for name, mock in dialogs.items():
             self.stack.enter_context(patch.object(agent_ui.messagebox, name, mock))
         self.stack.enter_context(patch.object(agent_tools.workbook, "write_results",
@@ -185,7 +229,8 @@ class AgentUiSmokeTests(unittest.TestCase):
         except tk.TclError as exc:  # pragma: no cover - 取决于运行环境
             self.skipTest(f"无可用显示：{exc}")
         self.addCleanup(_dispose, app)
-        app.withdraw()
+        if not choose_template_in_chat:
+            app.withdraw()
 
         deadline = time.monotonic() + TIMEOUT_SECONDS
         failures = []
@@ -202,20 +247,44 @@ class AgentUiSmokeTests(unittest.TestCase):
                                              ledger_id="L1")
                 app.scan = None
                 app.results = []
-                app.agent_stage_vars["tb"].set("tb" in stages)
-                app.agent_stage_vars["papers"].set("papers" in stages)
-                app.agent_reports_var.set(",".join(report_indexes))
-                app.agent_output_var.set(str(out))
+                if previous_scan:
+                    app.scan = agent_ui.fields.scan_template(self.template)
+                    app.results = [MatchResult(TargetField("专属模板页", "B2", "专属待核字段",
+                                                           "ending", value=98172365))]
                 app.agent_input.insert("1.0", message)
                 agent_ui._send(app)
+                if choose_template_in_chat:
+                    self.assertEqual(starts, [])
+                    self.assertEqual(fake_client.calls, 0)
+                    dialog = next(child for child in app.winfo_children()
+                                  if isinstance(child, tk.Toplevel) and child.title() == "TB 模板")
+                    children = list(dialog.winfo_children())
+                    while children:
+                        widget = children.pop()
+                        children.extend(widget.winfo_children())
+                        if hasattr(widget, "invoke") and widget.cget("text") == "浏览…":
+                            with patch.object(agent_ui.filedialog, "askopenfilename",
+                                              return_value=str(self.template)):
+                                widget.invoke()
+                        if hasattr(widget, "invoke") and widget.cget("text") == "继续任务":
+                            continue_button = widget
+                    continue_button.invoke()
             except Exception as exc:  # 界面回调里的异常不会让 mainloop 退出，必须自己转达
                 failures.append(exc)
                 app.quit()
 
         def poll():
-            if app.agent_result is not None or time.monotonic() >= deadline:
+            if time.monotonic() >= deadline:
                 app.quit()
                 return
+            if app.agent_result is not None and not app.agent_running:
+                if retry_workpaper and not before_retry:
+                    before_retry.append((fake_client.calls, app.agent_artifacts_empty.cget("text"),
+                                         app.agent_artifacts.get_children()))
+                    app.agent_reexport_btn.invoke()
+                else:
+                    app.quit()
+                    return
             app.after(50, poll)
 
         app.after(0, begin)
@@ -232,12 +301,52 @@ class AgentUiSmokeTests(unittest.TestCase):
             f"{app.agent_state_var.get()}；最后事件：{[event.title for event in app.agent_events][-5:]}")
         return SimpleNamespace(
             result=result, out=out, tb_copy=tb_copy, client=fake_client,
-            approvals=approvals, dialogs=dialogs,
+            approvals=approvals, dialogs=dialogs, starts=starts,
+            denied_paths=denied_paths, temp_output=temp_output, before_retry=before_retry,
+            retry_path=retry_path,
+            record=app.agent_run_record,
+            review_ready="disabled" not in app.agent_review_btn.state(),
+            artifact_rows=tuple(app.agent_artifacts.item(item, "values")
+                                for item in app.agent_artifacts.get_children()),
             events=tuple(app.agent_events), state=app.agent_state_var.get())
+
+    def test_ledger_question_excludes_previous_tb_from_every_request(self):
+        run = self._run_agent(previous_scan=True, message="这个账套有多少个科目？",
+                              out_dir_name="ledger-only", replies=[
+                                  reply([tool_call("get_project_context")]),
+                                  reply([tool_call("finish", {"status": "done", "summary": "两个科目"})])])
+        self.assertEqual(len(run.client.sent), 2)
+        self.assertIn("合成企业", run.client.sent[-1])
+        for payload in run.client.sent:
+            for private in (self.template.name, "专属模板页", "专属待核字段", "98172365"):
+                self.assertNotIn(private, payload)
+
+    def test_returning_home_shows_new_greeting_after_opening_selector(self):
+        def isolated_settings(app):
+            app.store = self._fake_store()
+            app._pending_error = ""
+
+        with patch.object(gui.App, "_autodetect"), \
+                patch.object(gui.App, "_load_settings", isolated_settings), \
+                patch.object(gui.auditlog, "AuditLog"), patch.object(gui.knowledge, "LocalLibrary"):
+            try:
+                app = gui.App()
+            except tk.TclError as exc:
+                self.skipTest(str(exc))
+            self.addCleanup(_dispose, app)
+            first = app.home_greeting.get()
+            app.home_select.invoke()
+            self.assertEqual(app.home_source.winfo_manager(), "grid")
+            workspace.navigate(app, "agent")
+            workspace.navigate(app, "tb")
+            self.assertNotEqual(app.home_greeting.get(), first)
+            self.assertFalse(app.home_source.winfo_manager())
+            app.home_select.invoke()
+            self.assertEqual(app.home_source.winfo_manager(), "grid")
 
     def test_tb_only_run_exports_copy_and_pending_list_in_real_app(self):
         run = self._run_agent(
-            stages=("tb",),
+            template=False, choose_template_in_chat=True, message="只填期末 TB，列出待处理项",
             replies=[
                 reply([tool_call("scan_template", call_id="call-scan")]),
                 reply([tool_call("export_tb_copy", call_id="call-export")]),
@@ -254,7 +363,11 @@ class AgentUiSmokeTests(unittest.TestCase):
             if artifact["kind"] in {"tb", "tb_pending"}:
                 self.assertTrue(Path(artifact["path"]).is_file(), artifact["path"])
         # 启动确认与写入确认都由脚本自动应答，仍走真实 Agent 页面流程。
-        run.dialogs["askokcancel"].assert_called_once()
+        self.assertEqual(len(run.starts), 1)
+        self.assertIn("发送到", dict(run.starts[0]))
+        self.assertIn("期末", dict(run.starts[0])["TB 设置"])
+        self.assertNotIn("期初", dict(run.starts[0])["TB 设置"])
+        self.assertTrue(run.review_ready)
         self.assertEqual(len(run.approvals), 1)
         self.assertEqual(self.template.read_bytes(), self.original_template)
         self.assertEqual(run.result.error, "")
@@ -263,8 +376,6 @@ class AgentUiSmokeTests(unittest.TestCase):
 
     def test_workpaper_only_does_not_require_user_tb_template(self):
         run = self._run_agent(
-            stages=("papers",),
-            report_indexes=("1-010",),
             replies=[
                 reply([tool_call("finish", {"status": "done", "summary": "完成"},
                                  call_id="call-finish")]),
@@ -281,14 +392,13 @@ class AgentUiSmokeTests(unittest.TestCase):
 
     def test_papers_with_scope_but_missing_workpaper_is_partial(self):
         run = self._run_agent(
-            stages=("tb", "papers"),
-            report_indexes=("1-010",),
             replies=[
                 reply([tool_call("scan_template", call_id="call-scan")]),
                 reply([tool_call("finish", {"status": "done", "summary": "已扫描模板"},
                                  call_id="call-finish")]),
             ],
-            out_dir_name="out-partial")
+            out_dir_name="out-partial",
+            message="复核 TB 并制作货币资金底稿")
 
         self.assertEqual(run.result.status, "partial",
                          f"{run.result.summary} / {run.result.gaps} / {run.result.error}")
@@ -299,6 +409,53 @@ class AgentUiSmokeTests(unittest.TestCase):
         self.assertEqual(self.template.read_bytes(), self.original_template)
         self.assertEqual(run.result.error, "")
         self.assertIn("部分完成", run.state)
+
+    def test_workpaper_uses_another_directory_and_appears_in_artifacts(self):
+        run = self._run_agent(
+            template=False, message="制作货币资金底稿", out_dir_name="out-paper",
+            block_workpaper_locations=True,
+            replies=[
+                reply([tool_call("prepare_workpaper", {"index_no": "1-010"}, "prepare")]),
+                reply([tool_call("export_workpaper", {"index_no": "1-010"}, "export")]),
+                reply([tool_call("finish", {"status": "done", "summary": "已导出"}, "finish")]),
+            ])
+        self.assertEqual(run.result.status, "done", run.result.error)
+        self.assertEqual(len(run.denied_paths), 3)
+        self.assertEqual(len(set(run.denied_paths)), 3)
+        artifact, = run.result.artifacts
+        path = Path(artifact["path"])
+        self.assertTrue(path.is_relative_to(run.temp_output))
+        self.assertEqual(run.artifact_rows, (("整册底稿", path.name),))
+        self.assertIn("1-010", dict(run.starts[0])["交付物"])
+        book = load_workbook(path, read_only=True)
+        try:
+            self.assertGreater(len(book.sheetnames), 1)
+        finally:
+            book.close()
+
+    def test_failed_export_can_be_saved_elsewhere_without_another_model_request(self):
+        run = self._run_agent(
+            template=False, message="制作货币资金底稿", out_dir_name="blocked-paper",
+            block_workpaper_locations=True, retry_workpaper=True,
+            replies=[
+                reply([tool_call("prepare_workpaper", {"index_no": "1-010"}, "prepare")]),
+                reply([tool_call("export_workpaper", {"index_no": "1-010"}, "export")]),
+                reply([tool_call("finish", {"status": "blocked", "summary": "输出位置不可写"}, "finish")]),
+            ])
+        self.assertEqual(run.before_retry, [(run.client.calls, "1 册草稿待保存", ())])
+        self.assertEqual(run.state, "重新导出完成 1/1")
+        self.assertEqual(run.artifact_rows, (("整册底稿", run.retry_path.name),))
+        self.assertTrue(run.retry_path.is_file())
+        self.assertNotIn("整册底稿未生成：1-010", run.result.gaps)
+        history = json.loads(run.record.read_text(encoding="utf-8"))
+        self.assertEqual(history["original_result"]["status"], "blocked")
+        self.assertEqual(history["result"]["summary"], "重新导出完成 1/1")
+        self.assertEqual(history["result"]["artifacts"][0]["path"], str(run.retry_path))
+        self.assertEqual(history["result"]["artifacts"][0]["sha256"], run.result.artifacts[0]["sha256"])
+
+    def test_requested_period_recognizes_both_after_only(self):
+        self.assertEqual(agent_ui._requested_period("只填期初和期末"), "both")
+        self.assertEqual(agent_ui._requested_period("不要填期初，只填期末"), "ending")
 
 
 if __name__ == "__main__":

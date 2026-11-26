@@ -103,6 +103,15 @@ class AgentToolTests(unittest.TestCase):
         self.assertFalse(value["data"]["items"][0]["ok"])
         self.assertIn("快照", value["data"]["items"][0]["error"])
 
+    def test_saved_tb_cannot_be_changed_within_the_same_run(self):
+        self.call("scan_template")
+        before = [(item.selected, list(item.sources)) for item in self.ctx.results]
+        self.ctx.tb_exported = True
+        args = {"items": [{"target_id": self.ctx.results[0].target.id, "source_codes": ["1002"]}]}
+        self.assertFalse(self.call("stage_tb_sources", args)["ok"])
+        self.assertFalse(self.call("run_tb_ai_fill")["ok"])
+        self.assertEqual([(item.selected, item.sources) for item in self.ctx.results], before)
+
     def test_export_tb_copy_requires_new_path_and_records_artifact(self):
         self.call("scan_template")
         output = self.root / "out" / "tb.xlsx"

@@ -1,11 +1,9 @@
-"""Poll only the active annual project; publish on the UI thread after revalidation."""
-import hashlib
+"""Poll only the active annual project and display local evidence checks."""
 import json
 from pathlib import Path
 import re
 from threading import Thread
 from tkinter import simpledialog
-from uuid import uuid4
 
 from . import audit_index, auto_project as intake, dxn, evidence_draft as draft, papers
 
@@ -34,13 +32,13 @@ class Intake:
             return '项目已切换，请重新打开当前项目资料。'
         heading = f'{self.subject.label} · 银行存款核对（本机）\n'
         if not self.approval:
-            return heading + '请先读取账套、识别 TB，并点击「确认自动底稿范围」。未确认前不出稿。'
+            return heading + '请先读取账套、在审计对话中复核 TB，再确认银行核对范围。'
         if self.running or self.finished != (intake.inventory(self.directories), self.approval):
             return heading + '资料正在等待扫描或重新核对，请稍后重新打开任务单。'
         return heading + '以下为最近一次本机核对的结果，不代表审计结论。\n\n' + '\n'.join(self.notes)
 
     def start(self):
-        self.status(f'公司资料夹：{self.store.root}。放入资料后自动识别；首次出稿请确认自动底稿范围。')
+        self.status(f'公司资料夹：{self.store.root}。放入资料后自动识别；确认银行核对范围后可查看核对结果。')
         self.app.after(1500, self.poll)
 
     def confirm(self):
@@ -50,7 +48,7 @@ class Intake:
         paper = audit_index.find(self.library, '1-010')
         accounts, scoped = papers.report_scope(self.rows, paper, self.library)
         summary = '、'.join(f'{row.code} {row.name}' for row in accounts)
-        currency = simpledialog.askstring('确认自动底稿范围', f'{self.subject.label}\nTB：{self.app.template_var.get()}\n'
+        currency = simpledialog.askstring('确认银行核对范围', f'{self.subject.label}\nTB：{self.app.template_var.get()}\n'
             f'货币资金整册：{summary}\n确认以上来源和映射后，输入账套记账本位币（三位代码，如 CNY）：', parent=self.app)
         if currency is None:
             return
@@ -66,7 +64,7 @@ class Intake:
             if self.current() and source == draft.source_key(self.app):
                 fingerprint = json.dumps([data.source_fingerprint, [row.code for row in accounts], data.source_missing_tables])
                 if previous is not None and fingerprint != previous:
-                    self.status('原账套已变化，旧底稿待复核；请重新确认自动底稿范围。')
+                    self.status('原账套已变化，请重新确认银行核对范围。')
                     return
                 with self.store._connect() as db:
                     db.execute('INSERT OR REPLACE INTO intake_scope VALUES (1,?,?,?)', (source, currency, fingerprint))
@@ -120,53 +118,43 @@ class Intake:
             if not valid:
                 self.approval = None
                 self.finished = None
-                self.status('账套或 TB 已变化，旧底稿待复核；请重新确认自动底稿范围。')
+                self.status('账套或 TB 已变化，请重新确认银行核对范围。')
                 return
         if self.finished == (entries, approval):
             return
         self.running = True
         self.status('正在本机整理资料并核对来源…')
         confirmed_data = self.data if approval else None
+
         def work():
-            temp, data, signature, error = None, None, None, None
+            error = None
             notes = []
             try:
                 source, currency = approval or ('', '')
-                prepared, notes = intake.prepare(self.store, entries, self.subject, self.rows, currency, self.library, source)
-                last = intake.last_export(self.store)
-                if prepared and approval and (prepared[-1] or last):
-                    signature, paper, accounts, scoped, _ = prepared
-                    data = confirmed_data
-                    reviewed = draft.confirmed_rows(self.store, paper.index_no, source)
-                    signature = hashlib.sha256(json.dumps([signature, data.source_fingerprint, reviewed], default=str).encode()).hexdigest()
-                    if not last or signature != last[1]:
-                        temp = self.store.root / ('.' + uuid4().hex + '.xlsx')
-                        intake.render(temp, prepared, self.subject, self.library, data, reviewed)
-                        if not dxn.validate_paper_data_source(data):
-                            raise ValueError('账套已变化，请重新读取并复核。')
+                _, notes = intake.prepare(self.store, entries, self.subject, self.rows, currency, self.library, source)
+                if confirmed_data is not None and not dxn.validate_paper_data_source(confirmed_data):
+                    raise ValueError('账套已变化，请重新读取并复核。')
             except Exception as exc:
                 error = str(exc)
-            self.app._post(lambda: finish(temp, signature, notes, error))
-        def finish(temp, signature, notes, error):
+            self.app._post(lambda: finish(notes, error))
+
+        def finish(notes, error):
             try:
                 if not self.current() or approval != self.approval or entries != intake.inventory(self.directories):
                     return
                 if approval and (not self.app.scan or draft.source_key(self.app) != approval[0]):
                     self.approval = None
-                    raise ValueError('TB 已变化，请重新确认自动底稿范围。')
+                    raise ValueError('TB 已变化，请重新确认银行核对范围。')
                 if error:
                     self.approval = None
                     raise ValueError(error)
-                output = intake.publish(self.store, temp, signature) if temp else None
                 self.notes = notes or ['没有待核异常。']
                 self.finished = (entries, approval)
-                heading = f'已生成：{output.name}' if output else ('未产生新版本' if approval else '尚未确认自动底稿范围，未出稿')
-                self.status(f'{heading}。已扫描 {len(entries)} 个文件。' + (' '+notes[0] if notes else ''))
+                heading = '银行资料已核对' if approval else '待确认银行核对范围'
+                self.status(f'{heading} · 已扫描 {len(entries)} 个文件。' + (' '+notes[0] if notes else ''))
             except Exception as exc:
                 self.notes = [str(exc)]
-                self.status(f'自动底稿待复核：{exc}')
+                self.status(f'银行资料待复核：{exc}')
             finally:
-                if temp:
-                    temp.unlink(missing_ok=True)
                 self.running = False
         Thread(target=work, daemon=True).start()

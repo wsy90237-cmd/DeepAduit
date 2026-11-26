@@ -12,6 +12,7 @@ ASSETS = Path(__file__).with_name("assets")
 ICON_SIZES = (32, 48, 256)
 EXECUTABLE = f"{APP_NAME}.exe"
 WINDOW_TITLE = f"{APP_NAME} · 审计工作台"
+AGENT_NAME = APP_NAME
 PACKAGE_FILES = ("launch.py", "启动Attesta.cmd", "Attesta-trial.cmd", "requirements.txt")
 
 # 文件属性与界面页脚共用同一处来源：PE 资源里的公司、版权、产品名都从这里取，

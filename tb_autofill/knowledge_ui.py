@@ -21,8 +21,7 @@ class KnowledgePanel(tk.Frame):
         top = ttk.Frame(self, padding=16)
         top.grid(row=0, column=0, sticky="ew")
         ttk.Label(top, text="财会知识库", font=("Microsoft YaHei UI", 17, "bold")).pack(anchor="w")
-        ttk.Label(top, text="检索规则和实务资料，选用来源后交给审计 Agent；知识材料不等同于项目审计证据。",
-                  wraplength=900).pack(anchor="w", pady=9)
+        ttk.Frame(top, height=9).pack()
         actions = ttk.Frame(top)
         actions.pack(fill="x")
         ttk.Button(actions, text="配置 ima 连接", command=self._configure).pack(side="left")
@@ -47,7 +46,7 @@ class KnowledgePanel(tk.Frame):
         self.library_box.pack(side="left", padx=6, fill="x", expand=True)
         ttk.Label(libraries, text="或填库 ID").pack(side="left")
         ttk.Entry(libraries, textvariable=self.library_id, width=17).pack(side="left", padx=(6, 0))
-        self.status = tk.StringVar(value="本地支持 TXT / Markdown / DOCX / 文字 PDF；ima 只检索 API 有权读取的库。")
+        self.status = tk.StringVar(value="")
         ttk.Label(self, textvariable=self.status, wraplength=1000).grid(row=2, column=0, sticky="w", pady=(0, 8))
         body = ttk.Frame(self)
         body.grid(row=3, column=0, sticky="nsew")
@@ -69,7 +68,7 @@ class KnowledgePanel(tk.Frame):
         ttk.Combobox(footer, textvariable=self.scope, values=("TB", "附注", "底稿", "报告"), state="readonly", width=8).pack(side="left", padx=10)
         ttk.Button(footer, text="Agent 检索并复核", style="Accent.TButton",
                    command=lambda: self._search(agent=True)).pack(side="left")
-        ttk.Label(footer, text="只读检索；查询词发送到所选来源，账套不会上传至 ima。", wraplength=440).pack(side="right")
+        ttk.Label(footer, text="查询词发送到所选来源", foreground=theme.MUTED).pack(side="right")
 
     def _configure(self):
         if self.app.busy or self.app.store is None:

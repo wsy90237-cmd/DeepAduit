@@ -40,7 +40,7 @@ STATUS_SOFT = {"ok": OK_SOFT, "warn": WARN_SOFT, "bad": BAD_SOFT, "info": INFO_S
 ROW_HEIGHT = 30
 
 _BODY = ("Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI")
-_DISPLAY = ("宋体", "Georgia", "Times New Roman")
+_DISPLAY = ("Noto Serif SC", "Source Han Serif SC", "思源宋体", "宋体", "Georgia", "Times New Roman")
 _LATIN = ("Georgia", "Times New Roman", "宋体")
 _MONO = ("Cascadia Mono", "Consolas", "Courier New")
 
@@ -119,6 +119,10 @@ def install(root):
               background=[("pressed", PAPER_DEEP), ("active", SURFACE_ALT)],
               bordercolor=[("active", HAIRLINE_STRONG)],
               foreground=[("disabled", MUTED)])
+    style.configure("TMenubutton", background=SURFACE, foreground=INK, borderwidth=1,
+                    bordercolor=HAIRLINE, lightcolor=HAIRLINE, darkcolor=HAIRLINE, arrowcolor=MUTED,
+                    padding=(10, 6), relief="flat", font=(FAMILY["body"], 9))
+    style.map("TMenubutton", background=[("active", SURFACE_ALT)], bordercolor=[("active", HAIRLINE_STRONG)])
     style.configure("Accent.TButton", background=ACCENT, foreground="#FFFFFF", borderwidth=0,
                     padding=(16, 8), font=(FAMILY["body"], 9))
     style.map("Accent.TButton", background=[("pressed", ACCENT_DARK), ("active", ACCENT_DARK)],
@@ -129,6 +133,10 @@ def install(root):
     style.configure("Quiet.TButton", background=PAPER, foreground=MUTED, borderwidth=0,
                     padding=(8, 4))
     style.map("Quiet.TButton", background=[("active", PAPER_DEEP)], foreground=[("active", INK)])
+    # 卡片（白底）里的轻按钮：底色跟卡片一致，不出现纸色色块。
+    style.configure("CardQuiet.TButton", background=SURFACE, foreground=MUTED, borderwidth=0,
+                    padding=(8, 4), focuscolor=SURFACE, focusthickness=0)
+    style.map("CardQuiet.TButton", background=[("active", SURFACE_ALT)], foreground=[("active", INK)])
     style.configure("Treeview", background=SURFACE, fieldbackground=SURFACE, foreground=INK,
                     borderwidth=0, rowheight=px(root, ROW_HEIGHT), font=(FAMILY["body"], 9))
     style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
@@ -237,7 +245,25 @@ def fit_window(window, width, height, *, min_width=0, min_height=0, margin=12, f
     top = max(0, (area_h - final_h) // 2)
     window.geometry(f"{final_w}x{final_h}+{left}+{top}")
     remember_placement(window, left, top, final_w, final_h)
+    try:
+        window.after_idle(lambda: bring_to_front(window))
+    except tk.TclError:
+        pass
     return final_w, final_h
+
+
+def bring_to_front(window):
+    """把弹窗带到最前并取得焦点：Windows 上从后台线程触发的对话框常落在主窗口后面。"""
+    try:
+        if not window.winfo_exists():
+            return
+        window.deiconify()
+        window.lift()
+        window.attributes("-topmost", True)
+        window.focus_force()
+        window.after(400, lambda: window.winfo_exists() and window.attributes("-topmost", False))
+    except tk.TclError:
+        pass
 
 
 def wrap_to_parent(label, *, ratio=1.0, minimum=160, padding=0):
@@ -469,3 +495,91 @@ class StatTile(tk.Frame):
         self.value.configure(text=str(value), fg=tone or INK)
         if hint:
             self._hint_label(hint)
+
+
+# ---------- 线性图标与小部件 ----------
+# 图标按 24×24 网格写成折线，画在 Canvas 上随 DPI 缩放；不依赖图片文件或 emoji 字体。
+ICONS = {
+    "tb": [[(3, 10), (12, 3), (21, 10), (21, 20), (15, 20), (15, 14), (9, 14), (9, 20), (3, 20), (3, 10)]],
+    "agent": [[(12, 3), (12, 8)], [(12, 16), (12, 21)], [(3, 12), (8, 12)], [(16, 12), (21, 12)],
+              [(6.5, 6.5), (9, 9)], [(15, 15), (17.5, 17.5)], [(6.5, 17.5), (9, 15)], [(15, 9), (17.5, 6.5)]],
+    "papers": [[(6, 3), (14, 3), (18, 7), (18, 21), (6, 21), (6, 3)], [(14, 3), (14, 7), (18, 7)],
+               [(9, 12), (15, 12)], [(9, 16), (15, 16)]],
+    "notes": [[(5, 4), (19, 4), (19, 20), (5, 20), (5, 4)], [(9, 4), (9, 20)], [(12, 9), (16, 9)],
+              [(12, 13), (16, 13)]],
+    "report": [[(4, 20), (20, 20)], [(7, 20), (7, 13)], [(12, 20), (12, 7)], [(17, 20), (17, 11)]],
+    "security": [[(12, 2), (12, 5)], [(12, 19), (12, 22)], [(2, 12), (5, 12)], [(19, 12), (22, 12)],
+                 [(4.9, 4.9), (7, 7)], [(17, 17), (19.1, 19.1)], [(4.9, 19.1), (7, 17)], [(17, 7), (19.1, 4.9)]],
+}
+_ICON_CIRCLES = {"security": (12, 12, 3.2)}
+
+
+def draw_icon(canvas, name, x, y, size, color, *, tag="icon"):
+    """在 (x, y) 处画一个 size×size 的线性图标，返回 tag 便于整体换色。"""
+    scale = size / 24.0
+    width = max(1.0, 1.6 * scale)
+    for line in ICONS.get(name, ()):
+        points = [coord for px_, py_ in line for coord in (x + px_ * scale, y + py_ * scale)]
+        canvas.create_line(*points, fill=color, width=width, capstyle="round",
+                           joinstyle="round", tags=(tag,))
+    if name in _ICON_CIRCLES:
+        cx, cy, r = _ICON_CIRCLES[name]
+        canvas.create_oval(x + (cx - r) * scale, y + (cy - r) * scale, x + (cx + r) * scale,
+                           y + (cy + r) * scale, outline=color, width=width, tags=(tag,))
+    return tag
+
+
+def rounded_rect(canvas, x1, y1, x2, y2, radius, **options):
+    """Canvas 上的圆角矩形（平滑多边形）；用于导航选中态、标签与进度条。"""
+    radius = max(0, min(radius, (x2 - x1) / 2, (y2 - y1) / 2))
+    points = (x1 + radius, y1, x2 - radius, y1, x2, y1, x2, y1 + radius,
+              x2, y2 - radius, x2, y2, x2 - radius, y2, x1 + radius, y2,
+              x1, y2, x1, y2 - radius, x1, y1 + radius, x1, y1)
+    return canvas.create_polygon(points, smooth=True, splinesteps=12, **options)
+
+
+class Pill(tk.Label):
+    """状态标签：软底色 + 同色系文字，只写事实（“已核 4/4”“待确认”）。"""
+
+    def __init__(self, parent, text="", tone="muted"):
+        super().__init__(parent, text=text, padx=8, pady=1, bd=0,
+                         font=(FAMILY["body"], 8))
+        self.set(text, tone)
+
+    def set(self, text, tone="muted"):
+        self.configure(text=text, bg=soft_for(tone), fg=color_for(tone) if tone != "muted" else MUTED)
+
+
+class Meter(tk.Frame):
+    """一行“名称 · 用量”加细进度条；用于 Agent 预算。"""
+
+    def __init__(self, parent, title):
+        bg = parent.cget("bg")
+        super().__init__(parent, bg=bg)
+        top = tk.Frame(self, bg=bg)
+        top.pack(fill="x")
+        tk.Label(top, text=title, bg=bg, fg=MUTED, font=(FAMILY["body"], 8)).pack(side="left")
+        self.value = tk.Label(top, text="—", bg=bg, fg=MUTED, font=(FAMILY["mono"], 8))
+        self.value.pack(side="right")
+        self.bar = tk.Canvas(self, height=6, bg=bg, highlightthickness=0, bd=0)
+        self.bar.pack(fill="x", pady=(4, 0))
+        self._ratio = 0.0
+        self.bar.bind("<Configure>", lambda _event: self._paint())
+
+    def set_usage(self, used, limit, text=None):
+        try:
+            ratio = 0.0 if not limit else max(0.0, min(1.0, float(used) / float(limit)))
+        except (TypeError, ValueError):
+            ratio = 0.0
+        self._ratio = ratio
+        self.value.configure(text=text if text is not None else f"{used} / {limit}")
+        self._paint()
+
+    def _paint(self):
+        canvas = self.bar
+        canvas.delete("all")
+        width = max(1, canvas.winfo_width())
+        rounded_rect(canvas, 0, 0, width, 6, 3, fill=PAPER_DEEP, outline="")
+        if self._ratio > 0:
+            tone = BAD if self._ratio >= 0.9 else ACCENT
+            rounded_rect(canvas, 0, 0, max(6, width * self._ratio), 6, 3, fill=tone, outline="")

@@ -25,7 +25,7 @@ def activate_project(app, *, interactive=True, root_override=None):
     if not root:
         if not interactive:
             if hasattr(app, "intake_status"):
-                app.intake_status.set("未设置项目资料目录；可在「项目资料与自动底稿」中选择。")
+                app.intake_status.set("未设置项目资料目录，可在「项目资料」中选择。")
             return None
         root = filedialog.askdirectory(title="首次设置：选择各公司底稿的共同存放目录", parent=app)
     if not root:
@@ -39,7 +39,7 @@ def activate_project(app, *, interactive=True, root_override=None):
     except Exception as exc:
         text = f"项目资料目录不可用：{exc}"
         if hasattr(app, "intake_status"):
-            app.intake_status.set(text + "；请在「项目资料与自动底稿」中重新选择目录。")
+            app.intake_status.set(text + "。请在「项目资料」中重新选择目录。")
         if interactive:
             messagebox.showerror("无法打开项目资料", str(exc), parent=app)
             if messagebox.askyesno("重新选择目录", "是否选择一个新的项目资料目录？", parent=app):
@@ -101,8 +101,8 @@ class EvidenceDialog(tk.Toplevel):
             auto_bar = ttk.Frame(self)
             auto_bar.grid(row=6, column=0, sticky='ew', padx=12, pady=6)
             self.button(auto_bar, '自动收件详情', lambda: self.show_text('自动收件', '\n'.join(intake.notes)))
-            self.button(auto_bar, '确认自动底稿范围', intake.confirm)
-            self.button(auto_bar, '审计 Agent · 银行核对', lambda: self.show_text('银行核对任务单', intake.agent_brief()))
+            self.button(auto_bar, '确认银行核对范围', intake.confirm)
+            self.button(auto_bar, '查看银行核对结果', lambda: self.show_text('银行核对任务单', intake.agent_brief()))
         self.button(bar, "批量读取 PDF", lambda: self.import_files(sorted(store.inbox.glob("*.pdf"))))
         self.button(bar, "打开原页所在 PDF", self.open_pdf)
         self.button(bar, "已核对资料归属", self.review_doc)
@@ -123,7 +123,6 @@ class EvidenceDialog(tk.Toplevel):
         self.paper.pack(side="left")
         if self.papers:
             self.paper.current(0)
-        ttk.Label(opts, text="  可选中一段原文缩小发送范围").pack(side="left")
         self.text = ScrolledText(self, height=10, wrap="word", exportselection=False)
         self.text.grid(row=3, column=0, sticky="nsew", padx=12)
         self.actions = ttk.Frame(self)

@@ -39,14 +39,14 @@ class DialogTests(unittest.TestCase):
             return answer
         return responder
 
-    def test_showinfo_returns_ok_and_paints_on_paper(self):
+    def test_showinfo_returns_ok_and_paints_on_one_white_sheet(self):
         with patch.object(dialogs, "_RESPONDER", self.respond("ok")), \
                 patch("tkinter.messagebox.showinfo") as native:
             result = dialogs.showinfo("提示", "合成正文", parent=self.root)
 
         self.assertEqual(result, "ok")
         native.assert_not_called()
-        self.assertEqual(self.seen["background"], theme.PAPER)
+        self.assertEqual(self.seen["background"], theme.SURFACE)
         self.assertEqual(self.seen["card"], theme.SURFACE)
         self.assertEqual(self.seen["badge"], theme.SURFACE)
 

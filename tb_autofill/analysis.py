@@ -282,7 +282,25 @@ def fact_amounts(facts: dict, *, include_counts=True) -> set:
     tie = journal.get("tie") or {}
     for key in ("ledger_debit", "ledger_credit"):
         add(tie.get(key))
+    for item in _insight_entries(journal):
+        for key in ("debit", "credit", "amount", "threshold"):
+            add(item.get(key))
     return values
+
+
+def _insight_entries(journal):
+    """序时账 insights 中所有带金额的条目（含分科目、最大分录、互转、大额整数、年末）。"""
+    insights = (journal or {}).get("insights") or {}
+    items = []
+    for account in insights.get("by_account") or []:
+        items.append(account)
+        items.extend(account.get("top_contra") or [])
+    items.extend(insights.get("largest") or [])
+    for key in ("internal_transfers", "round_large", "year_end"):
+        group = insights.get(key) or {}
+        items.append(group)
+        items.extend(group.get("entries") or [])
+    return items
 
 
 def fact_codes(facts: dict) -> set:
@@ -295,6 +313,7 @@ def fact_codes(facts: dict) -> set:
         codes.add(str(facts["subject"]["code"]))
     journal = facts.get("journal") or {}
     codes |= {str(item["code"]) for item in journal.get("samples") or [] if item.get("code")}
+    codes |= {str(item["code"]) for item in _insight_entries(journal) if item.get("code")}
     return codes
 
 
@@ -320,6 +339,9 @@ def fact_tokens(facts: dict) -> set:
             harvest(item.get(key))
     for item in journal.get("top_contra") or []:
         harvest(item.get("name"))
+    for item in _insight_entries(journal):
+        for key in ("summary", "contra", "voucher", "name"):
+            harvest(item.get(key))
     return tokens
 
 
@@ -349,6 +371,8 @@ def fact_counts(facts: dict) -> set:
     for group in ("monthly", "top_contra"):
         for item in journal.get(group) or []:
             add(item.get("count"))
+    for item in _insight_entries(journal):
+        add(item.get("count"))
     for group in ("accounts", "children", "analysis_rows", "cutoff_samples", "procedures"):
         if isinstance(facts.get(group), (list, tuple)):
             add(len(facts[group]))

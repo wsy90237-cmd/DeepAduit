@@ -2,6 +2,9 @@ from dataclasses import asdict, dataclass, field
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import os
+from pathlib import Path
+import time
 
 
 def money(value) -> Decimal | None:
@@ -194,3 +197,35 @@ def ledger_digest(rows) -> str:
     records = sorted((asdict(row) for row in rows), key=lambda row: str(row["code"]))
     content = json.dumps(records, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def can_write(directory) -> bool:
+    """目录能否新建文件：在最近的已存在上级里只试建一次并立即删除。
+
+    不能用 tempfile 探测：Windows「受控文件夹访问」拒绝写入时，tempfile 会把拒绝当成
+    重名，换名重试约 21 亿次，调用方就此卡死。
+    """
+    probe = Path(directory)
+    while not probe.exists():
+        if probe.parent == probe:
+            return False
+        probe = probe.parent
+    if not probe.is_dir():
+        return False
+    candidate = probe / f".attesta-write-check-{os.getpid()}-{time.time_ns()}"
+    try:
+        handle = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        return False
+    os.close(handle)
+    try:
+        candidate.unlink()
+    except OSError:
+        pass
+    return True
+
+
+def require_writable(directory):
+    """写入前检查；不可写时立即给出可读错误，而不是让 tempfile 无限重试。"""
+    if not can_write(directory):
+        raise PermissionError(13, "没有写入权限（可能被 Windows「受控文件夹访问」拦截）", str(directory))

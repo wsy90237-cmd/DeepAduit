@@ -128,17 +128,21 @@ class PaperUiTests(unittest.TestCase):
         dialog.children_tree.selection_set("1002")
         return dialog
 
-    def test_workspace_button_opens_paper_dialog_without_api_key(self):
+    def test_workspace_button_prepares_selected_workpaper_in_chat_without_api_key(self):
         def descendants(widget):
             for child in widget.winfo_children():
                 yield child
                 yield from descendants(child)
         buttons = [widget for widget in descendants(self.app.pages["papers"])
-                   if isinstance(widget, gui.ttk.Button) and widget.cget("text") == "制作报表项目底稿"]
+                   if isinstance(widget, gui.ttk.Button) and widget.cget("text") == "在审计对话中制作"]
         self.assertEqual(len(buttons), 1)
-        with patch.object(gui, "PaperDialog") as opened:
-            buttons[0].invoke()
-        opened.assert_called_once_with(self.app, "paper")
+        gui.workspace.navigate(self.app, "papers")
+        items = self.app.papers_tree.get_children()
+        cash = next(item for item in items if self.app.papers_tree.item(item, "values")[0] == "1-010")
+        self.app.papers_tree.selection_set(cash)
+        buttons[0].invoke()
+        self.assertEqual(self.app.active_page, "agent")
+        self.assertEqual(self.app.agent_input.get("1.0", "end-1c"), "制作 1-010 货币资金底稿")
 
     def test_dialog_groups_report_items_and_shows_primary_and_direct_secondary(self):
         dialog = self.dialog()

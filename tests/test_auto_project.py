@@ -95,7 +95,7 @@ class AutoProjectTests(unittest.TestCase):
         self.assertTrue(any('不符' in note for note in notes))
         self.assertNotEqual(self.store.root, ProjectStore(self.store.root.parent.parent, '合成公司 [A]', 2024).root)
 
-    def test_background_batch_checks_context_before_publication(self):
+    def test_background_batch_checks_context_without_publishing_a_workpaper(self):
         callbacks = Queue()
         app = SimpleNamespace(rows=self.rows, loaded_subject=self.subject, paper_library=audit_index.bundled(),
                               intake_status=Mock(), scan=object(), results=[], _post=callbacks.put)
@@ -119,7 +119,8 @@ class AutoProjectTests(unittest.TestCase):
             session.inspect()
             callbacks.get(timeout=20)()
             outputs = list((self.store.root / '底稿草稿').rglob('*.xlsx'))
-            self.assertEqual(len(outputs), 1, session.notes)
+            self.assertEqual(outputs, [])
+            self.assertTrue(session.finished)
             session.inspect()
             self.assertFalse(session.running)
             app.scan = None

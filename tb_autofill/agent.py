@@ -10,14 +10,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
 import threading
 import time
-from typing import Any, Callable, Iterable
+from typing import Callable, Iterable
 
 from .ai import AIError
 
@@ -99,6 +99,12 @@ class AgentBudget:
 
     def spend_model(self):
         self.model_calls += 1
+        self.check()
+
+    def ensure_model_available(self):
+        """发请求前检查：已用满上限时不再发送，避免多付一次请求后才丢弃结果。"""
+        if self.model_calls >= self.max_model_calls:
+            raise AgentError("本次运行已达到模型请求上限，已停止；请拆分任务后重试。")
         self.check()
 
 
@@ -235,6 +241,7 @@ class AgentContext:
 
     def spend_model_call(self, scope=()):
         self.check_cancel()
+        self.budget.ensure_model_available()
         self.budget.spend_model()
         self.ensure_scope(scope)
         self.model_requests.append({"scope": sorted(str(item) for item in scope),
@@ -311,6 +318,7 @@ class ToolSpec:
     summary: Callable[[dict], str] = lambda _args: ""
     result_scope: tuple = ()
     approval_details: Callable[["AgentContext", dict], tuple] | None = None
+    default_path: Callable[["AgentContext", dict], str] | None = None
 
     def schema(self):
         return {"type": "function", "function": {
@@ -440,6 +448,7 @@ class AgentRuntime:
         self._call_history = []
         self._auto_write = {}
         self._approved_path = ""
+        self._failures = {}
         if context.scope_approver is None:
             context.scope_approver = self._approve_scope
         self._messages = []
@@ -522,20 +531,15 @@ class AgentRuntime:
             return {"ok": False, "error": "模型请求了未授权的工具"}
         if name in self._blocked_tools:
             return {"ok": False, "error": "用户已拒绝该工具；本次运行不再执行，继续重复调用会消耗预算并可能结束运行"}
-        summary = ""
-        try:
-            summary = spec.summary(arguments) if callable(spec.summary) else ""
-        except Exception:
-            summary = ""
-        self.emit("tool", spec.summary(arguments) if callable(spec.summary) else name,
-                  summary or name, {"tool": name, "args": _safe_args(arguments), "kind": spec.kind})
+        summary = _spec_summary(spec, arguments)
+        self.emit("tool", summary or name, summary or name, {"tool": name, "args": _safe_args(arguments), "kind": spec.kind})
         self._audit("agent_tool_call", tool=name, args=_safe_args(arguments), kind=spec.kind)
 
         if spec.kind == "write":
             decision = self._approve_write(spec, arguments)
             if not decision.approved:
                 self._blocked_tools.add(name)
-                self.emit("approval", "已拒绝写入", decision.note or spec.summary(arguments),
+                self.emit("approval", "已拒绝写入", decision.note or summary or name,
                           {"tool": name, "approved": False})
                 self._audit("agent_write_denied", tool=name, args=_safe_args(arguments),
                             note=decision.note)
@@ -559,6 +563,10 @@ class AgentRuntime:
             failed = {"ok": False, "error": str(result.get("error") or "工具未完成")[:600]}
             if result.get("cancelled"):
                 failed["cancelled"] = True
+            else:
+                key = (name, failed["error"])
+                self._failures[key] = self._failures.get(key, 0) + 1
+                failed["next"] = recovery_hint(name, failed["error"], repeated=self._failures[key] > 1)
             result = failed
         required_scope = set(spec.result_scope) | set(result.get("_scope") or ())
         if required_scope:
@@ -586,11 +594,17 @@ class AgentRuntime:
                 details = tuple(spec.approval_details(self.context, arguments))
             except Exception:
                 details = ()
+        default_path = ""
+        if callable(spec.default_path):
+            try:
+                default_path = str(spec.default_path(self.context, arguments) or "")
+            except Exception:
+                default_path = ""
         request = ApprovalRequest(
             kind="write", title="确认写入文件",
-            summary=spec.summary(arguments) or f"准备执行 {spec.name}",
+            summary=_spec_summary(spec, arguments) or f"准备执行 {spec.name}",
             details=(("工具", spec.name), *details),
-            default_path="", allow_auto=True, batch_key=spec.name)
+            default_path=default_path, allow_auto=True, batch_key=spec.name)
         decision = self._approve(request)
         if decision.approved and decision.auto_confirm_rest:
             # 自动确认后不固定复用同一个文件名；把本次选择所在目录作为后续默认输出目录。
@@ -617,14 +631,20 @@ class AgentRuntime:
             "3. 不声称已经执行未执行的审计程序，不把草稿写成已审计完成或已签发报告。"
             "报告意见类型由项目组确定，你最多给建议。\n"
             "4. 先做只读调查，再暂存 TB 来源，最后才调用写文件工具；写文件会由用户确认。"
-            "用户拒绝后不要重试同一工具。\n"
+            "用户拒绝后不要重试同一工具。写文件失败时先读错误原因，不要原样重复调用；"
+            "无法自行解决时用 ask_user 说明原因。\n"
             "5. 缺少资料时写入缺口或用 ask_user 询问，不能编造事实。\n"
             "6. 知识引用只能使用本次工具返回的 [K#] 编号；不得创造编号或准则条号。\n"
             "7. 完成时调用 finish，说明完成情况、产物和未完成事项；不要用文字假装完成。"
             "能否完成由本地程序核对实际产物，不由你的文字决定。\n"
-            "8. 按 TB → 整册底稿推进：先查看状态，必要时 scan_template，再暂存来源/补配，"
-            "写 TB 前确认；底稿先 list_report_projects，再逐个项目 prepare_workpaper 和 export_workpaper。\n"
-            "9. 保持简洁，先回答/执行，再说明依据与缺口。"
+            "8. 工具失败时结果里的 next 字段给出下一步，按它换策略；缺证据时提出替代程序，"
+            "不要把缺证据写成已完成。\n"
+            "9. 按 TB → 整册底稿推进：先查看状态，必要时 scan_template，再暂存来源/补配，"
+            "写 TB 前确认；制作底稿时只处理任务给定的报表项目，依次 prepare_workpaper 和 export_workpaper，"
+            "索引不清楚时才调用 list_report_projects。\n"
+            "10. 每次调用工具时，在正文里先用一两句中文说明你看到了什么、接下来为什么做这一步；"
+            "这段话会实时显示给用户。不要在这段话里写工具尚未返回的金额。\n"
+            "11. 保持简洁，先回答/执行，再说明依据与缺口。"
         )
 
     def _user_prompt(self):
@@ -735,6 +755,8 @@ class AgentRuntime:
                 self.context.check_cancel()
                 self.context.ensure_current()
                 self.context.budget.spend_step()
+                self.context.budget.ensure_model_available()
+                self.emit("thinking", "思考中")
                 try:
                     reply = self.client.chat_tools(self._messages, self.registry.schemas())
                 except Exception as exc:
@@ -753,6 +775,10 @@ class AgentRuntime:
                 self._audit("agent_model_request", messages=len(self._messages), chars=chars,
                             scope=sorted(self.context.allowed_scope))
                 calls = reply.get("tool_calls") or []
+                thought = str(reply.get("content") or "").strip()
+                if calls and thought:
+                    # 模型在调用工具前写的判断，原样显示给用户（只作说明，不作事实来源）。
+                    self.emit("thought", "思考", thought[:1500])
                 if calls:
                     assistant = {"role": "assistant", "content": reply.get("content") or "",
                                  "tool_calls": [call.get("raw") for call in calls]}
@@ -790,6 +816,39 @@ class AgentRuntime:
             self._audit("agent_run_end", status="error", error=type(exc).__name__)
             return self._result("error", "本次运行失败，未完成部分见运行记录。",
                                 f"{type(exc).__name__}: {exc}"[:500])
+
+
+def recovery_hint(tool, error, *, repeated=False):
+    """把失败原因翻译成下一步：换策略、问用户，或如实结束；不让模型原样重试。"""
+    text = str(error or "")
+    if repeated:
+        return ("同一错误已出现两次，重复调用不会改变结果。请用 ask_user 说明原因并请用户决定，"
+                "或调用 finish(status=\"blocked\") 写明缺口。")
+    if "写入权限" in text or "拒绝访问" in text or "Permission" in text:
+        if tool == "export_workpaper":
+            return "说明草稿已保留，本次未生成文件。用户可以在「产物」中重新导出并另选位置；不要重复尝试原目录。"
+        return "输出目录不可写。若用户能另选位置，可再次请求保存确认；不要重复尝试原目录。"
+    if "已存在" in text:
+        return "目标文件已存在；不要重复导出同一项目，继续下一个项目或结束。"
+    if "来源" in text and ("变化" in text or "失效" in text):
+        return "账套或模板已变化；不要继续写入，调用 finish(status=\"blocked\") 说明需要重新读取。"
+    if "未找到该报表项目" in text or "索引" in text:
+        return "先调用 list_report_projects 确认可用的索引，再重试。"
+    if "请先调用 prepare_workpaper" in text:
+        return "先调用 prepare_workpaper 准备该项目，再导出。"
+    if "序时账" in text:
+        return "缺少序时账：说明影响，继续其他项目，或用 ask_user 请用户确认账套来源。"
+    if "范围" in text and "同意" in text:
+        return "用户未同意扩大发送范围；改用已授权的数据完成，或在缺口中说明。"
+    return "先读错误原因再决定：能换参数解决就换，否则用 ask_user 询问或在 finish 的缺口中写明。"
+
+
+def _spec_summary(spec, arguments):
+    """工具摘要只用于显示；摘要函数出错时退回空文本，不能中断运行。"""
+    try:
+        return str(spec.summary(arguments) or "") if callable(spec.summary) else ""
+    except Exception:
+        return ""
 
 
 def _safe_args(arguments):

@@ -35,7 +35,7 @@ def _alive(widget):
 def _badge(parent, kind):
     """按类型画一枚圆形徽记（对勾 / 感叹号 / 叉 / i）。"""
     color, soft = _TONES.get(kind, _TONES["info"])
-    size = theme.px(parent, 26)
+    size = theme.px(parent, 20)
     canvas = tk.Canvas(parent, width=size, height=size, bg=theme.SURFACE,
                        highlightthickness=0, bd=0, takefocus=0)
     inset = max(1, size // 16)
@@ -113,7 +113,6 @@ class _MessageBox(tk.Toplevel):
         super().__init__(parent)
         self.withdraw()
         self.title(title or "")
-        self.configure(bg=theme.PAPER)
         self.resizable(False, False)
         self.result = results.get(cancel)
         self._results, self._cancel = results, cancel
@@ -123,29 +122,29 @@ class _MessageBox(tk.Toplevel):
             except tk.TclError:
                 pass
 
-        outer = tk.Frame(self, bg=theme.PAPER)
-        outer.pack(fill="both", expand=True, padx=22, pady=18)
-        tk.Label(outer, text=title or "", bg=theme.PAPER, fg=theme.INK,
-                 font=(theme.FAMILY["display"], 13, "bold"),
-                 anchor="w", justify="left").pack(fill="x")
-
-        card = theme.RoundCard(outer, pad=16)
-        card.pack(fill="both", expand=True, pady=(12, 0))
-        row = tk.Frame(card.body, bg=theme.SURFACE)
-        row.pack(fill="both", expand=True)
-        self.badge = _badge(row, kind)
-        self.badge.pack(side="left", anchor="n", padx=(0, 12))
-        self.text = tk.Label(row, text=message, bg=theme.SURFACE, fg=theme.INK,
-                             font=(theme.FAMILY["body"], 9), justify="left", anchor="w",
+        # 白底一张纸：标题只出现一次（与图标同行），正文在下，按钮靠右；不再套边框卡片。
+        surface = theme.SURFACE
+        self.configure(bg=surface)
+        outer = tk.Frame(self, bg=surface)
+        outer.pack(fill="both", expand=True, padx=24, pady=(20, 18))
+        head = tk.Frame(outer, bg=surface)
+        head.pack(fill="x")
+        self.badge = _badge(head, kind)
+        self.badge.pack(side="left", padx=(0, 10))
+        tk.Label(head, text=title or "", bg=surface, fg=theme.INK,
+                 font=(theme.FAMILY["body"], 11, "bold"), anchor="w").pack(side="left")
+        self.text = tk.Label(outer, text=message, bg=surface, fg=theme.INK_SOFT,
+                             font=(theme.FAMILY["body"], 10), justify="left", anchor="w",
                              wraplength=theme.px(self, 420))
-        self.text.pack(side="left", fill="both", expand=True)
+        self.text.pack(fill="both", expand=True, pady=(10, 0))
 
-        actions = tk.Frame(outer, bg=theme.PAPER)
-        actions.pack(fill="x", pady=(14, 0))
+        actions = tk.Frame(outer, bg=surface)
+        actions.pack(fill="x", pady=(18, 0))
         self.buttons = {}
-        styles = {"primary": "Accent.TButton", "secondary": "TButton", "ghost": "Ghost.TButton"}
+        styles = {"primary": "Accent.TButton", "secondary": "CardQuiet.TButton",
+                  "ghost": "CardQuiet.TButton"}
         for name, label, role in buttons:
-            button = ttk.Button(actions, text=label, style=styles.get(role, "TButton"),
+            button = ttk.Button(actions, text=label, style=styles.get(role, "CardQuiet.TButton"),
                                 command=lambda value=name: self.choose(value))
             # 先 pack 的在最右：主操作固定靠右，次要操作依次向左。
             button.pack(side="right", padx=(8, 0) if self.buttons else 0)

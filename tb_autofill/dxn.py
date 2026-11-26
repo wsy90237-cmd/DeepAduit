@@ -7,7 +7,6 @@ import hashlib
 import os
 from pathlib import Path
 import re
-import shutil
 import socket
 import subprocess
 import tempfile
@@ -278,6 +277,9 @@ def _present_table(schema: Path, table: str) -> bool:
     return any((schema / (table + suffix)).is_file() for suffix in (".MYD", ".myd"))
 
 
+REHASH_LIMIT = 64 * 1024 * 1024
+
+
 def validate_paper_data_source(data: PaperData) -> bool:
     """导出或发送前重验一致副本来源；来源被改动、成员变化或补入新表都判为失效。"""
     if not data.source_path or not data.source_tables or not data.source_fingerprint:
@@ -296,6 +298,10 @@ def validate_paper_data_source(data: PaperData) -> bool:
             before = path.stat()
             if (before.st_size, before.st_mtime_ns) != (size, stamp):
                 return False
+            # 大表（序时账等）逐字节重算会让导出等上几分钟；鼎信诺改写数据必然更新
+            # 大小或修改时间，且文件在上面已按只读独占方式打开，期间不会被改写。
+            if size > REHASH_LIMIT:
+                continue
             if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
                 return False
             after = path.stat()

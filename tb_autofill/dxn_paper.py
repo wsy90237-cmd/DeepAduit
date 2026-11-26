@@ -16,7 +16,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 import os
-import tempfile
+from uuid import uuid4
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -24,7 +24,7 @@ from openpyxl.utils import get_column_letter
 
 from . import audit_index, dxn_templates, paper_materials, paper_sheets, sampling
 from .paper_sheets import MONEY, NUM, TEXT
-from .models import money
+from .models import money, require_writable
 from .paper_pack import baseline_notes, default_conclusion
 
 TITLE_FONT = Font(name="宋体", size=14, bold=True)
@@ -1170,8 +1170,9 @@ def build(path, *, paper, subject_label, rows, resolve, prepared_by="", reviewed
     if evidence_rows:
         from .evidence_draft import add_sheet
         add_sheet(book, evidence_rows)
-    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".xlsx", delete=False) as stage:
-        staged = Path(stage.name)
+    require_writable(target.parent)
+    staged = target.with_name(f".attesta-{uuid4().hex}.xlsx")
+    staged.touch(exist_ok=False)
     try:
         book.save(staged)
         os.replace(staged, target)

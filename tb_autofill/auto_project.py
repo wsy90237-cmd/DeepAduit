@@ -80,6 +80,8 @@ def snapshot(store, source):
     if folder.resolve() != folder:
         raise ValueError('证据目录不能重定向。')
     folder.mkdir(exist_ok=True)
+    from .models import require_writable
+    require_writable(folder)
     temp = None
     try:
         digest = hashlib.sha256()
