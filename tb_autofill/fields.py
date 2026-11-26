@@ -39,6 +39,7 @@ class TemplateScan:
     source_digest: str = ""
     ending_periods: tuple[tuple[str, int, int], ...] = ()
     period_warning: str = ""
+    subject_names: tuple[str, ...] = ()
 
 
 UNITS = {"元": Decimal("1"), "千元": Decimal("1000"), "万元": Decimal("10000"), "亿元": Decimal("100000000")}
@@ -445,7 +446,7 @@ def scan_template(path, periods=("ending",), unit="自动"):
     drops = _heavy_auxiliary_parts(path)
     scan_copy = _projected_scan_copy(path, drops) if drops else None
     workbook = load_workbook(scan_copy or path, read_only=False, data_only=False, keep_links=True)
-    fields, warnings, ending_periods = [], [], []
+    fields, warnings, ending_periods, subject_names = [], [], [], []
     try:
         tb_periods = {sheet: period for sheet in workbook.worksheets
                       if (period := _tb_sheet_period(sheet)) is not None}
@@ -484,6 +485,14 @@ def scan_template(path, periods=("ending",), unit="自动"):
                 continue
             scan_row_limit = scan_row_limit or 1
             scan_col_limit = scan_col_limit or 1
+            for row in sheet.iter_rows(max_row=min(8, scan_row_limit), max_col=min(16, scan_col_limit)):
+                values = [_unit_text(workbook, sheet, cell.value) for cell in row if cell.value is not None]
+                for index, value in enumerate(values):
+                    match = re.match(r"^(?:编制单位|被审计单位|会计主体|公司名称)\s*[:：]?\s*(.*)$", str(value).strip())
+                    if match:
+                        name = match.group(1).strip() or (str(values[index + 1]).strip() if index + 1 < len(values) else "")
+                        if name and not re.match(r"单位|截止|期间|\d{4}", name):
+                            subject_names.append(name)
             if strict_tb and not tb_periods[sheet]:
                 warnings.append(f"{sheet.title}：合并、抵消或期间标题存在冲突，无法确认单体目标，已跳过。")
                 continue
@@ -626,4 +635,5 @@ def scan_template(path, periods=("ending",), unit="自动"):
             scan_copy.unlink(missing_ok=True)
     if file_digest(path) != before:
         raise ValueError("识别期间模板发生变化，请重新导入。")
-    return TemplateScan(path, before, fields, warnings, unit, ending_periods=tuple(ending_periods))
+    return TemplateScan(path, before, fields, warnings, unit, ending_periods=tuple(ending_periods),
+                        subject_names=tuple(dict.fromkeys(subject_names)))

@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tb_autofill import agent_tools
+from tb_autofill import agent_paths, agent_tools
 from tb_autofill.agent import AgentError, AgentRuntime, ProjectSnapshot, ToolRegistry, ToolSpec
 from tb_autofill.models import Subject
 
@@ -43,6 +43,16 @@ class InferScopeTests(unittest.TestCase):
 
     def test_phone_like_numbers_are_not_indexes(self):
         self.assertEqual(agent_ui._infer_report_indexes("电话 021-12345678"), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows 路径")
+    def test_chat_paths_are_routed_locally_and_urls_remain_text(self):
+        task, template, out = agent_paths.local_paths(
+            r'做期末 TB，模板在 "P:\项目资料\早期底稿"，结果保存到："C:\新底稿"')
+        self.assertEqual(template, Path(r"P:\项目资料\早期底稿"))
+        self.assertEqual(out, Path(r"C:\新底稿"))
+        self.assertEqual(task.count("〔本地路径〕"), 2)
+        self.assertEqual(agent_paths.local_paths("查 https://example.invalid/docs"),
+                         ("查 https://example.invalid/docs", None, None))
 
 
 def _snapshot():
@@ -105,6 +115,22 @@ class BudgetTests(unittest.TestCase):
         result = AgentRuntime(client, ToolRegistry([look, finish]), context,
                               audit=lambda *_: None).run()
         self.assertEqual(result.status, "done")
+
+    def test_limit_pauses_and_explicit_resume_uses_a_new_budget_segment(self):
+        look = ToolSpec("look", "读取", {"type": "object", "properties": {}}, "read", _noop)
+        registry = ToolRegistry([look])
+        client = _Client([{"content": "", "tool_calls": [_call("look", {}, "a")]},
+                          {"content": "已完成", "tool_calls": []}])
+        saved = []
+        result = AgentRuntime(client, registry, _snapshot().context(max_model_calls=1),
+                              save_pause=saved.append).run()
+        self.assertEqual(result.status, "needs_input")
+        self.assertEqual(saved[0]["kind"], "budget")
+        self.assertEqual(client.sent, 1)
+        result = AgentRuntime(client, registry, _snapshot().context(max_model_calls=1),
+                              save_pause=saved.append).run(saved[0], "继续任务")
+        self.assertEqual(result.status, "done")
+        self.assertEqual(client.sent, 2)
 
 
 class WorkpaperExportTests(unittest.TestCase):

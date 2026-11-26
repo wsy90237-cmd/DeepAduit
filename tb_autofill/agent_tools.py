@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 import os
 from pathlib import Path
+import re
 from tempfile import gettempdir
 
 from . import ai, audit_index, brand, dxn, dxn_paper, fields, matching, paper_pack, papers, skills, workbook
@@ -46,6 +47,37 @@ def _ensure_scan(context):
     context.scan = scan
     context.results = matching.match_fields(scan.fields, list(context.rows))
     return scan
+
+
+def check_template_identity(context):
+    """Inspect the selected workbook locally before any model request."""
+    from .agent import AgentPause
+
+    scan = _ensure_scan(context)
+    if context.snapshot.template_digest != scan.digest:
+        raise ValueError("已扫描模板与磁盘文件版本不同，请重新选择模板后复核。")
+    workbook.validate_source_context(scan, context.results, context.rows)
+    name = fields.text_key(context.subject.name).casefold()
+    declared = scan.subject_names
+    filename = scan.path.stem
+    named_company = re.search(r"(?:有限责任公司|股份有限公司|有限公司)", filename)
+    mismatch = bool(name and ((declared and any(fields.text_key(item).casefold() != name for item in declared))
+                              or (not declared and named_company and name not in fields.text_key(filename).casefold())))
+    details = []
+    if mismatch:
+        details.append("模板声明主体为「" + "、".join(declared[:3]) + "」。" if declared else
+                       f"模板文件名「{scan.path.name}」中有不同的公司名称。")
+        if declared:
+            note = "模板表头主体与账套不同，TB 副本保留原表头，出具前需更正并复核。"
+            details.append(note)
+            context.add_gap(note)
+    if scan.period_warning:
+        details.append(scan.period_warning)
+        context.add_gap(scan.period_warning)
+    if details:
+        raise AgentPause(f"当前账套是「{context.subject_label}」。{''.join(details)}"
+                         "请确认是否借用该模板的格式，按当前账套和期间继续。",
+                         ("借用格式，按当前账套继续", "更换模板", "去工作台更换账套"), kind="template")
 
 
 def _counts(results):
@@ -285,12 +317,12 @@ def _output_dir(context, *preferred):
                  if _can_write(directory)), None)
 
 
-def _unique(base, name):
+def _unique(base, name, suffix=".xlsx"):
     if base is None:
         return None
-    candidate = Path(base) / f"{name}.xlsx"
+    candidate = Path(base) / f"{name}{suffix}"
     if candidate.exists():
-        candidate = Path(base) / f"{name}-{datetime.now():%Y%m%d-%H%M%S%f}.xlsx"
+        candidate = Path(base) / f"{name}-{datetime.now():%Y%m%d-%H%M%S%f}{suffix}"
     return candidate
 
 
@@ -301,7 +333,7 @@ def _write_output(context, path, write):
     def targets():
         yield path
         for directory in _output_dirs(context):
-            yield _unique(directory, path.stem)
+            yield _unique(directory, path.stem, path.suffix)
 
     for target in targets():
         directory = target.parent
@@ -323,9 +355,9 @@ def _relocation_note(requested, saved):
 
 
 def _default_tb_path(context):
-    template_dir = Path(context.template_path).parent if context.template_path else None
-    stem = Path(context.template_path).stem if context.template_path else "TB"
-    return _unique(_output_dir(context, template_dir), f"{stem}-Attesta副本")
+    template = Path(context.template_path) if context.template_path else Path("TB.xlsx")
+    return _unique(_output_dir(context, template.parent if context.template_path else None),
+                   f"{template.stem}-Attesta副本", template.suffix or ".xlsx")
 
 
 def _tb_approval_details(context, arguments):
@@ -385,6 +417,7 @@ def export_tb_copy(context, arguments, runtime):
     except Exception as exc:
         return _error(f"Excel 写入或重算失败：{str(exc)[:300]}")
     notes = workbook.tb_balance_summary(checks, context.results) if checks else ["重算后未识别到可核验的合计。"]
+    notes += [item for item in context.gaps if item.startswith(("模板表头主体", "模板截止日期"))]
     relocated = _relocation_note(path, saved)
     if relocated:
         notes.insert(0, relocated)
@@ -507,8 +540,7 @@ def _validate_paper_data(context, data, accounts):
         raise AgentError("账套来源与本次运行已复核的科目余额不一致，请重新读取后再制作底稿。")
 
 
-def prepare_workpaper(context, arguments, runtime):
-    index_no = str(arguments.get("index_no") or "").strip()
+def read_workpaper_facts(context, index_no):
     if context.report_indexes and index_no not in context.report_indexes:
         raise AgentError("该索引不在本次已确认的报表项目中。")
     paper = audit_index.find(context.paper_library, index_no)
@@ -519,14 +551,18 @@ def prepare_workpaper(context, arguments, runtime):
     accounts, scoped = papers.report_scope(context.rows, paper, context.paper_library)
     if not accounts:
         raise AgentError("该报表项目没有可列示的一级科目")
+    data = dxn.read_paper_data(context.subject, tuple(row.code for row in accounts),
+                               context.install_path, with_journal=True)
+    _validate_paper_data(context, data, scoped)
+    if data.journal is None:
+        raise ValueError("未取得序时账，无法结合凭证生成审计说明；请先核对账套来源。")
+    return paper, data, accounts
+
+
+def prepare_workpaper(context, arguments, runtime):
+    index_no = str(arguments.get("index_no") or "").strip()
     try:
-        # 与桌面底稿一致：只把报表项目的根科目交给取数层，由它读取完整子树；
-        # 把全部明细编码传进去会被当成多个根，遇到非纯数字子编码时会误报科目编码不合法。
-        data = dxn.read_paper_data(context.subject, tuple(row.code for row in accounts),
-                                   context.install_path, with_journal=True)
-        _validate_paper_data(context, data, scoped)
-        if data.journal is None:
-            return _error("未取得序时账，无法结合凭证生成审计说明；请先核对账套来源。")
+        paper, data, accounts = read_workpaper_facts(context, index_no)
         context.spend_model_call(["workpaper", "journal", "knowledge"])
         runtime._audit("agent_model_request", source="prepare_workpaper",
                        scope=["workpaper", "journal", "knowledge"], messages=1)

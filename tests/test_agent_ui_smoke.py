@@ -321,6 +321,142 @@ class AgentUiSmokeTests(unittest.TestCase):
             for private in (self.template.name, "专属模板页", "专属待核字段", "98172365"):
                 self.assertNotIn(private, payload)
 
+    def test_local_template_question_survives_reopening_and_exports_once(self):
+        template = self.root / "TB-另一个有限公司.xlsx"
+        self.template.rename(template)
+        out = self.root / "approved-output"
+        out.mkdir()
+        local = self.root / "local"
+        client = ScriptedClient([
+            reply([tool_call("ask_user", {"question": "是否保留待核项目？", "options": ["保留", "人工复核"]}, "ask"),
+                   tool_call("get_project_context", call_id="after-ask")]),
+            reply([tool_call("export_tb_copy", call_id="export")]),
+            reply([tool_call("export_tb_copy", call_id="repeat-export")]),
+            reply([tool_call("finish", {"status": "done", "summary": "已导出"}, "finish")]),
+        ])
+        fake_store = self._fake_store()
+        starts, approvals = [], []
+
+        def settings_for(app):
+            app.store, app._pending_error = fake_store, ""
+
+        def confirm(_app, title, lines, done):
+            starts.append((title, dict(lines)))
+            done(True)
+
+        def approve(_app, request):
+            approvals.append(request.default_path)
+            return ApprovalDecision(True, request.default_path)
+
+        def wait_for(app, condition):
+            deadline = time.monotonic() + 10
+            while not condition() and time.monotonic() < deadline:
+                app.update()
+                time.sleep(0.02)
+            self.assertTrue(condition(), ascii((app.agent_state_var.get(), app.agent_result,
+                                                app.agent_chat.get("1.0", "end"))))
+
+        def open_app():
+            try:
+                app = gui.App()
+            except tk.TclError as exc:
+                self.skipTest(str(exc))
+            self.addCleanup(_dispose, app)
+            app.busy = False
+            app.rows = ledger_rows()
+            app.loaded_subject = Subject("S1", "当前企业有限公司", 2026, 12, str(self.root), ledger_id="L1")
+            workspace.navigate(app, "agent")
+            return app
+
+        self.stack.enter_context(patch.dict(os.environ, {"LOCALAPPDATA": str(local), "USERPROFILE": str(self.root)}))
+        self.stack.enter_context(patch.object(gui.App, "_load_settings", settings_for))
+        self.stack.enter_context(patch.object(gui.App, "_autodetect"))
+        self.stack.enter_context(patch.object(gui.auditlog, "AuditLog"))
+        self.stack.enter_context(patch.object(gui.knowledge, "LocalLibrary"))
+        self.stack.enter_context(patch.object(agent_ui.ai.DeepSeekClient, "from_store", return_value=client))
+        self.stack.enter_context(patch.object(agent_ui, "confirm_start", side_effect=confirm))
+        self.stack.enter_context(patch.object(agent_ui, "_ask_approval", side_effect=approve))
+
+        def write_synthetic(scan, results, output, *, rows, allow_empty, **_kwargs):
+            writes = agent_tools.workbook.planned_writes(scan, results, rows=rows, allow_empty=allow_empty)
+            book = load_workbook(scan.path)
+            try:
+                for field, amount in writes:
+                    book[field.sheet][field.cell] = amount
+                book.save(output)
+            finally:
+                book.close()
+            return output
+
+        self.stack.enter_context(patch.object(agent_tools.workbook, "write_results", side_effect=write_synthetic))
+
+        first = open_app()
+        first.agent_input.insert("1.0", f'做期末 TB，模板在 "{template}"，结果保存到："{out}"')
+        agent_ui._send(first)
+        wait_for(first, lambda: first.agent_result is not None and first.agent_question_submit is not None)
+        self.assertEqual(first.agent_result.status, "needs_input")
+        self.assertIn("另一个有限公司", first.agent_result.summary)
+        self.assertEqual(client.calls, 0)
+        self.assertIn("期末", starts[0][1]["TB 设置"])
+        pending = local / "ZSZH-TB" / "agent" / "pending"
+        first_checkpoint, = pending.glob("*.json")
+        _dispose(first)
+
+        reopened = open_app()
+        wait_for(reopened, lambda: reopened.agent_has_pending)
+        template.write_bytes(self.original_template + b"changed")
+        reopened.agent_resume_btn.invoke()
+        reopened.agent_input.insert("1.0", "借格式，按当前账套填期末")
+        agent_ui._send(reopened)
+        self.assertIn("模板内容已变化", reopened.agent_chat.get("1.0", "end"))
+        self.assertEqual(client.calls, 0)
+        template.write_bytes(self.original_template)
+
+        reopened.agent_resume_btn.invoke()
+        reopened.agent_input.insert("1.0", "借格式，按当前账套填期末")
+        agent_ui._send(reopened)
+        wait_for(reopened, lambda: reopened.agent_result is not None and reopened.agent_question_submit is not None)
+        self.assertEqual(reopened.agent_result.summary, "是否保留待核项目？")
+        self.assertEqual(client.calls, 1)
+        next_checkpoint, = pending.glob("*.json")
+        self.assertNotEqual(first_checkpoint, next_checkpoint)
+        reopened.agent_input.insert("1.0", "保留，后续人工复核。")
+        agent_ui._send(reopened)
+        wait_for(reopened, lambda: reopened.agent_result is not None and not reopened.agent_running)
+        self.assertEqual(reopened.agent_result.status, "done", reopened.agent_result.error)
+        self.assertEqual(sum(item.kind == "question" for item in reopened.agent_result.events), 2)
+        self.assertEqual(len(approvals), 1, ascii((approvals, reopened.agent_result.artifacts,
+            [(item.kind, item.detail) for item in reopened.agent_events if item.kind == "tool_result"])))
+        book_path, = out.glob("*.xlsx")
+        self.assertTrue(book_path.with_name(f"{book_path.stem}-待处理.csv").is_file())
+        book = load_workbook(book_path, read_only=True)
+        try:
+            self.assertEqual(book["期末"]["B2"].value, 100)
+        finally:
+            book.close()
+        self.assertEqual(template.read_bytes(), self.original_template)
+        self.assertFalse(list(pending.glob("*.json")))
+        messages = json.loads(client.sent[1])
+        self.assertTrue(any(item.get("tool_call_id") == "ask" and "人工复核" in item["content"] for item in messages))
+        self.assertTrue(any(item.get("tool_call_id") == "after-ask" for item in messages))
+        self.assertTrue(all(str(self.root).replace("\\", "\\\\") not in payload for payload in client.sent))
+
+        reopened.geometry("1450x660")
+        reopened.update()
+        side = reopened.agent_side_area
+        self.assertTrue(side.winfo_ismapped())
+        self.assertLess(side.canvas.yview()[1], 1.0)
+        side.canvas.yview_moveto(1.0)
+        self.assertAlmostEqual(side.canvas.yview()[1], 1.0)
+
+        reopened.geometry("1060x660")
+        reopened.update()
+        self.assertFalse(side.winfo_ismapped())
+        self.assertTrue(reopened.agent_input.winfo_ismapped())
+        reopened.agent_arrange(toggle=True)
+        reopened.update()
+        self.assertTrue(side.winfo_ismapped())
+
     def test_returning_home_shows_new_greeting_after_opening_selector(self):
         def isolated_settings(app):
             app.store = self._fake_store()

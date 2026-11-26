@@ -10,7 +10,7 @@ PRODUCT_MODULES = (
     "dxn_programs", "dxn_templates", "fields", "gui", "knowledge", "knowledge_ui", "layout", "matching",
     "models", "paper_materials", "paper_pack", "paper_sheets", "papers", "reporting", "sampling", "settings",
     "skills", "theme", "workbook", "workflow", "workspace", "netdiag",
-    "agent", "agent_tools", "agent_ui",
+    "agent", "agent_checkpoints", "agent_paths", "agent_tools", "agent_ui",
     "bank_evidence", "bank_evidence_ui", "bank_listing", "evidence_draft", "evidence_ownership", "evidence_project",
     "evidence_ui", "pdf_text",
 )

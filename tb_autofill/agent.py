@@ -38,6 +38,16 @@ class AgentCancelled(AgentError):
     """用户停止或关闭了本次运行。"""
 
 
+class AgentPause(Exception):
+    def __init__(self, question, options, *, kind="question"):
+        super().__init__(question)
+        self.question, self.options, self.kind = question, tuple(options), kind
+
+
+class AgentBudgetExceeded(AgentError):
+    pass
+
+
 class StaleContextError(AgentError):
     """项目来源在运行中发生变化，旧结果不能再写入。"""
 
@@ -81,13 +91,13 @@ class AgentBudget:
     def check(self):
         elapsed = time.monotonic() - self.started_at
         if elapsed > self.max_seconds:
-            raise AgentError("本次运行已超过时间上限，已停止；未完成部分见运行记录。")
+            raise AgentBudgetExceeded("本次运行已超过时间上限，已停止；未完成部分见运行记录。")
         if self.steps > self.max_steps:
-            raise AgentError("本次运行已达到步数上限，已停止；请拆分任务后重试。")
+            raise AgentBudgetExceeded("本次运行已达到步数上限，已停止；请拆分任务后重试。")
         if self.tool_calls > self.max_tool_calls:
-            raise AgentError("本次运行已达到工具调用上限，已停止；请拆分任务后重试。")
+            raise AgentBudgetExceeded("本次运行已达到工具调用上限，已停止；请拆分任务后重试。")
         if self.model_calls > self.max_model_calls:
-            raise AgentError("本次运行已达到模型请求上限，已停止；请拆分任务后重试。")
+            raise AgentBudgetExceeded("本次运行已达到模型请求上限，已停止；请拆分任务后重试。")
 
     def spend_step(self):
         self.steps += 1
@@ -104,7 +114,7 @@ class AgentBudget:
     def ensure_model_available(self):
         """发请求前检查：已用满上限时不再发送，避免多付一次请求后才丢弃结果。"""
         if self.model_calls >= self.max_model_calls:
-            raise AgentError("本次运行已达到模型请求上限，已停止；请拆分任务后重试。")
+            raise AgentBudgetExceeded("本次运行已达到模型请求上限，已停止；请拆分任务后重试。")
         self.check()
 
 
@@ -356,6 +366,8 @@ class ToolRegistry:
             return {"ok": False, "error": error}
         try:
             value = spec.handler(context, arguments, runtime)
+        except AgentPause:
+            raise
         except (AgentError, StaleContextError, AgentCancelled, ScopeError) as exc:
             return {"ok": False, "error": str(exc), "cancelled": isinstance(exc, AgentCancelled)}
         except Exception as exc:  # 工具层不得把栈或凭证回给模型
@@ -433,7 +445,8 @@ class AgentRuntime:
                  emit: Callable[[AgentEvent], None] | None = None,
                  approve: Callable[[ApprovalRequest], ApprovalDecision] | None = None,
                  ask_user: Callable[[str, tuple], str] | None = None,
-                 audit: Callable[[str, dict], None] | None = None):
+                 audit: Callable[[str, dict], None] | None = None,
+                 save_pause=None, preflight=None):
         self.client = client
         self.registry = registry
         self.context = context
@@ -441,6 +454,9 @@ class AgentRuntime:
         self._approve_callback = approve
         self._ask_callback = ask_user
         self._audit_callback = audit
+        self._save_pause = save_pause
+        self._preflight = preflight
+        self.pending_path = None
         self.events = []
         self._seq = 0
         self._started_at = _now()
@@ -502,10 +518,12 @@ class AgentRuntime:
         return decision.approved
 
     def _ask_user(self, question, options=()):
+        text = str(question)[:2000]
+        choices = tuple(str(item)[:200] for item in options[:6])
+        if self._save_pause is not None:
+            raise AgentPause(text, choices)
         if self._ask_callback is None:
             raise AgentError("本次运行没有可用的用户询问界面")
-        text = str(question)[:2000]
-        choices = tuple(str(item)[:200] for item in options)
         self.emit("question", "等待用户确认", text[:500], {"options": list(choices)})
         answer = self._ask_callback(text, choices)
         if answer is None:
@@ -536,6 +554,11 @@ class AgentRuntime:
         self._audit("agent_tool_call", tool=name, args=_safe_args(arguments), kind=spec.kind)
 
         if spec.kind == "write":
+            if name == "export_tb_copy" and self._artifact_ok("tb", "tb"):
+                pending = "" if self._artifact_ok("tb_pending", "tb_pending") else "待处理清单未保存。"
+                return {"ok": True, "summary": f"本次任务已生成 TB 副本，可在产物区打开。{pending}"}
+            if name == "export_workpaper" and self._artifact_ok("workpaper", arguments.get("index_no")):
+                return {"ok": True, "summary": "本次任务已生成该文件，可在产物区打开。"}
             decision = self._approve_write(spec, arguments)
             if not decision.approved:
                 self._blocked_tools.add(name)
@@ -633,7 +656,9 @@ class AgentRuntime:
             "4. 先做只读调查，再暂存 TB 来源，最后才调用写文件工具；写文件会由用户确认。"
             "用户拒绝后不要重试同一工具。写文件失败时先读错误原因，不要原样重复调用；"
             "无法自行解决时用 ask_user 说明原因。\n"
-            "5. 缺少资料时写入缺口或用 ask_user 询问，不能编造事实。\n"
+            "5. 能独立核对的先核对。只有用户的决定会影响取数或交付时才用 ask_user。"
+            "说清已核对的事实、卡在哪里、选项会影响哪些字段或步骤，同类问题尽量合并。"
+            "缺少证据可在草稿中列出缺口，不得编造事实。\n"
             "6. 知识引用只能使用本次工具返回的 [K#] 编号；不得创造编号或准则条号。\n"
             "7. 完成时调用 finish，说明完成情况、产物和未完成事项；不要用文字假装完成。"
             "能否完成由本地程序核对实际产物，不由你的文字决定。\n"
@@ -741,19 +766,57 @@ class AgentRuntime:
     def cancel(self):
         self.context.cancelled.set()
 
-    def run(self):
-        started = self._started_at
-        self.emit("run_start", "Agent 开始运行", self.context.objective or "默认审计任务",
-                  {"stages": list(self.context.stages), "project": self.context.summary()})
-        self._audit("agent_run_start", objective=self.context.objective,
-                    stages=list(self.context.stages), subject=self.context.subject_label,
-                    model=getattr(self.client, "model", ""), base_url=getattr(self.client, "base_url", ""))
-        self._messages = [{"role": "system", "content": self._system_prompt()},
-                          {"role": "user", "content": self._user_prompt()}]
+    def run(self, continuation=None, answer=""):
+        calls = []
+        active_call = None
         try:
+            if continuation is None:
+                self.emit("run_start", "Agent 开始运行", self.context.objective or "默认审计任务",
+                          {"stages": list(self.context.stages), "project": self.context.summary()})
+                self._audit("agent_run_start", objective=self.context.objective,
+                            stages=list(self.context.stages), subject=self.context.subject_label,
+                            model=getattr(self.client, "model", ""), base_url=getattr(self.client, "base_url", ""))
+                if self._preflight is not None:
+                    self.context.ensure_current()
+                    self._preflight()
+                self._messages = self._initial_messages()
+            else:
+                self._messages = continuation["messages"]
+                self._started_at = continuation["started_at"]
+                self._seq = continuation["sequence"]
+                self.events = [AgentEvent(**event) for event in continuation.get("events", ())]
+                self._blocked_tools.update(continuation["blocked_tools"])
+                self._call_history = [tuple(item) for item in continuation["call_history"]]
+                self._failures = {(name, error): count for name, error, count in continuation["failures"]}
+                calls = list(continuation["calls"])
+                if continuation["kind"] != "budget":
+                    elapsed, steps, tools, models = continuation["budget"]
+                    self.context.budget.started_at -= elapsed
+                    self.context.budget.steps, self.context.budget.tool_calls = steps, tools
+                    self.context.budget.model_calls = models
+                if continuation["kind"] == "question":
+                    self._append_tool_result(continuation["call_id"], {"ok": True,
+                                             "summary": "用户已答复。", "data": {"answer": answer}})
+                self.emit("answer", "收到答复，继续任务", answer)
+                self._audit("agent_run_resumed", kind=continuation["kind"],
+                            question=continuation["question"], answer=answer)
             while True:
                 self.context.check_cancel()
                 self.context.ensure_current()
+                if calls:
+                    active_call = calls.pop(0)
+                    if active_call.get("name") == "finish":
+                        spec = self.registry.get("finish")
+                        problem = (_validate_arguments(spec.parameters, active_call.get("arguments") or {})
+                                   if spec is not None else "finish 未注册")
+                        if not problem:
+                            return self._finish(active_call)
+                        result = {"ok": False, "error": problem}
+                    else:
+                        result = self._execute(active_call)
+                    self._append_tool_result(active_call.get("id"), result)
+                    active_call = None
+                    continue
                 self.context.budget.spend_step()
                 self.context.budget.ensure_model_available()
                 self.emit("thinking", "思考中")
@@ -774,7 +837,7 @@ class AgentRuntime:
                            "scope": sorted(self.context.allowed_scope)})
                 self._audit("agent_model_request", messages=len(self._messages), chars=chars,
                             scope=sorted(self.context.allowed_scope))
-                calls = reply.get("tool_calls") or []
+                calls = list(reply.get("tool_calls") or [])
                 thought = str(reply.get("content") or "").strip()
                 if calls and thought:
                     # 模型在调用工具前写的判断，原样显示给用户（只作说明，不作事实来源）。
@@ -783,22 +846,36 @@ class AgentRuntime:
                     assistant = {"role": "assistant", "content": reply.get("content") or "",
                                  "tool_calls": [call.get("raw") for call in calls]}
                     self._messages.append(assistant)
-                    for call in calls:
-                        if call.get("name") == "finish":
-                            spec = self.registry.get("finish")
-                            problem = (_validate_arguments(spec.parameters, call.get("arguments") or {})
-                                       if spec is not None else "finish 未注册")
-                            if problem:
-                                self._append_tool_result(call.get("id"), {"ok": False, "error": problem})
-                                continue
-                            return self._finish(call)
-                        result = self._execute(call)
-                        self._append_tool_result(call.get("id"), result)
                     continue
                 content = str(reply.get("content") or "").strip()
                 if not content:
                     raise AgentError("模型没有返回可用内容，本次运行已停止。")
                 return self._finalize("done", content[:MAX_FINAL_CHARS])
+        except (AgentPause, AgentBudgetExceeded) as exc:
+            if self._save_pause is None:
+                return self._run_error(exc)
+            if isinstance(exc, AgentBudgetExceeded):
+                exc = AgentPause(f"{str(exc).split('；')[0].rstrip('。')}。要继续本次任务吗？",
+                                 ("继续任务",), kind="budget")
+                if active_call is not None:
+                    calls.insert(0, active_call)
+            budget = self.context.budget
+            self.emit("question", "等待你回答", exc.question, {"options": list(exc.options)})
+            state = {"question": exc.question, "options": list(exc.options), "kind": exc.kind,
+                     "call_id": active_call.get("id") if active_call else None, "calls": calls,
+                     "messages": self._messages or self._initial_messages(),
+                     "started_at": self._started_at, "sequence": self._seq,
+                     "events": [event.as_dict() for event in self.events],
+                     "blocked_tools": sorted(self._blocked_tools), "call_history": self._call_history,
+                     "failures": [[name, error, count] for (name, error), count in self._failures.items()],
+                     "budget": [time.monotonic() - budget.started_at, budget.steps, budget.tool_calls,
+                                budget.model_calls]}
+            try:
+                self.pending_path = self._save_pause(state)
+            except (OSError, ValueError, AgentError) as err:
+                return self._run_error(AgentError(f"无法保存任务进度：{err}"))
+            self._audit("agent_run_paused", kind=exc.kind, question=exc.question)
+            return self._result("needs_input", exc.question, "")
         except AgentCancelled as exc:
             self.emit("run_end", "已停止", str(exc))
             self._audit("agent_run_end", status="cancelled", error=str(exc))
@@ -808,14 +885,21 @@ class AgentRuntime:
             self._audit("agent_run_end", status="stale", error=str(exc))
             return self._result("stale", "来源已变化，本次运行停止。", str(exc))
         except (AgentError, AIError) as exc:
-            self.emit("run_end", "运行未完成", str(exc))
-            self._audit("agent_run_end", status="error", error=str(exc))
-            return self._result("error", "本次运行未完成。", str(exc))
+            return self._run_error(exc)
         except Exception as exc:
             self.emit("run_end", "运行失败", f"{type(exc).__name__}")
             self._audit("agent_run_end", status="error", error=type(exc).__name__)
             return self._result("error", "本次运行失败，未完成部分见运行记录。",
                                 f"{type(exc).__name__}: {exc}"[:500])
+
+    def _run_error(self, exc):
+        self.emit("run_end", "运行未完成", str(exc))
+        self._audit("agent_run_end", status="error", error=str(exc))
+        return self._result("error", "本次运行未完成。", str(exc))
+
+    def _initial_messages(self):
+        return [{"role": "system", "content": self._system_prompt()},
+                {"role": "user", "content": self._user_prompt()}]
 
 
 def recovery_hint(tool, error, *, repeated=False):

@@ -19,7 +19,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 from . import agent as agent_module
-from . import agent_tools, ai, audit_index, brand, fields, settings, theme, workspace
+from . import agent_checkpoints, agent_paths, agent_tools, ai, audit_index, brand, fields, layout, settings, theme, workspace
 from . import dialogs as messagebox
 from .models import ledger_digest
 
@@ -63,19 +63,25 @@ def build(app):
     app.agent_context = None
     app.agent_audit_error = ""
     app.agent_paper_request = None
+    app.agent_question_submit = None
     app.agent_context_var = tk.StringVar(value="尚未读取账套")
     app.agent_state_var = tk.StringVar(value="尚未开始")
 
     main = tk.Frame(page, bg=BG)
     main.grid(row=0, column=0, rowspan=2, columnspan=2, sticky="nsew", padx=32, pady=(0, 20))
     page.rowconfigure(0, weight=1)
-    main.columnconfigure(0, weight=1, minsize=theme.px(app, 420))
-    main.columnconfigure(1, weight=0, minsize=theme.px(app, 300))
-    main.rowconfigure(0, weight=1)
+    main.columnconfigure(0, weight=1)
+    main.rowconfigure(1, weight=1)
+    controls = tk.Frame(main, bg=BG)
+    controls.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+    controls.grid_remove()
+    app.agent_resume_btn = ttk.Button(controls, text="继续待办任务", style="Quiet.TButton",
+                                      command=lambda: _pick_pending(app))
+    details_btn = ttk.Button(controls, text="任务详情", style="Quiet.TButton")
 
     # ---- 对话：用户消息是浅底块，Agent 回复是正文，工具过程是一行灰字 ----
     chat = tk.Frame(main, bg=BG)
-    chat.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
+    chat.grid(row=1, column=0, sticky="nsew", padx=(0, 20))
     chat.rowconfigure(0, weight=1)
     chat.columnconfigure(0, weight=1)
     app.agent_chat = tk.Text(chat, state="disabled", wrap="word", relief="flat", borderwidth=0,
@@ -142,10 +148,46 @@ def build(app):
     app.agent_stop_btn.pack(side="right", padx=6)
 
     # ---- 右侧：本次运行 ----
-    side = tk.Frame(main, bg=BG)
-    side.grid(row=0, column=1, sticky="nsew")
-    side.columnconfigure(0, weight=1)
-    side.rowconfigure(3, weight=1)
+    side_area = layout.scroll_host(main, bg=BG)
+    side_area.canvas.configure(width=theme.px(app, 320), height=1)
+    side_area.grid(row=1, column=1, sticky="nsew")
+    app.agent_side_area = side_area
+    side = side_area.body
+    compact_details = False
+
+    def arrange(_event=None, *, show_chat=False, toggle=False):
+        nonlocal compact_details
+        compact = main.winfo_width() < theme.px(app, 790)
+        if show_chat or not compact:
+            compact_details = False
+        elif toggle:
+            compact_details = not compact_details
+        has_pending = bool(getattr(app, "agent_has_pending", False))
+        if compact or has_pending:
+            controls.grid()
+        else:
+            controls.grid_remove()
+        if has_pending:
+            app.agent_resume_btn.pack(side="left")
+        else:
+            app.agent_resume_btn.pack_forget()
+        if compact:
+            details_btn.configure(text="返回对话" if compact_details else "任务详情")
+            details_btn.pack(side="right")
+            if compact_details:
+                chat.grid_remove()
+                side_area.grid(row=1, column=0, sticky="nsew")
+            else:
+                side_area.grid_remove()
+                chat.grid(padx=0)
+        else:
+            details_btn.pack_forget()
+            chat.grid(padx=(0, 20))
+            side_area.grid(row=1, column=1, sticky="nsew")
+
+    details_btn.configure(command=lambda: arrange(toggle=True))
+    main.bind("<Configure>", arrange, add="+")
+    app.agent_arrange = arrange
 
     def panel(row, title):
         card = tk.Frame(side, bg=CARD, highlightbackground=BORDER, highlightthickness=1, bd=0)
@@ -170,7 +212,7 @@ def build(app):
         meter.pack(fill="x", pady=(0, 8))
         app.agent_meters[key] = meter
 
-    art = panel(3, "产物")
+    art = panel(2, "产物")
     art.rowconfigure(0, weight=1)
     art.columnconfigure(0, weight=1)
     app.agent_artifacts = ttk.Treeview(art, columns=("kind", "name"), show="tree", height=4)
@@ -190,10 +232,10 @@ def build(app):
                                         command=lambda: reexport(app), state="disabled")
     app.agent_reexport_btn.pack(side="left")
 
-    gaps = panel(4, "缺口")
-    app.agent_gaps = tk.Text(gaps, height=4, width=1, state="disabled", wrap="word", relief="flat", bd=0,
-                             bg=CARD, fg=TX, font=theme.font(9), padx=0, pady=0, highlightthickness=0)
+    gaps = panel(3, "缺口")
+    app.agent_gaps = _label(gaps, "无", fg=TX, wrap=theme.px(app, 250))
     app.agent_gaps.pack(fill="x")
+    gaps.bind("<Configure>", lambda event: app.agent_gaps.configure(wraplength=max(1, event.width)), add="+")
     _reset_meters(app)
     _render_scope(app)
     refresh(app)
@@ -428,7 +470,7 @@ def suggest(app, text):
     app.agent_input.focus_set()
 
 
-def _open_tb_template(app, objective=""):
+def _open_tb_template(app, objective="", *, output=None):
     if app.busy or app.agent_running:
         return
     subject = app.loaded_subject
@@ -501,7 +543,7 @@ def _open_tb_template(app, objective=""):
                 variable.set(value)
         window.destroy()
         if objective:
-            start(app, objective)
+            start(app, objective, local_output=output)
         else:
             app.agent_input.focus_set()
 
@@ -534,10 +576,7 @@ def _show_welcome(app):
 def _set_gaps(app, gaps):
     if not hasattr(app, "agent_gaps"):
         return
-    app.agent_gaps.configure(state="normal")
-    app.agent_gaps.delete("1.0", "end")
-    app.agent_gaps.insert("1.0", "\n".join(f"· {item}" for item in gaps) or "无")
-    app.agent_gaps.configure(state="disabled")
+    app.agent_gaps.configure(text="\n".join(f"· {item}" for item in gaps) or "无")
 
 
 def _on_send_key(event):
@@ -552,6 +591,13 @@ def _send(app):
         return
     text = app.agent_input.get("1.0", "end").strip()
     if not text:
+        return
+    respond = getattr(app, "agent_question_submit", None)
+    if respond is not None:
+        app.agent_input.delete("1.0", "end")
+        respond(text)
+        return
+    if getattr(app, "agent_prompt_active", None) is not None:
         return
     _append_message(app, "me", text)
     app.agent_input.delete("1.0", "end")
@@ -617,7 +663,7 @@ def _requested_period(text):
     exclusive = re.search(r"(?:仅|只)(?:需|要)?(?:填(?:写|列)?|复核|核对)?\s*(期初|期末)", text)
     if exclusive:
         return "opening" if exclusive.group(1) == "期初" else "ending"
-    matches = set(re.findall(r"(?:填(?:写|列)?|复核|核对)\s*(期初|期末)", text))
+    matches = set(re.findall(r"(?:填(?:写|列)?|复核|核对|做|制作|生成)\s*(期初|期末)", text))
     if len(matches) == 2:
         return "both"
     return "opening" if "期初" in matches else "ending" if "期末" in matches else ""
@@ -664,12 +710,14 @@ def refresh(app):
                                      state="normal" if has_ledger and not app.busy else "disabled")
     app.agent_review_btn.configure(state="normal" if app.scan is not None and not app.busy else "disabled")
     if subject is None:
+        _refresh_pending(app)
         app.agent_context_var.set("请先在「工作台」读取科目余额。")
         return
     template = Path(app.template_var.get().strip()).name if app.template_var.get().strip() else "未选模板"
     state = "已配置" if getattr(app, "store", None) and app.store.has_key and app.store.data.get("ai_enabled") else "未启用模型"
     app.agent_context_var.set(f"{getattr(subject, 'name', '')} · {subject.year}-{subject.month:02d} · "
                               f"{template} · {state}")
+    _refresh_pending(app)
 
 
 def _results_digest(results):
@@ -729,7 +777,8 @@ def _manifest_lines(snapshot, stages, scope, client, config, indexes=()):
     host = str(client.base_url).replace("https://", "").replace("http://", "").rstrip("/")
     lines = (
         ("发送到", f"{host} · {client.model}"),
-        ("发送内容", "任务文字、主体与期间；" + "；".join(counts[key] for key in counts if key in scope)),
+        ("发送内容", ("已核对的任务上下文、你的回复、" if config.get("resuming") else "任务文字、") +
+         "主体与期间；" + "；".join(counts[key] for key in counts if key in scope)),
         ("不发送", "完整工作簿、原始数据库、API Key、未选中的客户资料"),
         ("交付物", f"{deliverables} · 写入前选择保存位置" if deliverables else "在对话中回答"),
         ("上限", f"{config['max_model_calls']} 次模型请求 · {config['max_tool_calls']} 次工具 · 15 分钟"),
@@ -738,10 +787,12 @@ def _manifest_lines(snapshot, stages, scope, client, config, indexes=()):
     if "tb" in stages:
         period = "、".join("期初" if item == "opening" else "期末" for item in snapshot.periods)
         lines = (*lines[:4], ("TB 设置", f"{Path(snapshot.template_path).name} · {period} · 单位{snapshot.unit}"), *lines[4:])
+    if config.get("output_dir"):
+        lines = (*lines[:4], ("首选保存目录", config["output_dir"]), *lines[4:])
     return lines
 
 
-def start(app, objective):
+def start(app, objective, *, local_output=None):
     if app.busy or app.agent_running:
         _append_message(app, "sys", "当前任务尚未完成，请先停止或等待。")
         return
@@ -750,6 +801,14 @@ def start(app, objective):
         return
     if not app.rows or app.loaded_subject is None:
         _append_message(app, "agent", "还没有读取账套。请先在工作台读取科目余额。")
+        return
+    try:
+        objective, source, output = agent_paths.local_paths(objective)
+        output = output or local_output
+        if output is not None and (output.is_file() or output.suffix.lower() in {".xlsx", ".xlsm"}):
+            raise ValueError("请在聊天中指定保存目录。文件名可在导出确认时填写。")
+    except (OSError, ValueError) as exc:
+        _append_message(app, "warning", str(exc))
         return
     stages, indexes = _infer_request(objective, app.paper_library)
     if "papers" in stages:
@@ -763,18 +822,55 @@ def start(app, objective):
             _append_message(app, "agent", f"找不到报表项目 {'、'.join(missing)}。请核对索引后再发送。")
             app.agent_state_var.set("需要核对报表项目")
             return
+    if source is not None:
+        if "tb" not in stages and "papers" not in stages:
+            _append_message(app, "agent", "请说明要用这个路径制作 TB、复核 TB，还是制作哪一册底稿。")
+            return
+        try:
+            candidates = agent_paths.template_candidates(source)
+        except (OSError, ValueError) as exc:
+            _append_message(app, "warning", f"无法读取指定模板位置：{exc}")
+            return
+        if len(candidates) > 1:
+            def chosen(value):
+                if not value:
+                    return
+                selected = next((item for item in candidates if item.name.casefold() == value.casefold()), None)
+                if selected is None:
+                    _append_message(app, "warning", "请填写该目录内工作簿的完整文件名。")
+                    prompt_question(app, question, options, chosen)
+                else:
+                    _start_with_template(app, objective, stages, indexes, selected, output)
+
+            question = f"指定目录内有 {len(candidates)} 个工作簿。这次用哪一个？也可以填写完整文件名。"
+            options = tuple(item.name for item in candidates[:6])
+            prompt_question(app, question, options, chosen)
+            return
+        _start_with_template(app, objective, stages, indexes, candidates[0], output)
+        return
+    _start_with_template(app, objective, stages, indexes, None, output)
+
+
+def _start_with_template(app, objective, stages, indexes, selected, output):
+    if selected is not None:
+        app.agent_template_subject = app.loaded_subject
+        app.template_var.set(str(selected))
+        _append_message(app, "sys", f"已选用本地模板：{selected.name}")
     template = app.template_var.get().strip()
     has_template = bool(template and Path(template).is_file())
     if "tb" in stages and not has_template:
         app.agent_state_var.set("等待选择 TB 模板")
-        _open_tb_template(app, objective)
+        _open_tb_template(app, objective, output=output)
         return
     if "tb" in stages:
         period = _requested_period(objective)
         if period and period != app.period_var.get():
             app.period_var.set(period)
     scope = {"ledger", "knowledge"}
-    if has_template and ("tb" in stages or (not stages and re.search(r"\bTB\b|试算|审定表", objective, re.I))):
+    tb_mentioned = re.search(r"\bTB\b|试算|审定表", objective, re.I)
+    tb_excluded = re.search(r"(?:暂不|不要|不需要|不用|别|不)\s*(?:做|用|检查|复核|核对)?\s*"
+                            r"(?:TB\b|试算|审定表|模板)", objective, re.I)
+    if has_template and ("tb" in stages or (("papers" in stages or tb_mentioned) and not tb_excluded)):
         scope.add("tb")
     if "papers" in stages:
         scope.update({"journal", "workpaper"})
@@ -785,7 +881,8 @@ def start(app, objective):
         _append_message(app, "agent", str(exc))
         return
     config = {"objective": objective, "stages": stages, "report_indexes": indexes,
-              "max_steps": 20, "max_tool_calls": 40, "max_model_calls": 12}
+              "max_steps": 20, "max_tool_calls": 40, "max_model_calls": 12,
+              "output_dir": str(output) if output else ""}
     app.agent_state_var.set("等待你确认开始")
 
     def decided(ok):
@@ -804,7 +901,120 @@ def start(app, objective):
                   decided)
 
 
-def _launch(app, snapshot, client, stages, scope, objective, indexes, config):
+def _refresh_pending(app):
+    if not hasattr(app, "agent_resume_btn"):
+        return
+    subject = getattr(app, "loaded_subject", None)
+    app.agent_has_pending = bool(subject and next(agent_checkpoints.pending_for(subject), None))
+    app.agent_resume_btn.configure(state="disabled" if app.busy or app.agent_running else "normal")
+    app.agent_arrange()
+
+
+def _pick_pending(app):
+    if app.busy or app.agent_running or app.agent_prompt_active is not None or app.loaded_subject is None:
+        return
+    pending = list(agent_checkpoints.pending_for(app.loaded_subject))
+    if not pending:
+        _refresh_pending(app)
+        return
+    if len(pending) == 1:
+        _present_pending(app, *pending[0])
+        return
+    options = {f"{index} · {record['config']['objective'][:50]}": (path, record)
+               for index, (path, record) in enumerate(pending[:6], 1)}
+
+    def choose(value):
+        selected = options.get(value)
+        if selected:
+            _present_pending(app, *selected)
+
+    prompt_question(app, "要继续哪一个待办任务？", tuple(options), choose)
+
+
+def _present_pending(app, path, record):
+    state = record["state"]
+    app.agent_state_var.set("等待你回答 · 进度已保存")
+
+    def answered(answer):
+        if not answer:
+            return
+        if len(answer) > 2000:
+            _append_message(app, "warning", "请将答复控制在 2000 字以内。")
+            _present_pending(app, path, record)
+            return
+        if state["kind"] == "template":
+            if answer in {"更换模板", "更换账套", "去工作台更换账套"}:
+                _append_message(app, "agent", "请选择正确的账套或发送新的模板路径，再开始该任务。旧进度仍可在待办中查看。")
+                if answer != "更换模板":
+                    workspace.navigate(app, "tb")
+                else:
+                    suggest(app, record["config"]["objective"].replace("〔本地路径〕", "").strip())
+                return
+            if answer not in state["options"] and not re.fullmatch(
+                    r"(?:确认)?借(?:用)?(?:模板)?格式[，,\s]*(?:(?:按|用)当前账套(?:继续|填(?:写|列)?(?:期初|期末)?)?)?[。.]?", answer):
+                _append_message(app, "warning", "请确认是否借用格式，并按当前账套继续。")
+                _present_pending(app, path, record)
+                return
+            requested = _requested_period(answer)
+            if requested and record["identity"]["periods"] != (["opening", "ending"] if requested == "both" else [requested]):
+                _append_message(app, "warning", "你的答复改变了填列期间。请带上模板路径和新期间重新发起任务。")
+                return
+        if state["kind"] == "budget" and not re.fullmatch(r"(?:确认)?继续(?:本次)?(?:任务)?[。.]?", answer):
+            _append_message(app, "warning", "如需批准下一段模型预算，请选择「继续任务」。")
+            _present_pending(app, path, record)
+            return
+        _resume_pending(app, path, record, answer)
+
+    prompt_question(app, state["question"], state["options"], answered, cancel_text="稍后处理")
+
+
+def _resume_pending(app, path, record, answer):
+    if app.busy or app.agent_running:
+        return
+    identity, config = record["identity"], record["config"]
+    if app.loaded_subject is None or dataclasses.asdict(app.loaded_subject) != identity["subject"]:
+        _append_message(app, "warning", "请先在工作台读取该任务的账套与期间，再继续。")
+        return
+    try:
+        if ledger_digest(app.rows) != identity["ledger_digest"]:
+            raise ValueError("待办任务的账套余额已变化，请重新复核后发起任务。")
+        raw_template = app.template_var.get().strip()
+        if raw_template and Path(raw_template) != Path(identity["template"]):
+            raise ValueError("当前选择了不同的模板，请重新选回待办任务的模板，或发起新任务。")
+        if app.results and _results_digest(app.results) != record["initial_results_digest"]:
+            raise ValueError("当前 TB 已重新复核，请重新发起任务以使用新结果。")
+        template = identity["template"]
+        if template and fields.file_digest(template) != identity["template_digest"]:
+            raise ValueError("待办任务的模板内容已变化，请重新核对后发起任务。")
+        client = ai.DeepSeekClient.from_store(app.store)
+        app.agent_template_subject = app.loaded_subject if template else None
+        periods = identity["periods"]
+        for variable, value in ((app.template_var, template), (app.unit_var, identity["unit"]),
+                                (app.period_var, "both" if len(periods) == 2 else periods[0])):
+            if variable.get() != value:
+                variable.set(value)
+        snapshot = _snapshot(app)
+    except (OSError, ValueError, AttributeError, ai.AIError, settings.SettingsError) as exc:
+        _append_message(app, "warning", f"当前无法继续待办任务：{exc}")
+        return
+    stages, indexes, scope = config["stages"], config["report_indexes"], set(record["scope"])
+    answer = agent_paths.without_paths(answer)
+    _append_message(app, "me", answer)
+
+    def decided(ok):
+        if not ok:
+            return
+        if snapshot.revision() != _current_fingerprint(app):
+            _append_message(app, "warning", "账套、模板或 TB 已变化。请重新打开待办核对。")
+            return
+        _launch(app, snapshot, client, stages, scope, config["objective"], indexes, config,
+                continuation=(path, record, answer))
+
+    preview = dict(config, resuming=True)
+    confirm_start(app, "继续审计任务", _manifest_lines(snapshot, stages, scope, client, preview, indexes), decided)
+
+
+def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *, continuation=None):
     if app.busy or app.agent_running:
         return
     evidence_rows = {}
@@ -825,6 +1035,7 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config):
 
     context = snapshot.context(
         objective=objective, stages=stages, report_indexes=indexes,
+        output_dir=config.get("output_dir", ""),
         allowed_scope=scope, current_fingerprint=current_fingerprint,
         evidence_rows=evidence_rows,
         max_steps=config["max_steps"], max_tool_calls=config["max_tool_calls"],
@@ -834,6 +1045,7 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config):
     app.agent_context = context
     app.agent_result = None
     app.agent_events = []
+    app.agent_audit_error = ""
     _render_scope(app, scope)
     _reset_meters(app, context)
     app.agent_running = True
@@ -851,15 +1063,16 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config):
         if current_run():
             _on_event(app, event)
 
+    run_id = continuation[1]["run_id"] if continuation else datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     runtime = agent_module.AgentRuntime(
         client, agent_tools.build_registry(include_papers="papers" in stages,
                                            include_tb="tb" in scope, write_tb="tb" in stages), context,
         emit=lambda event: app._post(lambda: show_event(event)),
         approve=lambda request: _ask_approval(app, request) if current_run() else agent_module.ApprovalDecision(False),
-        ask_user=lambda question, options: _ask_question(app, question, options) if current_run() else None,
-        audit=lambda event, payload: _audit(app, event, payload))
+        audit=lambda event, payload: _audit(app, event, {**payload, "run_id": run_id}),
+        save_pause=lambda state: agent_checkpoints.save(run_id, config, context, state),
+        preflight=(lambda: agent_tools.check_template_identity(context)) if "tb" in scope and stages else None)
     app.agent_runtime = runtime
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     app.agent_run_id = run_id
     app.agent_run_record = None
     app.after(1000, lambda: _tick(app, runtime))
@@ -867,7 +1080,16 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config):
 
     def work():
         try:
-            result = runtime.run()
+            if continuation:
+                path, record, answer = continuation
+                agent_checkpoints.restore(path, record, context)
+                result = runtime.run(record["state"], answer)
+            else:
+                result = runtime.run()
+        except agent_module.StaleContextError as exc:
+            result = runtime._result("stale", str(exc), str(exc))
+        except (OSError, ValueError, KeyError) as exc:
+            result = runtime._result("error", "无法读取待办任务进度。", str(exc))
         except Exception as exc:
             result = agent_module.AgentRunResult(
                 status="error", summary="本次运行失败，未完成部分见运行记录。",
@@ -995,7 +1217,7 @@ def _audit(app, event, payload):
 
 
 def _save_run_record(app, result, config, run_id):
-    base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ZSZH-TB" / "agent" / "runs"
+    base = agent_checkpoints.data_dir() / "runs"
     try:
         base.mkdir(parents=True, exist_ok=True)
         target = base / f"{run_id}.json"
@@ -1007,7 +1229,8 @@ def _save_run_record(app, result, config, run_id):
 
 
 def _finish(app, runtime, result, context, config, run_id):
-    record = _save_run_record(app, result, config, run_id)
+    paused = getattr(result, "status", None) == "needs_input"
+    record = None if paused else _save_run_record(app, result, config, run_id)
     same_source = app._context_revision == context.snapshot.app_revision
     if app.agent_runtime is not runtime:
         if not app.agent_running and app.agent_context is context and same_source:
@@ -1024,6 +1247,7 @@ def _finish(app, runtime, result, context, config, run_id):
     app.agent_running = False
     app.agent_start_btn.configure(state="normal")
     app.agent_stop_btn.configure(state="disabled")
+    _refresh_pending(app)
     if not same_source:
         app.agent_context = app.agent_result = None
         app.agent_artifacts.delete(*app.agent_artifacts.get_children())
@@ -1047,7 +1271,26 @@ def _finish(app, runtime, result, context, config, run_id):
         _sync_empty(app, bool(result.artifacts))
     _update_meters(app, context)
     _sync_reexport(app)
-    _set_gaps(app, result.gaps)
+    gaps = list(result.gaps)
+    if context.scan is not None and result.status in {"needs_input", "error", "partial", "done"}:
+        remaining = agent_tools._pending(context, 1)[1]
+        if remaining:
+            gaps.append(f"TB 有 {remaining} 个字段待复核。")
+    if not gaps and result.status in {"error", "needs_input"}:
+        gaps.append("任务尚未完成全部核对。")
+    _set_gaps(app, gaps)
+    if paused:
+        path = runtime.pending_path
+        try:
+            waiting = agent_checkpoints.load(path)
+            _append_message(app, "sys", "任务已暂停，进度保存在本机。重新打开 Attesta 并读取同一账套后也可继续。")
+            if getattr(app, "agent_audit_error", ""):
+                _append_message(app, "warning", "审计日志写入失败，请核对本机日志。")
+            _present_pending(app, path, waiting)
+        except (OSError, ValueError, KeyError) as exc:
+            app.agent_state_var.set("待办进度不可读")
+            _append_message(app, "warning", f"无法打开待办任务：{exc}")
+        return
     note = f"已保存运行记录：{record}" if record else "运行记录未保存"
     if getattr(app, "agent_audit_error", ""):
         note += "；审计日志写入失败，请核对本机日志"
@@ -1058,10 +1301,13 @@ def _finish(app, runtime, result, context, config, run_id):
             context.revision_at_start = _current_fingerprint(app)
             app.scan_state.set(f"{len(app.results)} 个字段 · {context.scan.unit}")
             app._refresh_tree()
-    state = {"done": "已完成", "partial": "部分完成", "cancelled": "已停止",
-             "stale": "来源已变化", "blocked": "受阻", "needs_input": "等待确认"}.get(result.status, result.status)
+    state = {"done": "已完成", "partial": "部分完成", "cancelled": "已停止", "error": "执行中断",
+             "stale": "来源已变化", "blocked": "受阻"}.get(result.status, result.status)
     # 右侧只放一句状态；完整答复只在对话里出现一次，正文不整段标红。
-    app.agent_state_var.set(state + (f" · 缺口 {len(result.gaps)} 项" if result.gaps else ""))
+    state_label = "底稿草稿已导出" if any(item.get("kind") == "workpaper" for item in result.artifacts) else state
+    if "tb" in config.get("stages", ()) and any(item.get("kind") == "tb" for item in result.artifacts):
+        state_label += " · TB 副本已导出"
+    app.agent_state_var.set(state_label + (f" · 缺口 {len(gaps)} 项" if gaps else ""))
     if result.status != "done":
         headline = "；".join(result.gaps[:3]) or (result.error or "")
         _append_message(app, "warning", f"{state}" + (f"：{headline}" if headline else ""))
@@ -1110,35 +1356,6 @@ def _ask_approval(app, request):
         _untrack(app, pending)
 
 
-def _ask_question(app, question, options):
-    pending = {"event": threading.Event(), "answer": None}
-    _track(app, pending)
-
-    def done(answer):
-        pending["answer"] = answer
-        pending["event"].set()
-
-    def show():
-        if pending["event"].is_set():
-            return
-        try:
-            app.agent_state_var.set("等待你回答")
-            _append_message(app, "agent", question)
-            prompt_question(app, question, options, done)
-        except Exception as exc:
-            _append_message(app, "warning", f"提问面板无法显示：{type(exc).__name__}: {exc}"[:300])
-            done(None)
-
-    app._post(show)
-    try:
-        if not pending["event"].wait(600):
-            app._post(lambda: _dismiss_prompt(app))
-            return None
-        return pending["answer"]
-    finally:
-        _untrack(app, pending)
-
-
 # ---------- 对话页内的确认/提问面板 ----------
 
 def _enqueue_prompt(app, render):
@@ -1156,6 +1373,7 @@ def _close_prompt(app):
         child.destroy()
     panel.grid_remove()
     app.agent_prompt_active = None
+    app.agent_question_submit = None
     if app.agent_prompt_queue:
         render = app.agent_prompt_queue.pop(0)
         app.agent_prompt_active = render
@@ -1176,6 +1394,9 @@ def _open_prompt(app):
     for child in panel.winfo_children():
         child.destroy()
     panel.grid()
+    arrange = getattr(app, "agent_arrange", None)
+    if arrange is not None:
+        arrange(show_chat=True)
     try:
         if getattr(app, "active_page", "agent") != "agent":
             workspace.navigate(app, "agent")
@@ -1184,9 +1405,35 @@ def _open_prompt(app):
         app.bell()
     except tk.TclError:
         pass
-    body = tk.Frame(panel, bg=CARD)
-    body.pack(fill="x", padx=16, pady=12)
-    return body
+    if arrange is None:
+        body = tk.Frame(panel, bg=CARD)
+        body.pack(fill="x", padx=16, pady=12)
+        return body
+
+    area = layout.scroll_host(panel, bg=CARD)
+    area.canvas.configure(width=1, height=1)
+    area.pack(fill="x", padx=16, pady=12)
+    outer = panel.master
+
+    def fit(_event=None):
+        limit = min(theme.px(app, 360), max(theme.px(app, 120), int(outer.winfo_height() * 0.54)))
+        area.canvas.configure(height=min(limit, area.body.winfo_reqheight()))
+
+    def wrap(event):
+        for child in area.body.winfo_children():
+            columns = child.winfo_children() if child.winfo_class() == "Frame" else (child,)
+            for widget in columns:
+                if widget.winfo_class() == "Label" and int(widget.cget("wraplength")):
+                    offset = 120 if widget.winfo_manager() == "grid" else 0
+                    widget.configure(wraplength=max(50, event.width - theme.px(app, offset)))
+
+    area.body.bind("<Configure>", fit, add="+")
+    area.canvas.bind("<Configure>", wrap, add="+")
+    on_resize = outer.bind("<Configure>", fit, add="+")
+    area.bind("<Destroy>", lambda event: outer.unbind("<Configure>", on_resize)
+              if event.widget is area else None, add="+")
+    area.after_idle(fit)
+    return area.body
 
 
 def prompt_approval(app, request, on_done):
@@ -1214,8 +1461,9 @@ def prompt_approval(app, request, on_done):
                 path = filedialog.asksaveasfilename(
                     parent=app, title="选择输出文件",
                     initialdir=str(current.parent) if current else None,
-                    initialfile=current.name if current else None, defaultextension=".xlsx",
-                    filetypes=[("Excel 工作簿", "*.xlsx"), ("所有文件", "*.*")])
+                    initialfile=current.name if current else None,
+                    defaultextension=current.suffix if current else ".xlsx",
+                    filetypes=[("Excel 工作簿", "*.xlsx *.xlsm"), ("所有文件", "*.*")])
                 if path:
                     path_var.set(path)
 
@@ -1288,7 +1536,7 @@ def confirm_start(app, title, lines, on_done):
     _enqueue_prompt(app, render)
 
 
-def prompt_question(app, question, options, on_done):
+def prompt_question(app, question, options, on_done, *, cancel_text="取消"):
     """在对话页里回答 Agent 的提问；取消返回 None。"""
 
     def render():
@@ -1300,20 +1548,28 @@ def prompt_question(app, question, options, on_done):
             _close_prompt(app)
             on_done(value)
 
+        def submit(value):
+            if value.strip():
+                finish(value.strip())
+
         if options:
             row = tk.Frame(body, bg=CARD)
             row.pack(fill="x", pady=(8, 0))
-            for option in options[:6]:
-                ttk.Button(row, text=option, command=lambda value=option: finish(value)).pack(
-                    side="left", padx=(0, 6))
+            for index, option in enumerate(options[:6], 1):
+                long = len(option) > 34
+                ttk.Button(row, text=f"选项 {index}" if long else option,
+                           command=lambda value=option: finish(value)).pack(anchor="w", pady=2)
+                if long:
+                    _label(row, option, wrap=theme.px(app, 420)).pack(fill="x", pady=(0, 2))
         line = tk.Frame(body, bg=CARD)
         line.pack(fill="x", pady=(8, 0))
         entry = ttk.Entry(line, textvariable=answer)
         entry.pack(side="left", fill="x", expand=True)
-        entry.bind("<Return>", lambda _event: finish(answer.get().strip() or None))
+        entry.bind("<Return>", lambda _event: submit(answer.get()))
         ttk.Button(line, text="提交", style="Accent.TButton",
-                   command=lambda: finish(answer.get().strip() or None)).pack(side="left", padx=(6, 0))
-        ttk.Button(line, text="取消", command=lambda: finish(None)).pack(side="left", padx=(6, 0))
+                   command=lambda: submit(answer.get())).pack(side="left", padx=(6, 0))
+        ttk.Button(line, text=cancel_text, command=lambda: finish(None)).pack(side="left", padx=(6, 0))
+        app.agent_question_submit = submit
         entry.focus_set()
 
     _enqueue_prompt(app, render)
