@@ -457,6 +457,41 @@ class AgentUiSmokeTests(unittest.TestCase):
         reopened.update()
         self.assertTrue(side.winfo_ismapped())
 
+    def test_chat_keeps_user_messages_in_bubbles_and_drops_template_button(self):
+        self.stack.enter_context(patch.dict(os.environ, {
+            "LOCALAPPDATA": str(self.root / "local"), "USERPROFILE": str(self.root)}))
+
+        def settings_for(app):
+            app.store, app._pending_error = self._fake_store(), ""
+
+        self.stack.enter_context(patch.object(gui.App, "_load_settings", settings_for))
+        self.stack.enter_context(patch.object(gui.App, "_autodetect"))
+        self.stack.enter_context(patch.object(gui.auditlog, "AuditLog"))
+        self.stack.enter_context(patch.object(gui.knowledge, "LocalLibrary"))
+        try:
+            app = gui.App()
+        except tk.TclError as exc:
+            self.skipTest(str(exc))
+        self.addCleanup(_dispose, app)
+        app.busy = False
+        app.rows = ledger_rows()
+        app.loaded_subject = Subject("S1", "合成企业", 2026, 12, str(self.root), ledger_id="L1")
+        workspace.navigate(app, "agent")
+        app.update()
+        self.assertFalse(hasattr(app, "agent_template_btn"))
+        agent_ui._append_message(app, "me", "做个实收资本的底稿")
+        app.update()
+        self.assertEqual(len(app.agent_bubbles), 1)
+        spacer, holder = app.agent_bubbles[0]
+        self.assertGreater(spacer.winfo_width(), 0)
+        self.assertGreater(holder.winfo_rootx(),
+                           app.agent_chat.winfo_rootx() + app.agent_chat.winfo_width() // 2)
+        agent_ui._append_message(app, "me", "这是一段比较长的中文说明，" * 8 + "结束。")
+        app.update()
+        lines = app.agent_bubbles[-1][1].winfo_children()[0].winfo_children()[0].cget("text").split("\n")
+        self.assertGreater(len(lines), 2)
+        self.assertFalse([line for line in lines if line[:1] in "，。、；：？！"])
+
     def test_returning_home_shows_new_greeting_after_opening_selector(self):
         def isolated_settings(app):
             app.store = self._fake_store()

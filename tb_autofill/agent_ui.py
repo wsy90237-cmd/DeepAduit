@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 import threading
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, font as tkfont, ttk
 
 from . import agent as agent_module
 from . import agent_checkpoints, agent_paths, agent_tools, ai, audit_index, brand, fields, layout, settings, theme, workspace
@@ -89,17 +89,29 @@ def build(app):
                              padx=4, pady=8, cursor="arrow", highlightthickness=0,
                              spacing1=2, spacing3=2)
     app.agent_chat.grid(row=0, column=0, sticky="nsew")
-    indent = theme.px(app, 96)
-    app.agent_chat.tag_configure("me", background=theme.PAPER_DEEP, lmargin1=indent, lmargin2=indent,
-                                 rmargin=0, spacing1=theme.px(app, 8), spacing3=theme.px(app, 8))
-    app.agent_chat.tag_configure("agent", foreground=TX, spacing3=theme.px(app, 6))
-    app.agent_chat.tag_configure("sys", foreground=SEC, font=theme.font(8), spacing3=2)
+    # 用户消息是右侧的浅底气泡（内嵌窗口），回复是正文，工具过程只留一行安静的灰字。
+    app.agent_bubbles = []
+
+    def fit_bubbles(_event=None):
+        width = app.agent_chat.winfo_width()
+        for spacer, holder in app.agent_bubbles:
+            try:
+                spacer.configure(width=max(0, width - holder.winfo_reqwidth() - theme.px(app, 40)))
+            except tk.TclError:
+                pass
+
+    app.agent_fit_bubbles = fit_bubbles
+    app.agent_chat.bind("<Configure>", fit_bubbles, add="+")
+    app.agent_chat.tag_configure("agent", foreground=TX, spacing1=theme.px(app, 4),
+                                 spacing3=theme.px(app, 14))
+    app.agent_chat.tag_configure("sys", foreground=SEC, font=theme.font(8),
+                                 lmargin1=theme.px(app, 4), spacing3=2)
     app.agent_chat.tag_configure("warning", foreground=theme.BAD, font=theme.font(9), spacing3=4)
     app.agent_chat.tag_configure("gap", font=theme.font(4))
-    app.agent_chat.tag_configure("thought", foreground=theme.INK_SOFT, font=theme.font(9),
-                                 lmargin1=0, lmargin2=0, spacing1=theme.px(app, 6), spacing3=2)
-    app.agent_chat.tag_configure("result", foreground=theme.OK, font=theme.font(8),
-                                 lmargin1=theme.px(app, 14), lmargin2=theme.px(app, 14), spacing3=2)
+    app.agent_chat.tag_configure("thought", foreground=theme.INK_SOFT,
+                                 lmargin1=0, lmargin2=0, spacing1=theme.px(app, 8), spacing3=theme.px(app, 6))
+    app.agent_chat.tag_configure("result", foreground=SEC, font=theme.font(8),
+                                 lmargin1=theme.px(app, 18), lmargin2=theme.px(app, 18), spacing3=2)
     scroll = ttk.Scrollbar(chat, orient="vertical", command=app.agent_chat.yview)
     scroll.grid(row=0, column=1, sticky="ns")
     app.agent_chat.configure(yscrollcommand=scroll.set)
@@ -131,11 +143,14 @@ def build(app):
                               highlightthickness=0, insertbackground=TX)
     app.agent_input.grid(row=0, column=0, sticky="ew")
     app.agent_input.bind("<Return>", _on_send_key)
+    app.agent_input_hint = tk.Label(composer, text="描述你的审计任务，或直接追问…", bg=CARD,
+                                    fg=SEC, font=theme.font(10))
+    app.agent_input_hint.place(x=theme.px(app, 14), y=theme.px(app, 10))
+    app.agent_input_hint.bind("<Button-1>", lambda _event: app.agent_input.focus_set())
+    for sequence in ("<KeyPress>", "<Button-1>", "<<Paste>>"):
+        app.agent_input.bind(sequence, lambda _event: app.agent_input_hint.place_forget(), add="+")
     buttons = tk.Frame(composer, bg=CARD)
     buttons.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
-    app.agent_template_btn = ttk.Button(buttons, text="选择 TB 模板", style="CardQuiet.TButton",
-                                        command=lambda: _open_tb_template(app))
-    app.agent_template_btn.pack(side="left")
     app.agent_review_btn = ttk.Button(buttons, text="核对明细", style="CardQuiet.TButton",
                                       command=app._open_tb_review, state="disabled")
     app.agent_review_btn.pack(side="left")
@@ -441,18 +456,57 @@ def _reexport_done(app, context, outcomes):
     _sync_reexport(app)
 
 
+_CLOSING = "，。、；：？！）】》」』”’,.;:?!)]}%"
+
+
+def _bubble_lines(app, text, limit):
+    """按像素换行，并且不把中文标点放到行首。"""
+    font = getattr(app, "agent_bubble_font", None)
+    if font is None:
+        font = app.agent_bubble_font = tkfont.Font(root=app, font=theme.font(10))
+    lines = []
+    for paragraph in str(text).split("\n"):
+        while paragraph and font.measure(paragraph) > limit:
+            low, high = 1, len(paragraph)
+            while low < high:
+                middle = (low + high + 1) // 2
+                if font.measure(paragraph[:middle]) <= limit:
+                    low = middle
+                else:
+                    high = middle - 1
+            cut = low
+            while cut > 1 and paragraph[cut] in _CLOSING:
+                cut -= 1
+            lines.append(paragraph[:cut].rstrip())
+            paragraph = paragraph[cut:].lstrip(" ")
+        lines.append(paragraph)
+    return "\n".join(lines)
+
+
 def _append_message(app, role, text):
     if not hasattr(app, "agent_chat"):
         return
-    prefix = {"me": "", "agent": "", "sys": "· ", "warning": "! ", "thought": "", "result": "✓ "}[role]
+    prefix = {"me": "", "agent": "", "sys": "· ", "warning": "! ", "thought": "", "result": "  "}[role]
     tag = role if role in {"me", "agent", "warning", "thought", "result"} else "sys"
     _hide_welcome(app)
     app.agent_chat.configure(state="normal")
     if role == "me":
-        # 用户消息整段浅底：换行符也打上标签，底色才会铺满整行。
+        width = max(app.agent_chat.winfo_width(), theme.px(app, 520))
+        pad = theme.px(app, 14)
+        body = _bubble_lines(app, text, min(theme.px(app, 460), int(width * 0.62)) - pad * 2 - 2)
+        holder = tk.Frame(app.agent_chat, bg=BG)
+        card = tk.Frame(holder, bg=theme.PAPER_DEEP)
+        card.pack(side="right")
+        tk.Label(card, text=body, bg=theme.PAPER_DEEP, fg=TX, font=theme.font(10), justify="left",
+                 padx=pad, pady=theme.px(app, 8)).pack()
+        spacer = tk.Frame(app.agent_chat, bg=BG, width=1, height=1)
         app.agent_chat.insert("end", "\n", "gap")
-        app.agent_chat.insert("end", "  " + str(text).strip().replace("\n", "\n  ") + "\n", tag)
+        app.agent_chat.window_create("end", window=spacer)
+        app.agent_chat.window_create("end", window=holder, pady=theme.px(app, 4))
         app.agent_chat.insert("end", "\n", "gap")
+        app.agent_bubbles.append((spacer, holder))
+        holder.update_idletasks()
+        app.agent_fit_bubbles()
     else:
         app.agent_chat.insert("end", prefix + str(text).strip() + "\n", tag)
     app.agent_chat.configure(state="disabled")
@@ -676,8 +730,10 @@ def _clear(app):
     app.agent_paper_request = None
     app.agent_chat.configure(state="normal")
     app.agent_chat.delete("1.0", "end")
+    app.agent_bubbles.clear()
     app.agent_chat.configure(state="disabled")
     app.agent_input.delete("1.0", "end")
+    app.agent_input_hint.place(x=theme.px(app, 14), y=theme.px(app, 10))
     _show_welcome(app)
     _set_gaps(app, [])
     _reset_meters(app)
@@ -705,9 +761,6 @@ def refresh(app):
         app.template_var.set("")
         app.period_var.set("both")
         app.unit_var.set("自动")
-    has_ledger = subject is not None and bool(app.rows)
-    app.agent_template_btn.configure(text="TB 模板" if app.template_var.get().strip() else "选择 TB 模板",
-                                     state="normal" if has_ledger and not app.busy else "disabled")
     app.agent_review_btn.configure(state="normal" if app.scan is not None and not app.busy else "disabled")
     if subject is None:
         _refresh_pending(app)
@@ -1186,7 +1239,7 @@ def _on_event(app, event):
         _append_message(app, "sys", event.title)
         return
     if event.kind == "run_start":
-        _append_message(app, "sys", event.title)
+        pass  # 开始只更新状态，不在对话里留一行日志：对话从你的消息直接进回复。
     elif event.kind == "thought":
         _append_message(app, "thought", event.detail)
     elif event.kind == "tool":
