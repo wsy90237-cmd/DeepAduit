@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from uuid import uuid4
 
 from . import agent_tools
 from .agent import StaleContextError, _sha256
@@ -14,6 +14,20 @@ from .models import money
 
 def data_dir():
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "ZSZH-TB" / "agent"
+
+
+def write_json(target, record):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".attesta-{uuid4().hex}.tmp")
+    stream = temporary.open("x", encoding="utf-8")
+    try:
+        with stream:
+            json.dump(record, stream, ensure_ascii=False, default=str, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _digest(value):
@@ -42,7 +56,6 @@ def _source_key(row):
 
 def save(run_id, config, context, state):
     directory = data_dir() / "pending"
-    directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"{run_id}-{state['sequence']:06d}.json"
     matches = [dict(target=item.target.id, sources=[_source_key(row) for row in item.sources],
                     amount=None if item.amount is None else str(item.amount), status=item.status,
@@ -55,17 +68,7 @@ def save(run_id, config, context, state):
               "scanned": context.scan is not None, "results": matches, "prepared": prepared,
               "artifacts": context.artifacts, "gaps": context.gaps, "tb_exported": context.tb_exported,
               "initial_results_digest": context.snapshot.results_digest}
-    temporary = None
-    try:
-        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, suffix=".tmp", delete=False) as stream:
-            temporary = Path(stream.name)
-            json.dump(record, stream, ensure_ascii=False, default=str)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, target)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    write_json(target, record)
     return target
 
 

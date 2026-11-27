@@ -2,8 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from tb_autofill.auditlog import GENESIS, AuditLog
+from tb_autofill.auditlog import GENESIS, AuditLog, AuditLogError
 
 
 class AuditLogTests(unittest.TestCase):
@@ -54,6 +55,17 @@ class AuditLogTests(unittest.TestCase):
         self.log.append("export_report", path="a.csv")
         records = self.log.records()
         self.assertEqual([item["event"] for item in records], ["write_excel", "export_report"])
+
+    def test_checkpoint_write_failure_preserves_previous_chain_and_can_retry(self):
+        first = self.log.append("first")
+        original = self.path.read_bytes()
+        with patch.object(self.log, "_save_checkpoint", side_effect=PermissionError("synthetic denial")):
+            with self.assertRaisesRegex(AuditLogError, "synthetic denial"):
+                self.log.append("failed")
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(self.log.verify(), (True, None, ""))
+        second = self.log.append("retry")
+        self.assertEqual((second["seq"], second["prev"]), (2, first["hash"]))
 
 
 if __name__ == "__main__":

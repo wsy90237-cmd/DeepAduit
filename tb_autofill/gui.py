@@ -1038,7 +1038,6 @@ class App(tk.Tk):
         self.agent_result = None
         self.agent_context = None
         self.agent_events = []
-        self.agent_audit_error = ""
         try:
             self.audit = auditlog.AuditLog()
         except Exception:

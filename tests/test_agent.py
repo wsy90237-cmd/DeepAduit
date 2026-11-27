@@ -93,6 +93,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(client.messages), 2)
         self.assertIn("tool", {item["role"] for item in client.messages[1]})
 
+    def test_finish_needs_input_saves_pause_and_resume_writes_end_audit_event(self):
+        saved = []
+        events = []
+        client = FakeClient([
+            reply(calls=[tool_call("finish", {"status": "needs_input", "summary": "请确认范围。"})]),
+            reply(content="已完成"),
+        ])
+        runtime = AgentRuntime(client, make_registry(), snapshot().context(),
+                               save_pause=lambda state: saved.append(state) or Path("synthetic.json"))
+        result = runtime.run()
+        self.assertEqual(result.status, "needs_input")
+        self.assertEqual(runtime.pending_path, Path("synthetic.json"))
+        state, = saved
+        self.assertEqual(state["question"], "请确认范围。")
+        resumed = AgentRuntime(client, make_registry(), snapshot().context(),
+                               audit=lambda event, data: events.append((event, data)))
+        self.assertEqual(resumed.run(state, "确认").status, "done")
+        self.assertEqual(events[-1], ("agent_run_end", {"status": "done", "artifacts": 0}))
+
     def test_denied_write_does_not_execute_and_is_not_retried(self):
         calls = []
 

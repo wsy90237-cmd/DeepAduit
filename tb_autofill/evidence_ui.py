@@ -2,6 +2,8 @@
 import json
 import os
 from pathlib import Path
+import sqlite3
+from stat import S_ISDIR
 from threading import Event
 import tkinter as tk
 from tkinter import filedialog, ttk
@@ -11,6 +13,18 @@ from . import ai, audit_index, dialogs as messagebox, evidence_draft as draft
 from .evidence_project import ProjectStore
 from .evidence_ownership import check_ownership
 from .pdf_text import extract_pdf_pages
+from .settings import SettingsError
+
+
+def _directory_error(root, exc):
+    code = getattr(exc, "sqlite_errorcode", 0) & 255
+    if isinstance(exc, PermissionError) or code in {sqlite3.SQLITE_READONLY, sqlite3.SQLITE_PERM}:
+        return f"Windows 拒绝访问项目资料目录或其中的数据库。\n{root}"
+    if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
+        return f"项目资料目录不存在或当前不可达。\n{root}"
+    if code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+        return f"项目资料数据库正被占用。\n{root}"
+    return f"无法打开项目资料。\n{root}\n{exc}"
 
 
 def activate_project(app, *, interactive=True, root_override=None):
@@ -27,37 +41,52 @@ def activate_project(app, *, interactive=True, root_override=None):
             if hasattr(app, "intake_status"):
                 app.intake_status.set("未设置项目资料目录，可在「项目资料」中选择。")
             return None
-        root = filedialog.askdirectory(title="首次设置：选择各公司底稿的共同存放目录", parent=app)
+        root = filedialog.askdirectory(title="选择各公司底稿的共同存放目录", mustexist=True, parent=app)
     if not root:
         return
     try:
+        if not S_ISDIR(Path(root).stat().st_mode):
+            raise NotADirectoryError(root)
         store = ProjectStore(root, draft.project_entity(subject), subject.year)
-        if app.store and app.store.data.get('evidence_root') != root:
-            app.store.save_evidence_root(root)
         from .auto_intake_ui import Intake
         intake = Intake(app, store)
-    except Exception as exc:
-        text = f"项目资料目录不可用：{exc}"
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        text = _directory_error(root, exc)
+        if not root_override or root == getattr(app, "evidence_root", None):
+            app.evidence_store = app.intake = None
         if hasattr(app, "intake_status"):
-            app.intake_status.set(text + "。请在「项目资料」中重新选择目录。")
+            app.intake_status.set(f"{text}\n可用「更换资料目录」重新选择。")
         if interactive:
-            messagebox.showerror("无法打开项目资料", str(exc), parent=app)
-            if messagebox.askyesno("重新选择目录", "是否选择一个新的项目资料目录？", parent=app):
-                selected = filedialog.askdirectory(title="选择项目资料目录", parent=app)
+            messagebox.showerror("无法打开项目资料", text, parent=app)
+            if not root_override:
+                selected = filedialog.askdirectory(title="重新选择项目资料目录", mustexist=True, parent=app)
                 if selected:
-                    return activate_project(app, interactive=True, root_override=selected)
+                    return activate_project(app, root_override=selected)
         return None
     app.evidence_store, app.evidence_root = store, root
     app.intake = intake
     intake.start()
+    settings = getattr(app, "store", None)
+    if interactive and settings and settings.data.get("evidence_root") != root:
+        try:
+            settings.save_evidence_root(root)
+        except (OSError, SettingsError) as exc:
+            messagebox.showwarning("目录设置未保存", f"本次已打开项目资料，重新启动后需要再选择目录。\n{exc}", parent=app)
     return store
 
 
-def open_project(app):
+def open_project(app, *, choose_directory=False):
     if app.busy:
         return
-    intake = getattr(app, 'intake', None)
-    store = intake.store if intake and intake.current() else activate_project(app)
+    if choose_directory:
+        if app.loaded_subject is None:
+            messagebox.showinfo("项目资料", "请先在工作台读取主体和期间。", parent=app)
+            return
+        selected = filedialog.askdirectory(title="选择项目资料目录", mustexist=True, parent=app)
+        store = activate_project(app, root_override=selected) if selected else None
+    else:
+        intake = getattr(app, "intake", None)
+        store = intake.store if intake and intake.current() else activate_project(app)
     if not store:
         return
     window = EvidenceDialog(app, store)

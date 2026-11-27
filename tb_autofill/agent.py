@@ -732,6 +732,7 @@ class AgentRuntime:
         except StaleContextError as exc:
             self.context.add_gap(str(exc))
             self.emit("warning", "来源已变化", str(exc))
+            self._audit("agent_run_end", status="stale", error=str(exc))
             return self._result("stale", "来源已变化，本次运行停止。", str(exc))
         missing = self._completion_gaps()
         if missing:
@@ -744,6 +745,7 @@ class AgentRuntime:
             self.emit("warning", "交付物未齐全", "；".join(missing)[:1000], {"missing": missing})
         self.emit("answer", "Agent 完成" if requested == "done" else "Agent 暂停",
                   summary or "本次运行结束", {"status": requested})
+        self._audit("agent_run_end", status=requested, artifacts=len(self.context.artifacts))
         return self._result(requested, summary, "")
 
     def _finish(self, call):
@@ -758,6 +760,8 @@ class AgentRuntime:
         gaps = [str(item)[:600] for item in raw_gaps if str(item).strip()][:20]
         for gap in gaps:
             self.context.add_gap(gap)
+        if status == "needs_input" and self._save_pause is not None:
+            raise AgentPause(summary or "需要补充信息才能继续，请在对话中回复。", ())
         return self._finalize(status, summary)
 
     def _result(self, status, summary, error):

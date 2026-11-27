@@ -335,6 +335,8 @@ def _build_papers(app):
     from . import evidence_ui
     ttk.Button(actions, text="项目资料",
                command=lambda: evidence_ui.open_project(app)).pack(side="left", padx=6)
+    ttk.Button(actions, text="更换资料目录", style="Quiet.TButton",
+               command=lambda: evidence_ui.open_project(app, choose_directory=True)).pack(side="left")
     ttk.Button(actions, text="选择待复核底稿", style="Quiet.TButton",
                command=lambda: app._attach_review_document("底稿")).pack(side="left", padx=(8, 0))
     ttk.Button(actions, text="复核底稿文字", style="Quiet.TButton",
@@ -346,7 +348,7 @@ def _build_papers(app):
     theme.wrap_to_parent(status, padding=64)
 
     card = theme.RoundCard(page, pad=0)
-    card.grid(row=2, column=0, sticky="ew", padx=32, pady=(14, 0))
+    card.grid(row=3, column=0, sticky="ew", padx=32, pady=(14, 0))
     head = tk.Frame(card.body, bg=theme.SURFACE)
     head.pack(fill="x", padx=16, pady=(14, 6))
     tk.Label(head, text="报表项目", bg=theme.SURFACE, fg=INK,
@@ -373,7 +375,7 @@ def _build_papers(app):
 
     app.intake_status = tk.StringVar(master=app, value="")
     intake = ttk.Label(page, textvariable=app.intake_status, wraplength=820)
-    intake.grid(row=3, column=0, sticky="nw", padx=32, pady=(10, 0))
+    intake.grid(row=2, column=0, sticky="nw", padx=32, pady=(10, 0))
     theme.wrap_to_parent(intake, padding=64)
     page.rowconfigure(4, weight=1)
 

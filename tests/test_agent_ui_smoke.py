@@ -133,7 +133,8 @@ class AgentUiSmokeTests(unittest.TestCase):
 
     def _run_agent(self, *, replies, out_dir_name, template=True,
                    message="复核 TB 并生成所需交付物", block_workpaper_locations=False,
-                   retry_workpaper=False, choose_template_in_chat=False, previous_scan=False):
+                   retry_workpaper=False, choose_template_in_chat=False, previous_scan=False,
+                   follow_up=False):
         """构造真实 App，跑一轮脚本化 Agent，返回运行结果与调用证据。"""
         fake_client = ScriptedClient(replies)
         out = self.root / out_dir_name
@@ -152,6 +153,7 @@ class AgentUiSmokeTests(unittest.TestCase):
         retry_path = self.root / "另选位置" / paper_path.name
         denied_paths = []
         before_retry = []
+        first_results = []
 
         if block_workpaper_locations:
             self.stack.enter_context(patch.dict(os.environ, {
@@ -282,6 +284,11 @@ class AgentUiSmokeTests(unittest.TestCase):
                     before_retry.append((fake_client.calls, app.agent_artifacts_empty.cget("text"),
                                          app.agent_artifacts.get_children()))
                     app.agent_reexport_btn.invoke()
+                elif follow_up and not first_results:
+                    first_results.append(app.agent_result)
+                    fake_client.replies.append(reply(content="已核对科目数。"))
+                    app.agent_input.insert("1.0", "这个账套有多少科目？")
+                    agent_ui._send(app)
                 else:
                     app.quit()
                     return
@@ -299,6 +306,17 @@ class AgentUiSmokeTests(unittest.TestCase):
             result,
             "Agent 未在时限内结束："
             f"{app.agent_state_var.get()}；最后事件：{[event.title for event in app.agent_events][-5:]}")
+        if follow_up:
+            self.assertEqual(result.status, "done", result.error)
+            self.assertEqual(result.artifacts, ())
+            result, = first_results
+            path = Path(result.artifacts[0]["path"])
+            with patch.object(os, "startfile") as startfile:
+                app.agent_open_btn.invoke()
+                startfile.assert_called_once_with(str(path))
+                startfile.reset_mock()
+                app.agent_folder_btn.invoke()
+                startfile.assert_called_once_with(str(path.parent))
         return SimpleNamespace(
             result=result, out=out, tb_copy=tb_copy, client=fake_client,
             approvals=approvals, dialogs=dialogs, starts=starts,
@@ -584,7 +602,7 @@ class AgentUiSmokeTests(unittest.TestCase):
     def test_workpaper_uses_another_directory_and_appears_in_artifacts(self):
         run = self._run_agent(
             template=False, message="制作货币资金底稿", out_dir_name="out-paper",
-            block_workpaper_locations=True,
+            block_workpaper_locations=True, follow_up=True,
             replies=[
                 reply([tool_call("prepare_workpaper", {"index_no": "1-010"}, "prepare")]),
                 reply([tool_call("export_workpaper", {"index_no": "1-010"}, "export")]),

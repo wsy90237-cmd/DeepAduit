@@ -61,7 +61,7 @@ def build(app):
     app.agent_running = False
     app.agent_runtime = None
     app.agent_context = None
-    app.agent_audit_error = ""
+    app.agent_project_artifacts = {}
     app.agent_paper_request = None
     app.agent_question_submit = None
     app.agent_context_var = tk.StringVar(value="尚未读取账套")
@@ -230,19 +230,26 @@ def build(app):
     art = panel(2, "产物")
     art.rowconfigure(0, weight=1)
     art.columnconfigure(0, weight=1)
-    app.agent_artifacts = ttk.Treeview(art, columns=("kind", "name"), show="tree", height=4)
-    app.agent_artifacts.column("#0", width=0, stretch=False)
+    app.agent_artifacts = ttk.Treeview(art, columns=("kind", "name"), show="headings", height=4,
+                                       selectmode="browse")
+    app.agent_artifacts.heading("kind", text="类型", anchor="w")
+    app.agent_artifacts.heading("name", text="文件", anchor="w")
     app.agent_artifacts.column("kind", width=theme.px(app, 70), anchor="w", stretch=False)
     app.agent_artifacts.column("name", width=theme.px(app, 190), anchor="w")
     app.agent_artifacts.grid(row=0, column=0, sticky="nsew")
-    app.agent_artifacts.bind("<Double-1>", lambda _event: _open_artifact(app))
+    app.agent_artifacts.bind("<Double-1>", lambda event: _open_artifact(app)
+                             if app.agent_artifacts.identify_row(event.y) else None)
+    app.agent_artifacts.bind("<Return>", lambda _event: _open_artifact(app))
     app.agent_artifacts_empty = tk.Label(art, text="暂无", bg=CARD, fg=SEC, font=theme.font(9))
     app.agent_artifacts_empty.grid(row=0, column=0, sticky="nw", padx=2, pady=2)
     bar = tk.Frame(art, bg=CARD)
     bar.grid(row=1, column=0, sticky="w", pady=(6, 0))
-    ttk.Button(bar, text="打开", style="CardQuiet.TButton", command=lambda: _open_artifact(app)).pack(side="left")
-    ttk.Button(bar, text="所在文件夹", style="CardQuiet.TButton",
-               command=lambda: _open_folder(app)).pack(side="left")
+    app.agent_open_btn = ttk.Button(bar, text="打开", style="CardQuiet.TButton",
+                                    command=lambda: _open_artifact(app), state="disabled")
+    app.agent_folder_btn = ttk.Button(bar, text="所在文件夹", style="CardQuiet.TButton",
+                                      command=lambda: _open_folder(app), state="disabled")
+    app.agent_open_btn.pack(side="left")
+    app.agent_folder_btn.pack(side="left")
     app.agent_reexport_btn = ttk.Button(bar, text="重新导出", style="CardQuiet.TButton",
                                         command=lambda: reexport(app), state="disabled")
     app.agent_reexport_btn.pack(side="left")
@@ -321,18 +328,33 @@ def _sync_reexport(app):
         empty.configure(text=f"{len(pending)} 册草稿待保存" if pending else "暂无")
 
 
-def _show_artifacts(app, context):
+def _show_artifacts(app, context=None):
     if not hasattr(app, "agent_artifacts"):
         return
-    for item in app.agent_artifacts.get_children():
-        app.agent_artifacts.delete(item)
+    tree = app.agent_artifacts
+    subject = app.loaded_subject
+    artifacts = app.agent_project_artifacts.setdefault(subject, {}) if subject is not None else {}
+    if context is not None and context.subject == subject:
+        artifacts.update((item["path"], item) for item in list(context.artifacts))
     labels = {"tb": "TB 副本", "tb_pending": "待处理清单", "workpaper": "整册底稿"}
-    artifacts = list(context.artifacts)
-    # iid 用产物序号：_selected_artifact 按序号回查路径。
-    for index, artifact in enumerate(artifacts):
-        app.agent_artifacts.insert("", "end", iid=str(index), values=(
-            labels.get(artifact.get("kind", ""), artifact.get("kind", "")), artifact.get("name", "")))
+    for path in tree.get_children():
+        if path not in artifacts:
+            tree.delete(path)
+    for path, artifact in artifacts.items():
+        kind = artifact["kind"]
+        values = (labels.get(kind, kind), artifact["name"])
+        if tree.exists(path):
+            tree.item(path, values=values)
+        else:
+            tree.insert("", "end", iid=path, values=values)
+    if artifacts and not tree.selection():
+        selected = next(reversed(artifacts))
+        tree.selection_set(selected)
+        tree.focus(selected)
     _sync_empty(app, bool(artifacts))
+    state = "normal" if artifacts else "disabled"
+    app.agent_open_btn.configure(state=state)
+    app.agent_folder_btn.configure(state=state)
 
 
 def _sync_empty(app, has_items):
@@ -402,6 +424,7 @@ def _run_reexport(app, context, jobs):
 
     def work():
         outcomes = []
+        audit_errors = []
         for index, path in jobs:
             runtime = SimpleNamespace(approved_path=path, client=None, _audit=lambda *_a, **_k: None)
             try:
@@ -411,14 +434,16 @@ def _run_reexport(app, context, jobs):
             except Exception as exc:  # 本地导出失败不能让界面卡在“运行中”
                 outcome = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
             outcomes.append((index, outcome))
-            _audit(app, "agent_reexport", {"index_no": index, "ok": bool(outcome.get("ok")),
-                                           "error": str(outcome.get("error") or "")[:300]})
-        app._post(lambda: _reexport_done(app, context, outcomes))
+            error = _audit(app, "agent_reexport", {"index_no": index, "ok": bool(outcome.get("ok")),
+                                                   "error": str(outcome.get("error") or "")[:300]})
+            if error and not audit_errors:
+                audit_errors.append(error)
+        app._post(lambda: _reexport_done(app, context, outcomes, audit_errors))
 
     threading.Thread(target=work, daemon=True).start()
 
 
-def _reexport_done(app, context, outcomes):
+def _reexport_done(app, context, outcomes, audit_errors=()):
     app.agent_running = False
     app._set_busy(False)
     app.agent_start_btn.configure(state="normal")
@@ -439,12 +464,12 @@ def _reexport_done(app, context, outcomes):
                 history["result"] = app.agent_result.as_dict()
                 history.setdefault("reexports", []).append({
                     "time": datetime.now().isoformat(timespec="seconds"), "outcomes": outcomes})
-                temporary = record.with_suffix(".tmp")
-                temporary.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
-                temporary.replace(record)
-            except (OSError, ValueError, KeyError) as exc:
+                agent_checkpoints.write_json(record, history)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
                 _append_message(app, "warning", f"重导结果未写入运行记录：{exc}")
     _set_gaps(app, context.gaps)
+    for error in audit_errors:
+        _append_message(app, "warning", error)
     for index, outcome in outcomes:
         if outcome.get("ok"):
             _append_message(app, "agent", f"已重新导出 {index}：{(outcome.get('data') or {}).get('output', '')}")
@@ -751,10 +776,9 @@ def refresh(app):
     if subject is not None and previous is not None and subject != previous and not app.agent_running:
         _dismiss_prompt(app)
         app.agent_context = app.agent_result = None
-        app.agent_artifacts.delete(*app.agent_artifacts.get_children())
-        _sync_empty(app, False)
         _sync_reexport(app)
         _clear(app)
+    _show_artifacts(app)
     owner = getattr(app, "agent_template_subject", None)
     if subject is not None and owner is not None and subject != owner:
         app.agent_template_subject = None
@@ -1071,12 +1095,13 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
     if app.busy or app.agent_running:
         return
     evidence_rows = {}
+    evidence_gap = ""
     if "papers" in stages and indexes:
         try:
             from . import evidence_ui
             evidence_rows = {index: evidence_ui.paper_rows(app, index) for index in indexes}
         except Exception:
-            evidence_rows = {}
+            evidence_gap = "项目资料无法读取，本次底稿未勾稽该目录中的审计证据。请在底稿页检查项目资料目录。"
     def current_fingerprint():
         # 只读普通 Python 属性；不要在运行线程里调 Tk 变量。
         try:
@@ -1093,12 +1118,14 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
         evidence_rows=evidence_rows,
         max_steps=config["max_steps"], max_tool_calls=config["max_tool_calls"],
         max_model_calls=config["max_model_calls"])
+    if evidence_gap:
+        context.add_gap(evidence_gap)
+        _append_message(app, "warning", evidence_gap)
     if "tb" not in scope:
         context.template_path, context.scan, context.results = "", None, []
     app.agent_context = context
     app.agent_result = None
     app.agent_events = []
-    app.agent_audit_error = ""
     _render_scope(app, scope)
     _reset_meters(app, context)
     app.agent_running = True
@@ -1117,12 +1144,19 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
             _on_event(app, event)
 
     run_id = continuation[1]["run_id"] if continuation else datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    audit_errors = []
+
+    def audit(event, payload):
+        error = _audit(app, event, {**payload, "run_id": run_id})
+        if error and not audit_errors:
+            audit_errors.append(error)
+
     runtime = agent_module.AgentRuntime(
         client, agent_tools.build_registry(include_papers="papers" in stages,
                                            include_tb="tb" in scope, write_tb="tb" in stages), context,
         emit=lambda event: app._post(lambda: show_event(event)),
         approve=lambda request: _ask_approval(app, request) if current_run() else agent_module.ApprovalDecision(False),
-        audit=lambda event, payload: _audit(app, event, {**payload, "run_id": run_id}),
+        audit=audit,
         save_pause=lambda state: agent_checkpoints.save(run_id, config, context, state),
         preflight=(lambda: agent_tools.check_template_identity(context)) if "tb" in scope and stages else None)
     app.agent_runtime = runtime
@@ -1144,13 +1178,9 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
         except (OSError, ValueError, KeyError) as exc:
             result = runtime._result("error", "无法读取待办任务进度。", str(exc))
         except Exception as exc:
-            result = agent_module.AgentRunResult(
-                status="error", summary="本次运行失败，未完成部分见运行记录。",
-                artifacts=(), gaps=tuple(context.gaps), events=tuple(runtime.events),
-                started_at=getattr(runtime, "_started_at", ""),
-                finished_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-                error=f"{type(exc).__name__}: {exc}"[:500])
-        app._post(lambda: _finish(app, runtime, result, context, config, run_id))
+            result = runtime._result("error", "本次运行失败，未完成部分见运行记录。",
+                                     f"{type(exc).__name__}: {exc}"[:500])
+        app._post(lambda: _finish(app, runtime, result, context, config, run_id, audit_errors))
 
     threading.Thread(target=work, daemon=True).start()
 
@@ -1262,28 +1292,28 @@ def _on_event(app, event):
 
 def _audit(app, event, payload):
     if getattr(app, "audit", None) is None:
-        return
+        return "审计日志不可用，未能留痕。"
     try:
         app.audit.append(event, **(payload or {}))
     except Exception as exc:
-        app.agent_audit_error = str(exc)
+        return f"审计日志写入失败（{app.audit.path}）：{type(exc).__name__}: {exc}"
 
 
 def _save_run_record(app, result, config, run_id):
-    base = agent_checkpoints.data_dir() / "runs"
-    try:
-        base.mkdir(parents=True, exist_ok=True)
-        target = base / f"{run_id}.json"
-        record = {"run_id": run_id, "config": config, "result": result.as_dict()}
-        target.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        return target
-    except OSError:
-        return None
+    target = agent_checkpoints.data_dir() / "runs" / f"{run_id}.json"
+    record = {"run_id": run_id, "config": config, "result": result.as_dict()}
+    agent_checkpoints.write_json(target, record)
+    return target
 
 
-def _finish(app, runtime, result, context, config, run_id):
+def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
     paused = getattr(result, "status", None) == "needs_input"
-    record = None if paused else _save_run_record(app, result, config, run_id)
+    record, record_error = None, ""
+    if not paused:
+        try:
+            record = _save_run_record(app, result, config, run_id)
+        except (OSError, TypeError, ValueError) as exc:
+            record_error = f"运行记录保存失败（{agent_checkpoints.data_dir() / 'runs'}）：{type(exc).__name__}: {exc}"
     same_source = app._context_revision == context.snapshot.app_revision
     if app.agent_runtime is not runtime:
         if not app.agent_running and app.agent_context is context and same_source:
@@ -1292,6 +1322,9 @@ def _finish(app, runtime, result, context, config, run_id):
             _show_artifacts(app, context)
             _set_gaps(app, result.gaps)
             _append_message(app, "sys", f"后台步骤已结束：{result.status}")
+            for error in (*audit_errors, record_error):
+                if error:
+                    _append_message(app, "warning", error)
             _sync_reexport(app)
         return
     _stop_hang_trace(app)
@@ -1303,8 +1336,7 @@ def _finish(app, runtime, result, context, config, run_id):
     _refresh_pending(app)
     if not same_source:
         app.agent_context = app.agent_result = None
-        app.agent_artifacts.delete(*app.agent_artifacts.get_children())
-        _sync_empty(app, False)
+        _show_artifacts(app)
         _sync_reexport(app)
         _set_gaps(app, [])
         app.agent_state_var.set("来源已变化")
@@ -1312,16 +1344,9 @@ def _finish(app, runtime, result, context, config, run_id):
         return
     app.agent_result = result
     app.agent_run_record = record
-    if hasattr(app, "agent_artifacts"):
-        for item in app.agent_artifacts.get_children():
-            app.agent_artifacts.delete(item)
-        labels = {"tb": "TB 副本", "tb_pending": "待处理清单", "workpaper": "整册底稿"}
-        # iid 用产物序号：_selected_artifact 按序号回查路径。
-        for index, artifact in enumerate(result.artifacts):
-            app.agent_artifacts.insert("", "end", iid=str(index), values=(
-                labels.get(artifact.get("kind", ""), artifact.get("kind", "")),
-                artifact.get("name", "")))
-        _sync_empty(app, bool(result.artifacts))
+    _show_artifacts(app, context)
+    for error in audit_errors:
+        _append_message(app, "warning", error)
     _update_meters(app, context)
     _sync_reexport(app)
     gaps = list(result.gaps)
@@ -1337,16 +1362,11 @@ def _finish(app, runtime, result, context, config, run_id):
         try:
             waiting = agent_checkpoints.load(path)
             _append_message(app, "sys", "任务已暂停，进度保存在本机。重新打开 Attesta 并读取同一账套后也可继续。")
-            if getattr(app, "agent_audit_error", ""):
-                _append_message(app, "warning", "审计日志写入失败，请核对本机日志。")
             _present_pending(app, path, waiting)
         except (OSError, ValueError, KeyError) as exc:
             app.agent_state_var.set("待办进度不可读")
             _append_message(app, "warning", f"无法打开待办任务：{exc}")
         return
-    note = f"已保存运行记录：{record}" if record else "运行记录未保存"
-    if getattr(app, "agent_audit_error", ""):
-        note += "；审计日志写入失败，请核对本机日志"
     if result.status in {"done", "partial", "blocked"} and context.scan is not None:
         if context.snapshot.revision() == _current_fingerprint(app):
             app.scan = context.scan
@@ -1357,7 +1377,8 @@ def _finish(app, runtime, result, context, config, run_id):
     state = {"done": "已完成", "partial": "部分完成", "cancelled": "已停止", "error": "执行中断",
              "stale": "来源已变化", "blocked": "受阻"}.get(result.status, result.status)
     # 右侧只放一句状态；完整答复只在对话里出现一次，正文不整段标红。
-    state_label = "底稿草稿已导出" if any(item.get("kind") == "workpaper" for item in result.artifacts) else state
+    state_label = "底稿草稿已导出" if result.status == "done" and any(
+        item.get("kind") == "workpaper" for item in result.artifacts) else state
     if "tb" in config.get("stages", ()) and any(item.get("kind") == "tb" for item in result.artifacts):
         state_label += " · TB 副本已导出"
     app.agent_state_var.set(state_label + (f" · 缺口 {len(gaps)} 项" if gaps else ""))
@@ -1370,7 +1391,10 @@ def _finish(app, runtime, result, context, config, run_id):
             summary = summary[len(prefix):].lstrip()
     if summary:
         _append_message(app, "agent", summary)
-    _append_message(app, "sys", note)
+    if record:
+        _append_message(app, "sys", f"已保存运行记录：{record}")
+    elif record_error:
+        _append_message(app, "warning", record_error)
     try:
         app.agent_input.focus_set()
     except tk.TclError:
@@ -1643,16 +1667,10 @@ def _untrack(app, pending):
 
 def _selected_artifact(app):
     selected = app.agent_artifacts.selection()
+    artifacts = app.agent_project_artifacts.get(app.loaded_subject, {})
     if not selected:
-        return None
-    context = getattr(app, "agent_context", None)
-    if context is None or context.subject != app.loaded_subject:
-        return None
-    artifacts = context.artifacts
-    try:
-        return artifacts[int(selected[0])]
-    except (IndexError, ValueError, TypeError):
-        return None
+        return next(reversed(artifacts.values()), None)
+    return artifacts.get(selected[0])
 
 
 def _open_artifact(app):

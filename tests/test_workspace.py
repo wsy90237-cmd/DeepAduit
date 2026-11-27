@@ -1,12 +1,13 @@
 import tkinter as tk
+from tempfile import TemporaryDirectory
 import unittest
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from tb_autofill import gui, workspace
-from tb_autofill.models import MatchResult, TargetField
+from tb_autofill import evidence_ui, gui, workspace
+from tb_autofill.models import MatchResult, Subject, TargetField
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -72,6 +73,32 @@ class WorkspaceTests(unittest.TestCase):
         zero = TargetField("期末", "B2", "库存现金", "ending", value=0)
         row = gui.App._row_values(None, MatchResult(zero, amount=Decimal(0), status="matched"))
         self.assertEqual((row[5], row[6], row[7]), ("0.00", "0.00", "0.00"))
+
+    def test_project_directory_access_failure_allows_choosing_another_directory(self):
+        app = self.app
+        app.loaded_subject = Subject("S1", "合成企业", 2026, 12, "")
+        app.intake_status = Mock()
+        with TemporaryDirectory() as denied, TemporaryDirectory() as available:
+            app.store = SimpleNamespace(data={"evidence_root": denied}, save_evidence_root=Mock())
+            recovered = object()
+
+            def open_store(root, _entity, _year):
+                if root == denied:
+                    raise PermissionError(13, "synthetic denial", root)
+                self.assertEqual(root, available)
+                return recovered
+
+            with patch.object(evidence_ui, "ProjectStore", side_effect=open_store), \
+                    patch("tb_autofill.auto_intake_ui.Intake"), \
+                    patch.object(evidence_ui.messagebox, "showerror") as error, \
+                    patch.object(evidence_ui.filedialog, "askdirectory", return_value=available):
+                self.assertIsNone(evidence_ui.activate_project(app, interactive=False))
+                self.assertIn("拒绝访问", app.intake_status.set.call_args.args[0])
+                error.assert_not_called()
+                app.store.save_evidence_root.assert_not_called()
+                self.assertIs(evidence_ui.activate_project(app), recovered)
+                self.assertEqual(app.evidence_root, available)
+                app.store.save_evidence_root.assert_called_once_with(available)
 
 
 if __name__ == "__main__":

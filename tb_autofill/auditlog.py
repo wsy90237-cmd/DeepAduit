@@ -10,7 +10,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-import tempfile
+from uuid import uuid4
 
 GENESIS = "0" * 64
 RESERVED = {"seq", "ts", "actor", "event", "prev", "hash"}
@@ -26,7 +26,7 @@ def _canonical(record) -> str:
 
 def default_path(root=None) -> Path:
     # Keep the original storage location so a rename never discards existing keys/logs.
-    base = Path(root) if root else Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ZSZH-TB"
+    base = Path(root) if root else Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "ZSZH-TB"
     return base / "audit" / f"{datetime.now():%Y%m}.jsonl"
 
 
@@ -91,15 +91,17 @@ class AuditLog:
         import win32crypt
         raw = _canonical({"seq": count, "hash": digest}).encode("utf-8")
         encrypted = win32crypt.CryptProtectData(raw, f"{APP_NAME} audit checkpoint", None, None, None, 1)
-        handle, name = tempfile.mkstemp(prefix=".audit-head-", dir=self.path.parent)
+        staged = self.checkpoint.with_name(f".audit-head-{uuid4().hex}.tmp")
+        stream = staged.open("xb")
         try:
-            with os.fdopen(handle, "wb") as stream:
+            with stream:
                 stream.write(encrypted)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(name, self.checkpoint)
-        finally:
-            Path(name).unlink(missing_ok=True)
+            staged.replace(self.checkpoint)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
 
     def append(self, event: str, **fields):
         if RESERVED.intersection(fields):
@@ -111,14 +113,22 @@ class AuditLog:
             record = {"seq": count + 1, "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
                       "actor": self.actor, "event": str(event), **fields, "prev": previous}
             record["hash"] = hashlib.sha256(_canonical(record).encode("utf-8")).hexdigest()
-            with self.path.open("a", encoding="utf-8", newline="\n") as stream:
-                stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            try:
-                self._save_checkpoint(record["seq"], record["hash"])
-            except Exception as exc:
-                raise AuditLogError("日志已追加，但末尾检查点保存失败，请保留现场并人工核对") from exc
+            line = (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+            with self.path.open("ab", buffering=0) as stream:
+                offset = stream.seek(0, os.SEEK_END)
+                try:
+                    if stream.write(line) != len(line):
+                        raise OSError("审计日志写入不完整")
+                    os.fsync(stream.fileno())
+                    self._save_checkpoint(record["seq"], record["hash"])
+                except Exception as exc:
+                    # 检查点仍指向上一条记录，撤销本次追加后可重试。
+                    try:
+                        stream.truncate(offset)
+                        os.fsync(stream.fileno())
+                    except OSError as rollback:
+                        raise AuditLogError(f"日志写入失败，且无法恢复写入前的状态：{rollback}") from exc
+                    raise AuditLogError(f"本条日志未保存：{exc}") from exc
             return record
 
     def verify(self):
