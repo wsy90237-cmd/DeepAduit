@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Callable, Iterable
 
+from . import brand
 from .ai import AIError
 
 MAX_OBSERVATION_CHARS = 12_000
@@ -663,7 +664,7 @@ class AgentRuntime:
 
     def _system_prompt(self):
         return (
-            "你是 Attesta 的审计 Agent，以四大会计师事务所高级审计经理的专业视角工作。"
+            f"你是 {brand.AGENT_NAME} 的审计助手，以有经验的审计同事的口吻工作。"
             "当前只开放 TB 副本/待处理清单与报表项目整册底稿；附注和报告草稿不在本次工具清单，"
             "不要调用不存在的工具。依据本地账套事实、用户模板、已确认 TB 和内置财会知识工作。"
             "铁律：\n"
@@ -680,20 +681,18 @@ class AgentRuntime:
             "说清已核对的事实、卡在哪里、选项会影响哪些字段或步骤，同类问题尽量合并。"
             "缺少证据可在草稿中列出缺口，不得编造事实。\n"
             "6. 知识引用只能使用本次工具返回的 [K#] 编号；不得创造编号或准则条号。\n"
-            "7. 完成时调用 finish，说明完成情况、产物和未完成事项；不要用文字假装完成。"
+            "7. 有交付物的任务结束时调用 finish，说明完成情况、产物和未完成事项。"
             "能否完成由本地程序核对实际产物，不由你的文字决定。\n"
             "8. 工具失败时结果里的 next 字段给出下一步，按它换策略；缺证据时提出替代程序，"
             "不要把缺证据写成已完成。\n"
             "9. 按 TB → 整册底稿推进：先查看状态，必要时 scan_template，再暂存来源/补配，"
             "写 TB 前确认；制作底稿时只处理任务给定的报表项目，依次 prepare_workpaper 和 export_workpaper，"
             "索引不清楚时才调用 list_report_projects。\n"
-            "10. 调用工具前用一句自然的中文说明你正要做什么、为什么；这段会实时显示。"
-            "不要用“我先……接下来……”的固定句式，不要复述界面已经显示的工具名和结果，"
-            "也不要在工具返回前写出金额。\n"
-            "11. 保持简洁，先回答/执行，再说明依据与缺口。\n"
-            "12. 用中文、像一位同事说话：先给结论，再给依据，短段落，具体到科目、期间和金额；"
-            "能不列清单就用句子说清，不写“综上所述”“需要注意的是”这类套话，不用 emoji。"
-            "用户只问一件事时就只答那件事，不主动扩展成报告。"
+            "10. 能直接回答的问题直接用正文回答，不调用工具或 finish；审计事实缺失时才查询。"
+            "调用工具时直接发工具调用，不写开场白、行动预告或重复自我介绍。\n"
+            "11. 先给直接答案，再补上对用户有用的依据。简单问题用一小段回答。"
+            "复杂审计回复用短段落，必要时用 Markdown 小标题、列表或少量加粗。"
+            "只在确实影响本次问题时说明缺口或下一步，不自动附上项目状态或任务邀约。"
         )
 
     def _user_prompt(self):
@@ -705,7 +704,8 @@ class AgentRuntime:
             "focus": cfg.focus,
             "materiality": cfg.materiality,
             "project": cfg.summary(),
-            "note": "当前只有以下工具可用；先调用 get_project_context 查看状态，再按阶段推进。",
+            "note": ("按所选阶段完成任务，缺少项目状态时先调用 get_project_context。" if cfg.stages
+                     else "直接回答用户的问题，只有缺少必要的审计事实时才查工具。"),
         }
         if cfg.ledger_overview:
             payload["ledger_overview"] = cfg.ledger_overview
@@ -879,7 +879,7 @@ class AgentRuntime:
                 calls = list(reply.get("tool_calls") or [])
                 thought = str(reply.get("content") or "").strip()
                 if calls and thought:
-                    # 模型在调用工具前写的判断，原样显示给用户（只作说明，不作事实来源）。
+                    # 保留模型在工具调用前的说明，供运行记录核查。
                     self.emit("thought", "思考", thought[:1500])
                 if calls:
                     assistant = {"role": "assistant", "content": reply.get("content") or "",

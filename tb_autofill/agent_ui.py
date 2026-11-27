@@ -80,7 +80,7 @@ def build(app):
                                       command=lambda: _pick_pending(app))
     details_btn = ttk.Button(controls, text="任务详情", style="Quiet.TButton")
 
-    # ---- 对话：用户消息是浅底块，Agent 回复是正文，工具过程是一行灰字 ----
+    # ---- 对话 ----
     chat = tk.Frame(main, bg=BG)
     chat.grid(row=1, column=0, sticky="nsew", padx=(0, 20))
     chat.rowconfigure(0, weight=1)
@@ -90,11 +90,16 @@ def build(app):
                              padx=4, pady=8, cursor="arrow", highlightthickness=0,
                              spacing1=2, spacing3=2)
     app.agent_chat.grid(row=0, column=0, sticky="nsew")
-    # 用户消息是右侧的浅底气泡（内嵌窗口），回复是正文，工具过程只留一行安静的灰字。
     app.agent_bubbles = []
+    reply = theme.px(app, 40)
+    reply_tags = ("agent", "agent_heading", "agent_list")
 
-    def fit_bubbles(_event=None):
+    def fit_bubbles(event=None):
         width = app.agent_chat.winfo_width()
+        if event is not None:
+            right = max(theme.px(app, 16), width - reply - theme.px(app, 760))
+            for tag in reply_tags:
+                app.agent_chat.tag_configure(tag, rmargin=right)
         for spacer, holder in app.agent_bubbles:
             try:
                 spacer.configure(width=max(0, width - holder.winfo_reqwidth() - theme.px(app, 40)))
@@ -103,23 +108,19 @@ def build(app):
 
     app.agent_fit_bubbles = fit_bubbles
     app.agent_chat.bind("<Configure>", fit_bubbles, add="+")
-    reply = theme.px(app, 40)
-    app.agent_chat.tag_configure("agent", foreground=TX, font=theme.font(10, family="display"),
-                                 lmargin1=reply, lmargin2=reply, spacing1=theme.px(app, 4),
-                                 spacing3=theme.px(app, 14))
-    app.agent_chat.tag_configure("agent_bold", foreground=TX,
-                                 font=theme.font(10, weight="bold", family="display"),
-                                 lmargin1=reply, lmargin2=reply)
+    for tag in reply_tags:
+        app.agent_chat.tag_configure(tag, foreground=TX, font=theme.font(11, family="display"),
+                                     lmargin1=reply, lmargin2=reply,
+                                     spacing2=theme.px(app, 3), spacing3=theme.px(app, 4))
+    app.agent_chat.tag_configure("agent_heading", font=theme.font(12, weight="bold", family="display"),
+                                 spacing1=theme.px(app, 6))
+    app.agent_chat.tag_configure("agent_list", lmargin1=reply + theme.px(app, 6),
+                                 lmargin2=reply + theme.px(app, 22))
+    app.agent_chat.tag_configure("agent_bold", font=theme.font(11, weight="bold", family="display"))
     app.agent_chat.tag_configure("sys", foreground=SEC, font=theme.font(8),
                                  lmargin1=reply, lmargin2=reply, spacing3=2)
     app.agent_chat.tag_configure("warning", foreground=theme.BAD, font=theme.font(9), spacing3=4)
     app.agent_chat.tag_configure("gap", font=theme.font(4))
-    app.agent_chat.tag_configure("thought", foreground=theme.INK_SOFT, font=theme.font(10, family="display"),
-                                 lmargin1=reply, lmargin2=reply, spacing1=theme.px(app, 8),
-                                 spacing3=theme.px(app, 6))
-    app.agent_chat.tag_configure("result", foreground=SEC, font=theme.font(8),
-                                 lmargin1=reply + theme.px(app, 14), lmargin2=reply + theme.px(app, 14),
-                                 spacing3=2)
     app.agent_avatar_photo = _avatar_photo(app)
     app.agent_avatar_canvas = None
     app.agent_turn_avatar = None
@@ -231,6 +232,9 @@ def build(app):
              anchor="w", justify="left", wraplength=theme.px(app, 260)).pack(fill="x", pady=(4, 0))
     app.agent_scope_row = tk.Frame(task, bg=CARD)
     app.agent_scope_row.pack(fill="x", pady=(8, 0))
+    app.agent_run_record = None
+    app.agent_record_btn = ttk.Button(task, text="打开运行记录", style="CardQuiet.TButton",
+                                      command=lambda: _open_run_record(app))
 
     budget = panel(1, "预算")
     app.agent_meters = {}
@@ -574,21 +578,33 @@ def _bubble_lines(app, text, limit):
 
 
 def _insert_prose(app, text, tag):
-    """把模型常用的 **加粗** 渲染成字重，而不是把星号原样显示。"""
-    if tag != "agent" or "**" not in text:
-        app.agent_chat.insert("end", text + "\n", tag)
+    chat = app.agent_chat
+    if tag != "agent":
+        chat.insert("end", text + "\n", tag)
         return
-    for index, piece in enumerate(re.split(r"\*\*(.+?)\*\*", text, flags=re.S)):
-        if piece:
-            app.agent_chat.insert("end", piece, "agent_bold" if index % 2 else tag)
-    app.agent_chat.insert("end", "\n", tag)
+    text = re.sub(r"\n(?:[^\S\n]*\n)+", "\n\n", text)
+    for line in text.splitlines():
+        style = "agent"
+        heading = re.match(r"^#{1,6}\s+(.+)$", line)
+        if heading:
+            style, line = "agent_heading", heading[1]
+        elif re.match(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", line):
+            style = "agent_list"
+            line = re.sub(r"^\s*[-*+]\s+", "•  ", line.lstrip())
+        elif not line.strip():
+            chat.insert("end", "\n", "gap")
+            continue
+        for index, piece in enumerate(re.split(r"\*\*(.+?)\*\*", line)):
+            if piece:
+                tags = (style, "agent_bold") if index % 2 and not heading else (style,)
+                chat.insert("end", piece, tags)
+        chat.insert("end", "\n", style)
 
 
 def _append_message(app, role, text):
     if not hasattr(app, "agent_chat"):
         return
-    prefix = {"me": "", "agent": "", "sys": "· ", "warning": "! ", "thought": "", "result": "  "}[role]
-    tag = role if role in {"me", "agent", "warning", "thought", "result"} else "sys"
+    prefix = {"me": "", "agent": "", "sys": "· ", "warning": "! "}[role]
     _hide_welcome(app)
     app.agent_chat.configure(state="normal")
     if role == "me":
@@ -610,13 +626,13 @@ def _append_message(app, role, text):
         holder.update_idletasks()
         app.agent_fit_bubbles()
     else:
-        if role in {"agent", "thought"} and getattr(app, "agent_turn_avatar", None) is None:
+        if role == "agent" and getattr(app, "agent_turn_avatar", None) is None:
             canvas = _avatar_canvas(app)
             if canvas is not None:
                 app.agent_chat.window_create("end", window=canvas, align="top")
                 app.agent_turn_avatar = canvas
                 _start_avatar(app, canvas)
-        _insert_prose(app, prefix + str(text).strip(), tag)
+        _insert_prose(app, prefix + str(text).strip(), role)
     app.agent_chat.configure(state="disabled")
     app.agent_chat.see("end")
 
@@ -763,6 +779,10 @@ def _send(app):
         return
     _append_message(app, "me", text)
     app.agent_input.delete("1.0", "end")
+    if re.fullmatch(r"(?:请问\s*)?你(?:是\s*(?:谁|什么)|叫什么)(?:[呀啊呢吗])?[？?。！!]*", text):
+        _append_message(app, "agent", f"我是 **{brand.AGENT_NAME}**，你的审计助手。\n\n"
+                        "我可以帮你核对账套、制作 TB 副本，或按报表项目整理底稿草稿。")
+        return
     if not app.rows or app.loaded_subject is None:
         _append_message(app, "agent", "还没有读取账套。请先在工作台读取科目余额。")
         return
@@ -835,6 +855,7 @@ def _clear(app):
     if app.agent_running:
         return
     _dismiss_prompt(app)
+    _set_run_record(app, None)
     app.agent_events = []
     app.agent_paper_request = None
     app.agent_chat.configure(state="normal")
@@ -1208,7 +1229,7 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
         preflight=(lambda: agent_tools.check_template_identity(context)) if "tb" in scope and stages else None)
     app.agent_runtime = runtime
     app.agent_run_id = run_id
-    app.agent_run_record = None
+    _set_run_record(app, None)
     app.after(1000, lambda: _tick(app, runtime))
     _start_hang_trace(app)
 
@@ -1332,22 +1353,12 @@ def _on_event(app, event):
         return
     if event.kind == "progress":
         app.agent_state_var.set(event.title)
-        _append_message(app, "sys", event.title)
         return
-    if event.kind == "run_start":
-        pass  # 开始只更新状态，不在对话里留一行日志：对话从你的消息直接进回复。
-    elif event.kind == "thought":
-        _append_message(app, "thought", event.detail)
-    elif event.kind == "tool":
-        _append_message(app, "sys", event.title)
+    if event.kind == "tool":
+        app.agent_state_var.set(event.title.partition("：")[0])
     elif event.kind == "tool_result":
-        if event.data.get("ok"):
-            if event.detail:
-                _append_message(app, "result", event.detail[:200])
-        else:
+        if not event.data.get("ok"):
             _append_message(app, "warning", f"{event.title}：{event.detail}")
-    elif event.kind in {"approval", "question"}:
-        _append_message(app, "sys", f"{event.title}：{event.detail}")
     elif event.kind == "warning":
         _append_message(app, "warning", event.title + (("：" + event.detail) if event.detail else ""))
     if event.kind not in {"tool", "tool_result", "model_request", "answer", "thought"}:
@@ -1372,6 +1383,24 @@ def _save_run_record(app, result, config, run_id):
     return target
 
 
+def _set_run_record(app, record):
+    app.agent_run_record = record
+    button = getattr(app, "agent_record_btn", None)
+    if button is not None:
+        if record:
+            button.pack(anchor="w", pady=(6, 0))
+        else:
+            button.pack_forget()
+
+
+def _open_run_record(app):
+    if app.agent_run_record:
+        try:
+            os.startfile(str(app.agent_run_record))
+        except OSError as exc:
+            _append_message(app, "warning", f"无法打开运行记录：{exc}")
+
+
 def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
     paused = getattr(result, "status", None) == "needs_input"
     record, record_error = getattr(runtime, "completed_run_record", None), ""
@@ -1383,7 +1412,7 @@ def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
     same_source = app._context_revision == context.snapshot.app_revision
     if app.agent_runtime is not runtime:
         if not app.agent_running and app.agent_context is context and same_source:
-            app.agent_run_record = record
+            _set_run_record(app, record)
             app.agent_result = result
             _show_artifacts(app, context)
             _set_gaps(app, result.gaps)
@@ -1409,7 +1438,7 @@ def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
         _append_message(app, "warning", "来源已变化，请重新发送任务。")
         return
     app.agent_result = result
-    app.agent_run_record = record
+    _set_run_record(app, record)
     _show_artifacts(app, context)
     for error in audit_errors:
         _append_message(app, "warning", error)
@@ -1458,9 +1487,7 @@ def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
             summary = summary[len(prefix):].lstrip()
     if summary:
         _append_message(app, "agent", summary)
-    if record:
-        _append_message(app, "sys", f"已保存运行记录：{record}")
-    elif record_error:
+    if not record and record_error:
         _append_message(app, "warning", record_error)
     try:
         app.agent_input.focus_set()

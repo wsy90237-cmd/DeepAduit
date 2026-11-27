@@ -311,6 +311,12 @@ class AgentUiSmokeTests(unittest.TestCase):
                 startfile.reset_mock()
                 app.agent_folder_btn.invoke()
                 startfile.assert_called_once_with(str(path.parent))
+        if retry_workpaper:
+            self.assertEqual(app.agent_record_btn.winfo_manager(), "pack")
+            self.assertNotIn(str(app.agent_run_record), app.agent_chat.get("1.0", "end"))
+            with patch.object(os, "startfile") as startfile:
+                app.agent_record_btn.invoke()
+                startfile.assert_called_once_with(str(app.agent_run_record))
         return SimpleNamespace(
             result=result, out=out, tb_copy=tb_copy, client=fake_client,
             approvals=approvals, dialogs=dialogs,
@@ -327,11 +333,14 @@ class AgentUiSmokeTests(unittest.TestCase):
     def test_ledger_question_excludes_previous_tb_from_every_request(self):
         run = self._run_agent(previous_scan=True, message="这个账套有多少个科目？",
                               out_dir_name="ledger-only", replies=[
-                                  reply([tool_call("get_project_context")]),
+                                  reply([tool_call("get_project_context")], "我先读取项目上下文。"),
                                   reply([tool_call("finish", {"status": "done", "summary": "两个科目"})])])
         self.assertEqual(len(run.client.sent), 2)
         self.assertNotIn("发送预览", run.chat_text)
         self.assertNotIn("model.invalid", run.chat_text)
+        self.assertNotIn("我先读取项目上下文。", run.chat_text)
+        self.assertEqual(run.chat_text.count("两个科目"), 1)
+        self.assertTrue(any(event.kind == "thought" for event in run.events))
         self.assertIn("合成企业", run.client.sent[-1])
         for payload in run.client.sent:
             for private in (self.template.name, "专属模板页", "专属待核字段", "98172365"):
@@ -546,11 +555,21 @@ class AgentUiSmokeTests(unittest.TestCase):
         lines = app.agent_bubbles[-1][1].winfo_children()[0].winfo_children()[0].cget("text").split("\n")
         self.assertGreater(len(lines), 2)
         self.assertFalse([line for line in lines if line[:1] in "，。、；：？！"])
-        agent_ui._append_message(app, "agent", "**结论**：账套能对上。")
+        agent_ui._append_message(app, "agent", "**结论**：账套能对上。\n\n\n### 依据\n- 合计一致")
         app.update()
         self.assertNotIn("**", app.agent_chat.get("1.0", "end"))
         self.assertIn("结论：账套能对上。", app.agent_chat.get("1.0", "end"))
         self.assertTrue(app.agent_chat.tag_ranges("agent_bold"))
+        self.assertTrue(app.agent_chat.tag_ranges("agent_heading"))
+        self.assertIn("能对上。\n\n依据\n•  合计一致", app.agent_chat.get("1.0", "end"))
+
+        app.rows = []
+        app.loaded_subject = None
+        app.agent_input.insert("1.0", "你是谁？")
+        with patch.object(agent_ui, "start") as start:
+            app.agent_start_btn.invoke()
+        start.assert_not_called()
+        self.assertIn("我是 Attesta，你的审计助手。", app.agent_chat.get("1.0", "end"))
 
     def test_question_has_one_reply_area_and_wraps_long_options(self):
         self.stack.enter_context(patch.dict(os.environ, {
