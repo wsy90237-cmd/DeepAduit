@@ -334,7 +334,7 @@ class InlinePromptTests(unittest.TestCase):
 
         def walk(widget):
             for child in widget.winfo_children():
-                if child.winfo_class() == "TButton":
+                if child.winfo_class() in {"TButton", "Button"}:
                     found.append(child)
                 walk(child)
 

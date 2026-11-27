@@ -142,12 +142,12 @@ def build(app):
                                 highlightcolor=ACC, bd=0)
     app.agent_prompt.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
     app.agent_prompt.grid_remove()
-    app.agent_start_actions = None
     app.agent_prompt_queue = []
     app.agent_prompt_active = None
 
     composer = tk.Frame(chat, bg=CARD, highlightthickness=1, highlightbackground=theme.HAIRLINE_STRONG,
                         highlightcolor=ACC)
+    app.agent_composer = composer
     composer.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
     composer.columnconfigure(0, weight=1)
     app.agent_input = tk.Text(composer, height=3, width=1, wrap="word", relief="flat", borderwidth=0,
@@ -923,37 +923,6 @@ def _current_fingerprint(app):
             _results_digest(app.results))
 
 
-def _manifest_lines(snapshot, stages, scope, client, config, indexes=()):
-    """开始前要让用户看清的事实：发给谁、发什么、不发什么、产出什么、上限多少。"""
-    counts = {
-        "ledger": f"科目余额 {len(snapshot.rows)} 条",
-        "tb": (f"{Path(snapshot.template_path).name} 内的识别字段、已有值与匹配结果 "
-               + (f"{len(snapshot.results)} 项" if snapshot.scan is not None else "（尚未扫描）")),
-        "journal": "序时账摘要与抽凭样本",
-        "workpaper": "报表项目科目、客商及月度发生额摘要",
-        "knowledge": "本地内置知识片段",
-    }
-    deliverables = "、".join({"tb": "TB 副本", "papers": "整册底稿"}.get(stage, stage) for stage in stages)
-    if indexes:
-        deliverables += f"（{'、'.join(indexes)}）"
-    host = str(client.base_url).replace("https://", "").replace("http://", "").rstrip("/")
-    lines = (
-        ("发送到", f"{host} · {client.model}"),
-        ("发送内容", ("已核对的任务上下文、你的回复、" if config.get("resuming") else "任务文字、") +
-         "主体与期间；" + "；".join(counts[key] for key in counts if key in scope)),
-        ("不发送", "完整工作簿、原始数据库、API Key、未选中的客户资料"),
-        ("交付物", f"{deliverables} · 写入前选择保存位置" if deliverables else "在对话中回答"),
-        ("上限", f"{config['max_model_calls']} 次模型请求 · {config['max_tool_calls']} 次工具 · 15 分钟"),
-        ("写入边界", "只生成新文件，不改原模板和原数据库；报告只出草稿"),
-    )
-    if "tb" in stages:
-        period = "、".join("期初" if item == "opening" else "期末" for item in snapshot.periods)
-        lines = (*lines[:4], ("TB 设置", f"{Path(snapshot.template_path).name} · {period} · 单位{snapshot.unit}"), *lines[4:])
-    if config.get("output_dir"):
-        lines = (*lines[:4], ("首选保存目录", config["output_dir"]), *lines[4:])
-    return lines
-
-
 def start(app, objective, *, local_output=None):
     if app.busy or app.agent_running:
         _append_message(app, "sys", "当前任务尚未完成，请先停止或等待。")
@@ -1045,23 +1014,11 @@ def _start_with_template(app, objective, stages, indexes, selected, output):
     config = {"objective": objective, "stages": stages, "report_indexes": indexes,
               "max_steps": 20, "max_tool_calls": 40, "max_model_calls": 12,
               "output_dir": str(output) if output else ""}
-    app.agent_state_var.set("等待你确认发送")
-
-    def decided(ok):
-        if not ok:
-            _append_message(app, "sys", "已取消；未发送任何资料。")
-            app.agent_state_var.set("已取消；未发送任何资料。")
-            return
-        if snapshot.revision() != _current_fingerprint(app):
-            _append_message(app, "warning", "账套、模板或 TB 已变化，请重新发送任务。")
-            app.agent_state_var.set("来源已变化")
-            return
-        _launch(app, snapshot, client, stages, scope, objective, indexes, config)
-
-    lines = _manifest_lines(snapshot, stages, scope, client, config, indexes)
-    if not stages and scope == {"ledger", "knowledge"}:
-        lines = lines[:2]
-    confirm_start(app, "发送预览", lines, decided)
+    if snapshot.revision() != _current_fingerprint(app):
+        _append_message(app, "warning", "账套、模板或 TB 已变化，请重新发送任务。")
+        app.agent_state_var.set("来源已变化")
+        return
+    _launch(app, snapshot, client, stages, scope, objective, indexes, config)
 
 
 def _refresh_pending(app):
@@ -1164,17 +1121,11 @@ def _resume_pending(app, path, record, answer):
     answer = agent_paths.without_paths(answer)
     _append_message(app, "me", answer)
 
-    def decided(ok):
-        if not ok:
-            return
-        if snapshot.revision() != _current_fingerprint(app):
-            _append_message(app, "warning", "账套、模板或 TB 已变化。请重新打开待办核对。")
-            return
-        _launch(app, snapshot, client, stages, scope, config["objective"], indexes, config,
-                continuation=(path, record, answer))
-
-    preview = dict(config, resuming=True)
-    confirm_start(app, "继续审计任务", _manifest_lines(snapshot, stages, scope, client, preview, indexes), decided)
+    if snapshot.revision() != _current_fingerprint(app):
+        _append_message(app, "warning", "账套、模板或 TB 已变化。请重新打开待办核对。")
+        return
+    _launch(app, snapshot, client, stages, scope, config["objective"], indexes, config,
+            continuation=(path, record, answer))
 
 
 def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *, continuation=None):
@@ -1561,10 +1512,8 @@ def _enqueue_prompt(app, render):
 
 
 def _close_prompt(app):
-    actions = getattr(app, "agent_start_actions", None)
-    if actions is not None:
-        actions.destroy()
-        app.agent_start_actions = None
+    if getattr(app, "agent_question_submit", None) is not None and hasattr(app, "agent_composer"):
+        app.agent_composer.grid()
     panel = app.agent_prompt
     for child in panel.winfo_children():
         child.destroy()
@@ -1585,11 +1534,12 @@ def _dismiss_prompt(app):
     _close_prompt(app)
 
 
-def _open_prompt(app):
+def _open_prompt(app, *, border=ACC):
     """显示面板并把注意力带过来：切到 Agent 页、窗口置前、提示音。"""
     panel = app.agent_prompt
     for child in panel.winfo_children():
         child.destroy()
+    panel.configure(highlightbackground=border, highlightcolor=border)
     panel.grid()
     arrange = getattr(app, "agent_arrange", None)
     if arrange is not None:
@@ -1620,8 +1570,10 @@ def _open_prompt(app):
         for child in area.body.winfo_children():
             columns = child.winfo_children() if child.winfo_class() == "Frame" else (child,)
             for widget in columns:
-                if widget.winfo_class() == "Label" and int(widget.cget("wraplength")):
-                    offset = 120 if widget.winfo_manager() == "grid" else 0
+                if widget.winfo_class() in {"Label", "Button"} and int(widget.cget("wraplength")):
+                    offset = 36 if widget.winfo_class() == "Button" else 0
+                    if widget.winfo_manager() == "grid":
+                        offset = 120
                     widget.configure(wraplength=max(50, event.width - theme.px(app, offset)))
 
     area.body.bind("<Configure>", fit, add="+")
@@ -1705,39 +1657,16 @@ def prompt_approval(app, request, on_done):
     _enqueue_prompt(app, render)
 
 
-def confirm_start(app, title, lines, on_done):
-    """把外发预览和操作放入对话正文。"""
-
-    def render():
-        _append_message(app, "sys", "\n".join([title, *(f"{key}  {value}" for key, value in lines)]))
-        chat = app.agent_chat
-        buttons = app.agent_start_actions = tk.Frame(chat, bg=BG)
-
-        def finish(value):
-            _close_prompt(app)
-            on_done(value)
-
-        cancel = ttk.Button(buttons, text="取消", style="Quiet.TButton", command=lambda: finish(False))
-        cancel.pack(side="left", padx=(0, 8))
-        ttk.Button(buttons, text="确认发送", style="Accent.TButton",
-                   command=lambda: finish(True)).pack(side="left")
-        chat.configure(state="normal")
-        chat.window_create("end", window=buttons, padx=theme.px(app, 40), pady=theme.px(app, 4))
-        chat.insert("end", "\n", "sys")
-        chat.configure(state="disabled")
-        chat.see("end")
-        cancel.focus_set()
-
-    _enqueue_prompt(app, render)
-
-
 def prompt_question(app, question, options, on_done, *, cancel_text="取消"):
     """在对话页里回答 Agent 的提问；取消返回 None。"""
 
     def render():
-        body = _open_prompt(app)
+        if hasattr(app, "agent_composer"):
+            app.agent_composer.grid_remove()
+        body = _open_prompt(app, border=BORDER)
         answer = tk.StringVar(master=app, value="")
-        _label(body, question, fg=TX, size=10, weight="bold", wrap=theme.px(app, 640)).pack(anchor="w")
+        _label(body, "需要你的回复", fg=TX, size=11, weight="bold").pack(anchor="w", pady=(0, 6))
+        _label(body, question, fg=theme.INK_SOFT, size=10, wrap=theme.px(app, 640)).pack(fill="x")
 
         def finish(value):
             _close_prompt(app)
@@ -1747,23 +1676,31 @@ def prompt_question(app, question, options, on_done, *, cancel_text="取消"):
             if value.strip():
                 finish(value.strip())
 
-        if options:
-            row = tk.Frame(body, bg=CARD)
-            row.pack(fill="x", pady=(8, 0))
-            for index, option in enumerate(options[:6], 1):
-                long = len(option) > 34
-                ttk.Button(row, text=f"选项 {index}" if long else option,
-                           command=lambda value=option: finish(value)).pack(anchor="w", pady=2)
-                if long:
-                    _label(row, option, wrap=theme.px(app, 420)).pack(fill="x", pady=(0, 2))
-        line = tk.Frame(body, bg=CARD)
-        line.pack(fill="x", pady=(8, 0))
-        entry = ttk.Entry(line, textvariable=answer)
+        for option in options[:6]:
+            button = tk.Button(body, text=option, anchor="w", justify="left", cursor="hand2",
+                               bg=theme.SURFACE_ALT, fg=TX, activebackground=theme.ACCENT_SOFT,
+                               activeforeground=TX, relief="flat", bd=0, highlightthickness=1,
+                               highlightbackground=BORDER, highlightcolor=ACC, font=theme.font(10),
+                               wraplength=theme.px(app, 600), padx=12, pady=6,
+                               command=lambda value=option: finish(value))
+            button.pack(fill="x", pady=(6, 0))
+            button.bind("<Return>", lambda _event, item=button: item.invoke())
+
+        panel = app.agent_prompt
+        tk.Frame(panel, bg=BORDER, height=1).pack(fill="x")
+        line = tk.Frame(panel, bg=CARD)
+        line.pack(fill="x", padx=16, pady=(10, 12))
+        _label(line, "你的回复").pack(anchor="w", pady=(0, 4))
+        controls = tk.Frame(line, bg=CARD)
+        controls.pack(fill="x")
+        entry = ttk.Entry(controls, textvariable=answer)
         entry.pack(side="left", fill="x", expand=True)
         entry.bind("<Return>", lambda _event: submit(answer.get()))
-        ttk.Button(line, text="提交", style="Accent.TButton",
-                   command=lambda: submit(answer.get())).pack(side="left", padx=(6, 0))
-        ttk.Button(line, text=cancel_text, command=lambda: finish(None)).pack(side="left", padx=(6, 0))
+        entry.bind("<Escape>", lambda _event: finish(None))
+        ttk.Button(controls, text="回复", style="Accent.TButton",
+                   command=lambda: submit(answer.get())).pack(side="right", padx=(8, 0))
+        ttk.Button(controls, text=cancel_text, style="CardQuiet.TButton",
+                   command=lambda: finish(None)).pack(side="right", padx=(8, 0))
         app.agent_question_submit = submit
         entry.focus_set()
 

@@ -245,7 +245,7 @@ class AgentContext:
         if not extra:
             return
         if self.scope_approver is None:
-            raise ScopeError("本次请求包含启动确认之外的数据类别：" + "、".join(sorted(extra)))
+            raise ScopeError("本次请求包含超出任务范围的数据类别：" + "、".join(sorted(extra)))
         if not self.scope_approver(extra):
             raise ScopeError("用户未同意扩大发送范围，本次结果未发送。")
         self.allowed_scope.update(extra)
