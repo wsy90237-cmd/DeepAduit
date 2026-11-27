@@ -100,6 +100,37 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertEqual(app.evidence_root, available)
                 app.store.save_evidence_root.assert_called_once_with(available)
 
+    def test_current_store_distinguishes_missing_root_from_optional_evidence(self):
+        app = self.app
+        app.loaded_subject = Subject("S1", "合成企业", 2026, 12, "")
+        self.assertIsNone(evidence_ui.current_store(app))
+        with TemporaryDirectory() as root:
+            app.store = SimpleNamespace(data={"evidence_root": root})
+            self.assertIsNone(evidence_ui.current_store(app))
+            app.store.data["evidence_root"] = str(Path(root) / "disconnected")
+            with self.assertRaises(FileNotFoundError):
+                evidence_ui.current_store(app)
+
+    def test_cached_project_failure_destroys_dialog_and_offers_directory_retry(self):
+        app = self.app
+        app.loaded_subject = Subject("S1", "合成企业", 2026, 12, "")
+        with TemporaryDirectory() as root:
+            store = evidence_ui.ProjectStore(root, "合成企业 [S1]", 2026)
+            app.evidence_store, app.evidence_root = store, root
+            app.intake = Mock(store=store)
+            app.intake.current.return_value = True
+            store.db.unlink()
+            with patch.object(evidence_ui, "EvidenceDialog") as window, \
+                    patch.object(evidence_ui.messagebox, "showerror") as error, \
+                    patch.object(evidence_ui.filedialog, "askdirectory", return_value="") as chooser:
+                evidence_ui.open_project(app)
+                window.return_value.destroy.assert_called_once()
+                window.return_value.grab_set.assert_not_called()
+                error.assert_called_once()
+                chooser.assert_called_once()
+            self.assertIsNone(app.intake)
+            self.assertFalse(store.db.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

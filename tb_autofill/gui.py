@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import queue
+import sqlite3
 import threading
 import time
 import traceback
@@ -924,8 +925,9 @@ class PaperDialog(tk.Toplevel):
             initial = project.root / "底稿" if project else None
             if initial is not None:
                 initial.mkdir(exist_ok=True)
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("无法打开项目目录", str(exc), parent=self)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            messagebox.showerror("无法读取项目资料",
+                                 f"未导出底稿。请在「项目资料」检查目录和数据库后重试。\n{exc}", parent=self)
             return
         path = filedialog.asksaveasfilename(title="导出整册 Excel 底稿（草稿，需复核）", defaultextension=".xlsx",
                                             filetypes=[("Excel 工作簿", "*.xlsx")], initialfile=name, initialdir=initial)
@@ -949,6 +951,11 @@ class PaperDialog(tk.Toplevel):
         narrative = self.draft if self.draft and self.draft.get("kind") == "pack" else {}
         try:
             evidence_rows = evidence_ui.paper_rows(self.app, prefix)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            messagebox.showerror("无法读取项目资料",
+                                 f"未导出底稿。请在「项目资料」检查目录和数据库后重试。\n{exc}", parent=self)
+            return
+        try:
             template = self.app.template_var.get().strip()
             if template and Path(template).resolve() == Path(path).resolve():
                 raise ValueError("请为底稿选择新文件，保留原 TB 模板。")

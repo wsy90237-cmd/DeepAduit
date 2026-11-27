@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 from openpyxl import load_workbook
 
-from tb_autofill import ai, audit_index, gui, papers
+from tb_autofill import ai, audit_index, evidence_ui, gui, papers
 from tb_autofill.models import JournalRow, JournalRows, LedgerRow, PaperData, Subject
 
 
@@ -267,6 +267,21 @@ class PaperUiTests(unittest.TestCase):
             dialog._export_pack()
         self.assertIsNone(dialog.sample_selection)
         self.assertIn("重新选择抽凭", dialog.state.get())
+
+    def test_broken_project_database_blocks_legacy_export_before_save_dialog(self):
+        dialog = self.dialog()
+        accounts, rows = papers.report_scope(self.app.rows, dialog.current_paper)
+        dialog.paper_data = PaperData(rows=rows, codes=tuple(row.code for row in accounts), journal=JournalRows([]))
+        self.app.evidence_root = self.folder.name
+        subject = self.app.loaded_subject
+        project = evidence_ui.ProjectStore(self.app.evidence_root, evidence_ui.draft.project_entity(subject), subject.year)
+        project.db.write_bytes(b'synthetic invalid SQLite')
+        with patch.object(gui.filedialog, "asksaveasfilename") as save, \
+                patch.object(gui.messagebox, "showerror") as error:
+            dialog._export_pack()
+        save.assert_not_called()
+        self.assertIn("未导出底稿", error.call_args.args[1])
+        self.assertEqual(project.db.read_bytes(), b'synthetic invalid SQLite')
 
     def test_sheet_suggestions_apply_only_checked_items(self):
         parent = self.dialog()

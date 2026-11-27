@@ -162,6 +162,7 @@ class AgentToolTests(unittest.TestCase):
             "draft": {"kind": "local"},
             "warnings": [],
         }
+        self.ctx.add_gap(agent_tools.EVIDENCE_READ_GAP)
         output = self.root / "out" / "money-fund.xlsx"
         value = agent_tools.export_workpaper(self.ctx, {"index_no": "1-010"},
                                              runtime(str(output)))
@@ -175,6 +176,7 @@ class AgentToolTests(unittest.TestCase):
             book.close()
         self.assertIn("库存现金", contents)
         self.assertIn("1-010", contents)
+        self.assertIn(agent_tools.EVIDENCE_READ_GAP, contents)
 
     def test_stage_registry_can_exclude_paper_tools(self):
         stage = agent_tools.build_registry(include_papers=False)

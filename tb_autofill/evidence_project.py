@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import sqlite3
 import uuid
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG
 
 
 def _digest(path):
@@ -34,21 +35,34 @@ class ProjectStore:
     def open_existing(cls, root, entity, year):
         """打开已有项目；不存在时不创建任何目录或数据库。"""
         path = cls._project_path(root, entity, year)
-        if not (path / 'projects.sqlite3').is_file() or not (path / 'pdf').is_dir():
+        try:
+            path.stat()
+        except FileNotFoundError:
             return None
-        return cls(root, entity, year)
+        return cls(root, entity, year, create=False)
 
-    def __init__(self, root, entity, year):
+    def __init__(self, root, entity, year, *, create=True):
         self.entity = str(entity).strip()
         self.year = str(year).strip()
         self.root = self._project_path(root, self.entity, self.year)
-        self.root.mkdir(parents=True, exist_ok=True)
         self.files = self.root / 'pdf'
-        self.files.mkdir(exist_ok=True)
         self.inbox = self.root / '原始资料'
-        self.inbox.mkdir(exist_ok=True)
         self.db = self.root / 'projects.sqlite3'
-        with self._connect() as db:
+        created = False
+        if create:
+            try:
+                self.root.mkdir(parents=True)
+            except FileExistsError:
+                pass
+            else:
+                self.files.mkdir()
+                created = True
+        if not created:
+            self.require_available()
+        with self._connect(create=created) as db:
+            if not created:
+                for table in ('documents', 'pages', 'suggestions', 'suggestion_evidence'):
+                    db.execute(f'SELECT * FROM {table} LIMIT 0')
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS documents (
                     id TEXT PRIMARY KEY, entity TEXT NOT NULL, year TEXT NOT NULL,
@@ -70,6 +84,7 @@ class ProjectStore:
                     id TEXT PRIMARY KEY, scope TEXT NOT NULL, name TEXT NOT NULL,
                     sha256 TEXT NOT NULL, content BLOB NOT NULL);
             ''')
+        self.inbox.mkdir(exist_ok=True)
 
     def import_bank_listing(self, path, scope, validate):
         """Persist only a validated byte-for-byte copy; latest valid import owns the scope."""
@@ -108,9 +123,19 @@ class ProjectStore:
                 return tuple(row)
             return None
 
+    def require_available(self):
+        if not S_ISDIR(self.files.stat().st_mode):
+            raise NotADirectoryError(self.files)
+        if not S_ISREG(self.db.stat().st_mode):
+            raise OSError(f'项目资料数据库路径无效：{self.db}')
+
     @contextmanager
-    def _connect(self):
-        db = sqlite3.connect(self.db)
+    def _connect(self, *, create=False):
+        uri = self.db.as_uri()
+        if self.db.drive.startswith('\\\\'):
+            uri = uri.replace('file://', 'file:////', 1)
+        mode = 'rwc' if create else 'rw'
+        db = sqlite3.connect(f'{uri}?mode={mode}', uri=True)
         db.row_factory = sqlite3.Row
         db.create_collation('CASEFOLD', lambda a, b: (a.casefold() > b.casefold()) - (a.casefold() < b.casefold()))
         try:

@@ -1101,7 +1101,7 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
             from . import evidence_ui
             evidence_rows = {index: evidence_ui.paper_rows(app, index) for index in indexes}
         except Exception:
-            evidence_gap = "项目资料无法读取，本次底稿未勾稽该目录中的审计证据。请在底稿页检查项目资料目录。"
+            evidence_gap = agent_tools.EVIDENCE_READ_GAP
     def current_fingerprint():
         # 只读普通 Python 属性；不要在运行线程里调 Tk 变量。
         try:

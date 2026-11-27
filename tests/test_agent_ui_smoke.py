@@ -134,7 +134,7 @@ class AgentUiSmokeTests(unittest.TestCase):
     def _run_agent(self, *, replies, out_dir_name, template=True,
                    message="复核 TB 并生成所需交付物", block_workpaper_locations=False,
                    retry_workpaper=False, choose_template_in_chat=False, previous_scan=False,
-                   follow_up=False):
+                   follow_up=False, disconnected_evidence=False):
         """构造真实 App，跑一轮脚本化 Agent，返回运行结果与调用证据。"""
         fake_client = ScriptedClient(replies)
         out = self.root / out_dir_name
@@ -194,6 +194,8 @@ class AgentUiSmokeTests(unittest.TestCase):
             report.write_text("synthetic-pending", encoding="utf-8")
 
         fake_store = self._fake_store()
+        if disconnected_evidence:
+            fake_store.data["evidence_root"] = str(self.root / "disconnected")
 
         def isolated_settings(app):
             app.store = fake_store
@@ -594,6 +596,7 @@ class AgentUiSmokeTests(unittest.TestCase):
             ],
             out_dir_name="out-papers-only",
             template=False,
+            disconnected_evidence=True,
             message="帮我做货币资金底稿")
 
         self.assertEqual(run.result.status, "partial",
@@ -601,6 +604,7 @@ class AgentUiSmokeTests(unittest.TestCase):
         self.assertFalse(any("模板" in gap for gap in run.result.gaps), run.result.gaps)
         self.assertTrue(any("整册底稿未生成：1-010" in gap for gap in run.result.gaps),
                         run.result.gaps)
+        self.assertIn(agent_tools.EVIDENCE_READ_GAP, run.result.gaps)
 
     def test_papers_with_scope_but_missing_workpaper_is_partial(self):
         run = self._run_agent(

@@ -21,10 +21,28 @@ def _directory_error(root, exc):
     if isinstance(exc, PermissionError) or code in {sqlite3.SQLITE_READONLY, sqlite3.SQLITE_PERM}:
         return f"Windows 拒绝访问项目资料目录或其中的数据库。\n{root}"
     if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
-        return f"项目资料目录不存在或当前不可达。\n{root}"
+        return f"项目资料目录或数据库不存在，或当前不可达。\n{root}\n{exc}"
     if code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
         return f"项目资料数据库正被占用。\n{root}"
     return f"无法打开项目资料。\n{root}\n{exc}"
+
+
+def _configured_root(app):
+    settings = getattr(app, "store", None)
+    return getattr(app, "evidence_root", "") or (settings.data.get("evidence_root") if settings else "")
+
+
+def _require_root(root):
+    if not S_ISDIR(Path(root).stat().st_mode):
+        raise NotADirectoryError(root)
+
+
+def _cached_store(app):
+    store = getattr(app, "evidence_store", None)
+    subject = app.loaded_subject
+    if store is not None and (store.entity, str(store.year)) == (draft.project_entity(subject), str(subject.year)):
+        return store
+    return None
 
 
 def activate_project(app, *, interactive=True, root_override=None):
@@ -35,7 +53,7 @@ def activate_project(app, *, interactive=True, root_override=None):
         if interactive:
             messagebox.showinfo("项目资料", "请先在工作台读取主体和期间。", parent=app)
         return
-    root = root_override or getattr(app, 'evidence_root', '') or (app.store.data.get('evidence_root') if app.store else '')
+    root = root_override or _configured_root(app)
     if not root:
         if not interactive:
             if hasattr(app, "intake_status"):
@@ -45,15 +63,17 @@ def activate_project(app, *, interactive=True, root_override=None):
     if not root:
         return
     try:
-        if not S_ISDIR(Path(root).stat().st_mode):
-            raise NotADirectoryError(root)
+        _require_root(root)
+        cached = _cached_store(app)
+        if cached is not None and Path(root).resolve() == cached.root.parent.parent:
+            cached.require_available()
         store = ProjectStore(root, draft.project_entity(subject), subject.year)
         from .auto_intake_ui import Intake
         intake = Intake(app, store)
     except (OSError, sqlite3.Error, ValueError) as exc:
         text = _directory_error(root, exc)
         if not root_override or root == getattr(app, "evidence_root", None):
-            app.evidence_store = app.intake = None
+            app.intake = None
         if hasattr(app, "intake_status"):
             app.intake_status.set(f"{text}\n可用「更换资料目录」重新选择。")
         if interactive:
@@ -90,19 +110,34 @@ def open_project(app, *, choose_directory=False):
     if not store:
         return
     window = EvidenceDialog(app, store)
+    try:
+        store.require_available()
+        window.reload()
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        window.destroy()
+        app.intake = None
+        text = _directory_error(store.root, exc)
+        if hasattr(app, "intake_status"):
+            app.intake_status.set(f"{text}\n可用「更换资料目录」重新选择。")
+        messagebox.showerror("无法打开项目资料", f"{text}\n请恢复该项目资料目录，或选择其它目录。", parent=app)
+        if not choose_directory:
+            return open_project(app, choose_directory=True)
+        return
     window.grab_set()
 
 
 def current_store(app):
-    store = getattr(app, "evidence_store", None)
     subject = app.loaded_subject
     if subject is None:
         return None
-    if store is None or (store.entity, str(store.year)) != (draft.project_entity(subject), str(subject.year)):
-        settings = getattr(app, "store", None)
-        root = getattr(app, "evidence_root", "") or (settings.data.get("evidence_root") if settings else "")
-        store = ProjectStore.open_existing(root, draft.project_entity(subject), subject.year) if root else None
-    return store
+    root = _configured_root(app)
+    if root:
+        _require_root(root)
+    store = _cached_store(app)
+    if store is not None:
+        store.require_available()
+        return store
+    return ProjectStore.open_existing(root, draft.project_entity(subject), subject.year) if root else None
 
 
 def paper_rows(app, index):
@@ -162,7 +197,6 @@ class EvidenceDialog(tk.Toplevel):
         self.status.grid(row=5, column=0, sticky="ew", padx=12, pady=8)
         self.stop_batch = Event()
         self.cancel_button = ttk.Button(self.actions, text="本份结束后停止", command=self.stop_batch.set)
-        self.reload()
 
     def button(self, bar, label, action):
         def run():

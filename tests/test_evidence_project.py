@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import sqlite3
 import tempfile
 import unittest
 
@@ -76,6 +77,31 @@ class EvidenceProjectTests(unittest.TestCase):
             self.assertEqual(reopened.root, created.root)
             self.assertIsNone(ProjectStore.open_existing(root, '其他公司', 2025))
 
+    def test_deleted_database_is_not_recreated_by_active_or_reopened_project(self):
+        with tempfile.TemporaryDirectory() as path:
+            root = Path(path)
+            source = root / 'source.pdf'
+            source.write_bytes(b'%PDF-1.4 synthetic')
+            store = ProjectStore(root, '公司', 2025)
+            document = store.import_pdf(source, lambda _: ['合成证据'])
+            store.db.unlink()
+            with self.assertRaises(sqlite3.OperationalError):
+                store.list_documents()
+            with self.assertRaises(FileNotFoundError):
+                ProjectStore.open_existing(root, '公司', 2025)
+            with self.assertRaises(FileNotFoundError):
+                ProjectStore(root, '公司', 2025)
+            self.assertFalse(store.db.exists())
+            self.assertEqual(Path(document['pdf_path']).read_bytes(), source.read_bytes())
+
+    def test_empty_replacement_database_is_not_initialized(self):
+        with tempfile.TemporaryDirectory() as path:
+            store = ProjectStore(path, '公司', 2025)
+            store.db.write_bytes(b'')
+            with self.assertRaises(sqlite3.DatabaseError):
+                ProjectStore.open_existing(path, '公司', 2025)
+            self.assertEqual(store.db.read_bytes(), b'')
+
     def test_legacy_text_stays_on_disk_but_cannot_be_reused_for_new_drafts(self):
         with tempfile.TemporaryDirectory() as path:
             source = Path(path) / 'source.pdf'
@@ -88,7 +114,7 @@ class EvidenceProjectTests(unittest.TestCase):
             store.confirm_suggestion(suggestion)
             with store._connect() as db:
                 db.execute('DROP TABLE text_layer_documents')
-            store = ProjectStore(path, '合成公司', 2025)
+            store = ProjectStore.open_existing(path, '合成公司', 2025)
             self.assertEqual(store.verify_document(old['id']).read_bytes(), source.read_bytes())
             self.assertFalse(store.list_suggestions(current_only=True))
             self.assertEqual(store.list_suggestions()[0]['id'], suggestion)

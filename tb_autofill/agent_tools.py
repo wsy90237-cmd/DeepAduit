@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import os
 from pathlib import Path
@@ -15,6 +16,9 @@ from tempfile import gettempdir
 from . import ai, audit_index, brand, dxn, dxn_paper, fields, matching, paper_pack, papers, skills, workbook
 from .agent import AgentError, ToolRegistry, ToolSpec
 from .models import can_write, ledger_digest, money
+
+
+EVIDENCE_READ_GAP = "项目资料无法读取，本次底稿未勾稽该目录中的审计证据。请在底稿页检查项目资料目录。"
 
 
 def _revision(context):
@@ -665,6 +669,9 @@ def export_workpaper(context, arguments, runtime):
             evidence = ()
     evidence = tuple(evidence or ())
     warnings = list(prepared.get("warnings") or [])
+    if EVIDENCE_READ_GAP in context.gaps:
+        data = replace(data, warnings=(*data.warnings, EVIDENCE_READ_GAP))
+        warnings.append(EVIDENCE_READ_GAP)
     next_steps = list(alternative_procedures(paper.index_no)) if not evidence else []
     if not evidence:
         if paper.index_no == "1-010":
