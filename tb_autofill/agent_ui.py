@@ -142,6 +142,7 @@ def build(app):
                                 highlightcolor=ACC, bd=0)
     app.agent_prompt.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
     app.agent_prompt.grid_remove()
+    app.agent_start_actions = None
     app.agent_prompt_queue = []
     app.agent_prompt_active = None
 
@@ -160,12 +161,8 @@ def build(app):
     app.agent_input_hint.bind("<Button-1>", lambda _event: app.agent_input.focus_set())
     for sequence in ("<KeyPress>", "<Button-1>", "<<Paste>>"):
         app.agent_input.bind(sequence, lambda _event: app.agent_input_hint.place_forget(), add="+")
-    app.agent_send_preview = _label(composer, "", fg=SEC, size=8)
-    app.agent_send_preview.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
-    composer.bind("<Configure>", lambda event: app.agent_send_preview.configure(
-        wraplength=max(1, event.width - theme.px(app, 24))), add="+")
     buttons = tk.Frame(composer, bg=CARD)
-    buttons.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+    buttons.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
     app.agent_review_btn = ttk.Button(buttons, text="核对明细", style="CardQuiet.TButton",
                                       command=app._open_tb_review, state="disabled")
     app.agent_review_btn.pack(side="left")
@@ -837,6 +834,7 @@ def _requested_period(text):
 def _clear(app):
     if app.agent_running:
         return
+    _dismiss_prompt(app)
     app.agent_events = []
     app.agent_paper_request = None
     app.agent_chat.configure(state="normal")
@@ -858,23 +856,10 @@ def refresh(app):
     if not hasattr(app, "agent_context_var"):
         return
     subject = getattr(app, "loaded_subject", None)
-    store = getattr(app, "store", None)
-    preview = getattr(app, "agent_send_preview", None)
-    if preview is not None:
-        if subject is not None and store is not None and store.has_key and store.data.get("ai_enabled"):
-            endpoint = store.data.get("base_url", settings.DEFAULT_BASE_URL)
-            model = store.data.get("model", ai.DEFAULT_MODEL)
-            host = endpoint.removeprefix("https://").rstrip("/")
-            preview.configure(text=f"发送到 {host} · {model}\n"
-                                   "普通问答发送问题、主体与期间，以及所需的科目余额和本地知识摘要。")
-            preview.grid()
-        else:
-            preview.grid_remove()
     previous = getattr(app, "agent_view_subject", None)
     if subject is not None:
         app.agent_view_subject = subject
     if subject is not None and previous is not None and subject != previous and not app.agent_running:
-        _dismiss_prompt(app)
         app.agent_context = app.agent_result = None
         _sync_reexport(app)
         _clear(app)
@@ -1060,10 +1045,7 @@ def _start_with_template(app, objective, stages, indexes, selected, output):
     config = {"objective": objective, "stages": stages, "report_indexes": indexes,
               "max_steps": 20, "max_tool_calls": 40, "max_model_calls": 12,
               "output_dir": str(output) if output else ""}
-    if not stages and scope == {"ledger", "knowledge"}:
-        _launch(app, snapshot, client, stages, scope, objective, indexes, config)
-        return
-    app.agent_state_var.set("等待你确认开始")
+    app.agent_state_var.set("等待你确认发送")
 
     def decided(ok):
         if not ok:
@@ -1076,9 +1058,10 @@ def _start_with_template(app, objective, stages, indexes, selected, output):
             return
         _launch(app, snapshot, client, stages, scope, objective, indexes, config)
 
-    # 开始前的发送范围确认放在对话页里，不再弹窗；内容与原确认框一致。
-    confirm_start(app, f"开始 {brand.AGENT_NAME} 任务", _manifest_lines(snapshot, stages, scope, client, config, indexes),
-                  decided)
+    lines = _manifest_lines(snapshot, stages, scope, client, config, indexes)
+    if not stages and scope == {"ledger", "knowledge"}:
+        lines = lines[:2]
+    confirm_start(app, "发送预览", lines, decided)
 
 
 def _refresh_pending(app):
@@ -1578,6 +1561,10 @@ def _enqueue_prompt(app, render):
 
 
 def _close_prompt(app):
+    actions = getattr(app, "agent_start_actions", None)
+    if actions is not None:
+        actions.destroy()
+        app.agent_start_actions = None
     panel = app.agent_prompt
     for child in panel.winfo_children():
         child.destroy()
@@ -1719,29 +1706,27 @@ def prompt_approval(app, request, on_done):
 
 
 def confirm_start(app, title, lines, on_done):
-    """开始前的确认：在对话页里列出事实，「开始」或「取消」。"""
+    """把外发预览和操作放入对话正文。"""
 
     def render():
-        body = _open_prompt(app)
-        _label(body, title, fg=TX, size=11, weight="bold").pack(anchor="w")
-        grid = tk.Frame(body, bg=CARD)
-        grid.pack(fill="x", pady=(8, 0))
-        grid.columnconfigure(1, weight=1)
-        for row, (key, value) in enumerate(lines):
-            _label(grid, key, fg=SEC).grid(row=row, column=0, sticky="nw", padx=(0, 12), pady=1)
-            _label(grid, value, fg=TX, wrap=theme.px(app, 560)).grid(row=row, column=1, sticky="w", pady=1)
-        buttons = tk.Frame(body, bg=CARD)
-        buttons.pack(fill="x", pady=(12, 0))
+        _append_message(app, "sys", "\n".join([title, *(f"{key}  {value}" for key, value in lines)]))
+        chat = app.agent_chat
+        buttons = app.agent_start_actions = tk.Frame(chat, bg=BG)
 
         def finish(value):
             _close_prompt(app)
             on_done(value)
 
-        go = ttk.Button(buttons, text="开始", style="Accent.TButton", command=lambda: finish(True))
-        go.pack(side="right")
-        ttk.Button(buttons, text="取消", style="CardQuiet.TButton",
-                   command=lambda: finish(False)).pack(side="right", padx=8)
-        go.focus_set()
+        cancel = ttk.Button(buttons, text="取消", style="Quiet.TButton", command=lambda: finish(False))
+        cancel.pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="确认发送", style="Accent.TButton",
+                   command=lambda: finish(True)).pack(side="left")
+        chat.configure(state="normal")
+        chat.window_create("end", window=buttons, padx=theme.px(app, 40), pady=theme.px(app, 4))
+        chat.insert("end", "\n", "sys")
+        chat.configure(state="disabled")
+        chat.see("end")
+        cancel.focus_set()
 
     _enqueue_prompt(app, render)
 

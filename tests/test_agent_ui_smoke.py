@@ -214,7 +214,7 @@ class AgentUiSmokeTests(unittest.TestCase):
         starts = []
 
         def confirm(_app, _title, lines, on_done):
-            # 开始确认已改为对话页内的面板：测试里记录内容后直接点「开始」。
+            # 记录外发范围后模拟用户确认。
             starts.append(lines)
             on_done(True)
 
@@ -326,7 +326,6 @@ class AgentUiSmokeTests(unittest.TestCase):
             denied_paths=denied_paths, temp_output=temp_output, before_retry=before_retry,
             retry_path=retry_path,
             record=app.agent_run_record,
-            send_preview=app.agent_send_preview.cget("text"),
             review_ready="disabled" not in app.agent_review_btn.state(),
             artifact_rows=tuple(app.agent_artifacts.item(item, "values")
                                 for item in app.agent_artifacts.get_children()),
@@ -338,9 +337,9 @@ class AgentUiSmokeTests(unittest.TestCase):
                                   reply([tool_call("get_project_context")]),
                                   reply([tool_call("finish", {"status": "done", "summary": "两个科目"})])])
         self.assertEqual(len(run.client.sent), 2)
-        self.assertEqual(run.starts, [])
-        self.assertIn("model.invalid", run.send_preview)
-        self.assertIn("科目余额", run.send_preview)
+        preview, = run.starts
+        self.assertIn("model.invalid", dict(preview)["发送到"])
+        self.assertIn("科目余额", dict(preview)["发送内容"])
         self.assertIn("合成企业", run.client.sent[-1])
         for payload in run.client.sent:
             for private in (self.template.name, "专属模板页", "专属待核字段", "98172365"):
@@ -355,7 +354,7 @@ class AgentUiSmokeTests(unittest.TestCase):
             run = self._run_agent(template=False, out_dir_name="overview",
                                   message="你帮我看看现在这家公司整体运营情况怎么样",
                                   replies=[reply(content="按账面摘要已查看整体经营情况。")])
-        self.assertEqual(run.starts, [])
+        self.assertEqual(len(run.starts), 1)
         self.assertEqual(run.result.status, "done", run.result.error)
         self.assertEqual(run.client.calls, 1)
         messages = json.loads(run.client.sent[0])
@@ -564,6 +563,61 @@ class AgentUiSmokeTests(unittest.TestCase):
         self.assertNotIn("**", app.agent_chat.get("1.0", "end"))
         self.assertIn("结论：账套能对上。", app.agent_chat.get("1.0", "end"))
         self.assertTrue(app.agent_chat.tag_ranges("agent_bold"))
+
+    def test_send_preview_lives_in_chat_and_can_be_cancelled(self):
+        self.stack.enter_context(patch.dict(os.environ, {
+            "LOCALAPPDATA": str(self.root / "local"), "USERPROFILE": str(self.root)}))
+
+        def settings_for(app):
+            app.store, app._pending_error = self._fake_store(), ""
+
+        self.stack.enter_context(patch.object(gui.App, "_load_settings", settings_for))
+        self.stack.enter_context(patch.object(gui.App, "_autodetect"))
+        self.stack.enter_context(patch.object(gui.auditlog, "AuditLog"))
+        self.stack.enter_context(patch.object(gui.knowledge, "LocalLibrary"))
+        self.stack.enter_context(patch.object(agent_ui.ai.DeepSeekClient, "from_store",
+                                             return_value=SimpleNamespace(base_url="https://model.invalid", model="test")))
+        launch = self.stack.enter_context(patch.object(agent_ui, "_launch"))
+        try:
+            app = gui.App()
+        except tk.TclError as exc:
+            self.skipTest(str(exc))
+        self.addCleanup(_dispose, app)
+        app.busy = False
+        app.rows = ledger_rows()
+        app.loaded_subject = Subject("S1", "合成企业", 2026, 12, str(self.root), ledger_id="L1")
+        workspace.navigate(app, "agent")
+        app.update()
+        self.assertFalse(hasattr(app, "agent_send_preview"))
+
+        app.agent_input.insert("1.0", "这个账套有多少个科目？")
+        app.agent_start_btn.invoke()
+        app.update()
+        preview = app.agent_chat.get("1.0", "end")
+        self.assertIn("model.invalid", preview)
+        self.assertIn("科目余额", preview)
+        self.assertFalse(app.agent_prompt.winfo_manager())
+        launch.assert_not_called()
+        cancel, confirm = app.agent_start_actions.winfo_children()
+        self.assertEqual(confirm.cget("text"), "确认发送")
+        self.assertTrue(confirm.winfo_ismapped())
+        cancel.invoke()
+        self.assertIsNone(app.agent_start_actions)
+        launch.assert_not_called()
+
+        app.agent_input.insert("1.0", "这个账套有多少个科目？")
+        app.agent_start_btn.invoke()
+        app.agent_start_actions.winfo_children()[1].invoke()
+        launch.assert_called_once()
+
+        app.agent_input.insert("1.0", "制作 1-010 货币资金底稿")
+        app.agent_start_btn.invoke()
+        self.assertIn("整册底稿（1-010）", app.agent_chat.get("1.0", "end"))
+        self.assertFalse(app.agent_prompt.winfo_manager())
+        agent_ui._clear(app)
+        self.assertIsNone(app.agent_start_actions)
+        self.assertIsNone(app.agent_prompt_active)
+        launch.assert_called_once()
 
     def test_reply_avatar_spins_while_running_and_stops(self):
         self.stack.enter_context(patch.dict(os.environ, {
