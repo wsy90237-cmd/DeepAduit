@@ -617,6 +617,18 @@ def _overlap(left, right):
     return a == b or a.startswith(b) or b.startswith(a)
 
 
+def _side_flipped(target, sources):
+    """余额方向与本列相反：借贷分栏时本列应计 0，另一侧承载金额。"""
+    if target.measure != "balance" or not target.balance_side:
+        return False
+    sign = 1 if target.balance_side == "借" else -1
+    for row in sources:
+        amount = money(row.opening if target.period == "opening" else row.ending)
+        if amount is not None and amount * _direction(row) * sign < 0:
+            return True
+    return False
+
+
 def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "manual", *, rows=None, _index=None) -> MatchResult:
     """人工/AI 均只选来源；金额和所有写入前置条件统一在此核验。"""
     if method == "ai-review":
@@ -747,7 +759,8 @@ def resolve_match(target: TargetField, sources: list[LedgerRow], method: str = "
     if blank and result.amount == 0:
         # 答案语料显示：空白格通常表示无此项，写 0 会污染底稿；需要时手动勾选。
         result.selected = False
-        result.reason = "来源合计为 0，默认不写入空白格；确需填 0 请手动勾选"
+        result.reason = ("余额方向与列相反，本列按 0 计；请核对另一侧列" if _side_flipped(target, sources)
+                         else "来源合计为 0，默认不写入空白格；确需填 0 请手动勾选")
         return result
     result.reason = "按已确认来源本地计算；科目余额按自然方向保留符号"
     if target.measure == "opening_balance":

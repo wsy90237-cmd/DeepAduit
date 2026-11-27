@@ -279,11 +279,16 @@ def _by_name(name, papers):
     text = str(name or "").strip()
     if not text:
         return None
-    for index_no, keywords in _NAME_MAP:
-        if any(keyword in text for keyword in keywords):
-            paper = find(papers, index_no)
-            if paper:
-                return paper
+    # 最长关键词优先："应收款项融资" 不能先被 "应收款项" 截走归到应收账款。
+    matches = sorted(
+        ((len(keyword), order, index_no)
+         for order, (index_no, keywords) in enumerate(_NAME_MAP)
+         for keyword in keywords if keyword in text),
+        key=lambda item: (-item[0], item[1]))
+    for _length, _order, index_no in matches:
+        paper = find(papers, index_no)
+        if paper:
+            return paper
     available = resolve_papers(papers)
     contained = [paper for paper in available if paper.name and (paper.name in text or text in paper.name)]
     if contained:

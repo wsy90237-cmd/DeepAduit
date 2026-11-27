@@ -11,6 +11,14 @@ from tb_autofill import audit_index, paper_pack, papers
 from tb_autofill.models import JournalRow, LedgerRow
 
 
+class PeriodTests(unittest.TestCase):
+    def test_month_end_follows_calendar(self):
+        self.assertEqual(paper_pack._period("合成 / 2026-02"), "2026年02月28日")
+        self.assertEqual(paper_pack._period("合成 / 2024-02"), "2024年02月29日")
+        self.assertEqual(paper_pack._period("合成 / 2026-04"), "2026年04月30日")
+        self.assertEqual(paper_pack._period("合成 / 2026-12"), "2026年12月31日")
+
+
 def ledger():
     def row(code, name, path, level, opening, debit, credit, ending):
         return LedgerRow(code=code, name=name, path=path, level=level, direction="借",

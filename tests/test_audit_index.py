@@ -60,6 +60,11 @@ class ResolveTests(unittest.TestCase):
         self.check("6602", "管理费用", "5-110")
         self.check("6801", "所得税费用", "5-240")
 
+    def test_longest_keyword_wins_for_name_fallback(self):
+        """名称兜底不能按关键词表顺序抢先：应收款项融资属于 1-080。"""
+        self.check("9001", "应收款项融资", "1-080")
+        self.check("9002", "应收款项", "1-070")
+
     def test_short_codes_fall_back_to_name(self):
         paper, basis = audit_index.resolve("102", "银行存款")
         self.assertEqual(paper.index_no, "1-010")

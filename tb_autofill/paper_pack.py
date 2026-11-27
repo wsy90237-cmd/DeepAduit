@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -260,7 +261,10 @@ def _period(subject_label):
     if "-" in tail:
         year, _, month = tail.partition("-")
         if year.strip().isdigit() and month.strip().isdigit():
-            return f"{year.strip()}年{int(month):02d}月{31 if int(month) in (1, 3, 5, 7, 8, 10, 12) else 30}日"
+            number = int(month)
+            if 1 <= number <= 12:
+                last = calendar.monthrange(int(year), number)[1]
+                return f"{year.strip()}年{number:02d}月{last}日"
     return tail or UNDISCLOSED
 
 

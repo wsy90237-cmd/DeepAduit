@@ -378,6 +378,7 @@ class MatchingTests(unittest.TestCase):
         results = match_fields([debit, credit], [source])
         self.assertEqual([x.amount for x in results], [Decimal(6), Decimal(0)])
         self.assertEqual([x.status for x in results], ["matched", "matched"])
+        self.assertIn("方向与列相反", results[1].reason)
 
     def test_credit_balance_not_unconditionally_negated(self):
         self.assertEqual(resolve_match(target("应付账款"), [row("2202", "应付账款", direction="贷")]).amount, Decimal(12))
