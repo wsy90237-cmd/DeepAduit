@@ -68,6 +68,24 @@ class DialogTests(unittest.TestCase):
         with patch.object(dialogs, "_RESPONDER", self.respond("cancel")):
             self.assertIsNone(dialogs.askyesnocancel("三选", "合成正文", parent=self.root))
 
+    def test_enter_follows_the_focused_button(self):
+        """焦点在「否」时按回车不能执行「是」。"""
+        box = dialogs._MessageBox(
+            self.root, "确认", "合成正文", kind="warning",
+            buttons=(("yes", "是", "primary"), ("no", "否", "secondary")),
+            results={"yes": True, "no": False}, default="yes", cancel="no")
+        with patch.object(box, "focus_get", return_value=box.buttons["no"]):
+            box._on_return()
+        self.assertIs(box.result, False)
+
+        box = dialogs._MessageBox(
+            self.root, "确认", "合成正文", kind="warning",
+            buttons=(("yes", "是", "primary"), ("no", "否", "secondary")),
+            results={"yes": True, "no": False}, default="yes", cancel="no")
+        with patch.object(box, "focus_get", return_value=None):
+            box._on_return()
+        self.assertIs(box.result, True)
+
     def test_primary_button_is_packed_first_so_it_sits_rightmost(self):
         with patch.object(dialogs, "_RESPONDER", self.respond("yes")):
             dialogs.askyesno("确认", "合成正文", parent=self.root)

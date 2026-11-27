@@ -150,8 +150,9 @@ class _MessageBox(tk.Toplevel):
             button.pack(side="right", padx=(8, 0) if self.buttons else 0)
             self.buttons[name] = button
 
+        self._default = default
         self.bind("<Escape>", lambda _event: self.choose(cancel))
-        self.bind("<Return>", lambda _event: self.choose(default))
+        self.bind("<Return>", self._on_return)
         self.protocol("WM_DELETE_WINDOW", lambda: self.choose(cancel))
         focus_target = self.buttons.get(default) or self.buttons.get(cancel)
         if focus_target is not None:
@@ -164,6 +165,16 @@ class _MessageBox(tk.Toplevel):
         _center_on_parent(self, parent)
         self.deiconify()
         self.lift()
+
+    def _on_return(self, _event=None):
+        """回车执行当前获得焦点的按钮；焦点不在按钮上时才走默认动作。"""
+        focus = self.focus_get()
+        for name, button in self.buttons.items():
+            if button is focus:
+                self.choose(name)
+                return "break"
+        self.choose(self._default)
+        return "break"
 
     def choose(self, name):
         """按按钮 id 收尾；未知 id 只关窗，不改变语义。"""

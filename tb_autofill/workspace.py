@@ -44,8 +44,7 @@ class ScrollArea(tk.Frame):
         self._window = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
         self.body.bind("<Configure>", self._on_body)
         self.canvas.bind("<Configure>", self._on_canvas)
-        self.canvas.bind("<Enter>", self._wheel_on, add="+")
-        self.canvas.bind("<Leave>", self._wheel_off, add="+")
+        self._wheel_bound = set()
 
     def set_height(self, height):
         self.canvas.configure(height=max(80, int(height)))
@@ -79,20 +78,40 @@ class ScrollArea(tk.Frame):
     def _on_body(self, _event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self._fit_width()
+        self._bind_wheel()
 
     def _on_canvas(self, event):
         self._fit_width(event.width)
 
-    def _wheel_on(self, _event=None):
-        self.canvas.bind_all("<MouseWheel>", self._wheel)
+    def _bind_wheel(self):
+        """只给本容器内的控件绑滚轮。
 
-    def _wheel_off(self, _event=None):
-        self.canvas.unbind_all("<MouseWheel>")
+        不能用 bind_all：指针划到子控件会触发 Leave，解绑时把主页面
+        的滚轮一并清掉，之后整页都滚不动。
+        """
+        targets, stack = [self.canvas, self.body], [self.body]
+        while stack:
+            widget = stack.pop()
+            try:
+                stack.extend(widget.winfo_children())
+            except tk.TclError:
+                continue
+            targets.append(widget)
+        for widget in targets:
+            if widget in self._wheel_bound:
+                continue
+            try:
+                widget.bind("<MouseWheel>", self._wheel, add="+")
+            except tk.TclError:
+                continue
+            self._wheel_bound.add(widget)
 
     def _wheel(self, event):
         if self.body.winfo_reqheight() <= self.canvas.winfo_height():
-            return
-        self.canvas.yview_scroll(-1 * int(event.delta / 120 or -1), "units")
+            return None
+        step = -1 * int(event.delta / 120 or -1)
+        self.canvas.yview_scroll(step, "units")
+        return "break"
 
 
 def scroll_page(app, key):

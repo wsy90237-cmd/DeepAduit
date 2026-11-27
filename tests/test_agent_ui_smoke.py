@@ -543,6 +543,10 @@ class AgentUiSmokeTests(unittest.TestCase):
         workspace.navigate(app, "agent")
         app.update()
         self.assertFalse(hasattr(app, "agent_template_btn"))
+        agent_ui.refresh(app)
+        preview = app.agent_send_preview.cget("text")
+        self.assertIn("条科目余额", preview)
+        self.assertIn("model.invalid", preview)
         agent_ui._append_message(app, "me", "做个实收资本的底稿")
         app.update()
         self.assertEqual(len(app.agent_bubbles), 1)
@@ -710,6 +714,8 @@ class AgentUiSmokeTests(unittest.TestCase):
         self.assertEqual(run.result.error, "")
         self.assertNotEqual(run.result.status, "error")
         self.assertIn("已完成", run.state)
+        self.assertIn("已写入：", run.chat_text)
+        self.assertIn("TB 副本", run.chat_text)
 
     def test_workpaper_only_does_not_require_user_tb_template(self):
         run = self._run_agent(

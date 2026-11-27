@@ -162,8 +162,12 @@ def build(app):
     app.agent_input_hint.bind("<Button-1>", lambda _event: app.agent_input.focus_set())
     for sequence in ("<KeyPress>", "<Button-1>", "<<Paste>>"):
         app.agent_input.bind(sequence, lambda _event: app.agent_input_hint.place_forget(), add="+")
+    app.agent_send_preview = _label(composer, "", fg=SEC, size=8)
+    app.agent_send_preview.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
+    composer.bind("<Configure>", lambda event: app.agent_send_preview.configure(
+        wraplength=max(1, event.width - theme.px(app, 24))), add="+")
     buttons = tk.Frame(composer, bg=CARD)
-    buttons.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+    buttons.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
     app.agent_review_btn = ttk.Button(buttons, text="核对明细", style="CardQuiet.TButton",
                                       command=app._open_tb_review, state="disabled")
     app.agent_review_btn.pack(side="left")
@@ -243,7 +247,7 @@ def build(app):
         meter.pack(fill="x", pady=(0, 8))
         app.agent_meters[key] = meter
 
-    art = panel(2, "产物")
+    art = panel(2, "本项目产物")
     art.rowconfigure(0, weight=1)
     art.columnconfigure(0, weight=1)
     app.agent_artifacts = ttk.Treeview(art, columns=("kind", "name"), show="headings", height=4,
@@ -873,6 +877,25 @@ def _clear(app):
     app.agent_state_var.set("尚未开始")
 
 
+def _refresh_send_preview(app, subject):
+    """发送前让用户看清发给谁、会带上哪类本地数据、大概多少条。"""
+    preview = getattr(app, "agent_send_preview", None)
+    if preview is None:
+        return
+    store = getattr(app, "store", None)
+    if subject is None or store is None or not store.has_key or not store.data.get("ai_enabled"):
+        preview.configure(text="")
+        preview.grid_remove()
+        return
+    preview.grid()
+    endpoint = store.data.get("base_url", settings.DEFAULT_BASE_URL)
+    model = store.data.get("model", ai.DEFAULT_MODEL)
+    host = endpoint.removeprefix("https://").removeprefix("http://").rstrip("/")
+    rows = len(getattr(app, "rows", ()) or ())
+    preview.configure(text=f"发送到 {host} · {model}　本次带上 {rows} 条科目余额、主体与期间，"
+                           "以及问题需要的本地知识片段。")
+
+
 def refresh(app):
     if not hasattr(app, "agent_context_var"):
         return
@@ -885,6 +908,7 @@ def refresh(app):
         _sync_reexport(app)
         _clear(app)
     _show_artifacts(app)
+    _refresh_send_preview(app, subject)
     owner = getattr(app, "agent_template_subject", None)
     if subject is not None and owner is not None and subject != owner:
         app.agent_template_subject = None
@@ -1401,6 +1425,24 @@ def _open_run_record(app):
             _append_message(app, "warning", f"无法打开运行记录：{exc}")
 
 
+def _written_note(context, result):
+    """本地生成的交付摘要：模型不必也不该替我们报文件与数量。"""
+    labels = {"tb": "TB 副本", "tb_pending": "待处理清单", "workpaper": "整册底稿"}
+    names = [f"{labels.get(item.get('kind'), item.get('kind'))} {item.get('name')}"
+             for item in result.artifacts if item.get("kind") in labels]
+    if not names:
+        return ""
+    note = "已写入：" + "、".join(names)
+    if getattr(context, "scan", None) is not None:
+        written = sum(1 for item in context.results if item.selected)
+        pending = agent_tools._pending(context, 1)[1]
+        detail = f"写入 {written} 个字段"
+        if pending:
+            detail += f"，{pending} 项待复核"
+        note += f"（{detail}）"
+    return note
+
+
 def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
     paused = getattr(result, "status", None) == "needs_input"
     record, record_error = getattr(runtime, "completed_run_record", None), ""
@@ -1487,6 +1529,9 @@ def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
             summary = summary[len(prefix):].lstrip()
     if summary:
         _append_message(app, "agent", summary)
+    written = _written_note(context, result)
+    if written:
+        _append_message(app, "sys", written)
     if not record and record_error:
         _append_message(app, "warning", record_error)
     try:
