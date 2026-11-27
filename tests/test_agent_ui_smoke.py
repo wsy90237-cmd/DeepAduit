@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 
 from openpyxl import Workbook, load_workbook
 
-from tb_autofill import agent_tools, agent_ui, gui, workspace
+from tb_autofill import agent_tools, agent_ui, gui, theme, workspace
 from tb_autofill.agent import ApprovalDecision
 from tb_autofill.models import JournalRows, LedgerRow, MatchResult, PaperData, Subject, TargetField
 
@@ -559,6 +559,57 @@ class AgentUiSmokeTests(unittest.TestCase):
         lines = app.agent_bubbles[-1][1].winfo_children()[0].winfo_children()[0].cget("text").split("\n")
         self.assertGreater(len(lines), 2)
         self.assertFalse([line for line in lines if line[:1] in "，。、；：？！"])
+        agent_ui._append_message(app, "agent", "**结论**：账套能对上。")
+        app.update()
+        self.assertNotIn("**", app.agent_chat.get("1.0", "end"))
+        self.assertIn("结论：账套能对上。", app.agent_chat.get("1.0", "end"))
+        self.assertTrue(app.agent_chat.tag_ranges("agent_bold"))
+
+    def test_reply_avatar_spins_while_running_and_stops(self):
+        self.stack.enter_context(patch.dict(os.environ, {
+            "LOCALAPPDATA": str(self.root / "local"), "USERPROFILE": str(self.root)}))
+
+        def settings_for(app):
+            app.store, app._pending_error = self._fake_store(), ""
+
+        self.stack.enter_context(patch.object(gui.App, "_load_settings", settings_for))
+        self.stack.enter_context(patch.object(gui.App, "_autodetect"))
+        self.stack.enter_context(patch.object(gui.auditlog, "AuditLog"))
+        self.stack.enter_context(patch.object(gui.knowledge, "LocalLibrary"))
+        try:
+            app = gui.App()
+        except tk.TclError as exc:
+            self.skipTest(str(exc))
+        self.addCleanup(_dispose, app)
+        app.busy = False
+        app.rows = ledger_rows()
+        app.loaded_subject = Subject("S1", "合成企业", 2026, 12, str(self.root), ledger_id="L1")
+        workspace.navigate(app, "agent")
+        app.update()
+        if app.agent_avatar_photo is None:
+            self.skipTest("本机无法生成头像图片")
+        self.assertIn(theme.FAMILY["display"], str(app.agent_chat.tag_cget("agent", "font")))
+
+        app.agent_running = True
+        agent_ui._append_message(app, "agent", "先说结论。")
+        app.update()
+        canvas = app.agent_turn_avatar
+        self.assertIsNotNone(canvas)
+        dots = [item for item in canvas.find_all() if canvas.type(item) == "oval"]
+        self.assertEqual(len(dots), 1)
+        first = canvas.coords(dots[0])
+        deadline = time.monotonic() + 2
+        while canvas.coords(dots[0]) == first and time.monotonic() < deadline:
+            app.update()
+            time.sleep(0.05)
+        self.assertNotEqual(canvas.coords(dots[0]), first)
+
+        app.agent_running = False
+        deadline = time.monotonic() + 2
+        while any(canvas.type(item) == "oval" for item in canvas.find_all()) and time.monotonic() < deadline:
+            app.update()
+            time.sleep(0.05)
+        self.assertFalse([item for item in canvas.find_all() if canvas.type(item) == "oval"])
 
     def test_returning_home_shows_new_greeting_after_opening_selector(self):
         def isolated_settings(app):

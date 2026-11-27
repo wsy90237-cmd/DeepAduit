@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import random
 import re
@@ -102,16 +103,26 @@ def build(app):
 
     app.agent_fit_bubbles = fit_bubbles
     app.agent_chat.bind("<Configure>", fit_bubbles, add="+")
-    app.agent_chat.tag_configure("agent", foreground=TX, spacing1=theme.px(app, 4),
+    reply = theme.px(app, 40)
+    app.agent_chat.tag_configure("agent", foreground=TX, font=theme.font(10, family="display"),
+                                 lmargin1=reply, lmargin2=reply, spacing1=theme.px(app, 4),
                                  spacing3=theme.px(app, 14))
+    app.agent_chat.tag_configure("agent_bold", foreground=TX,
+                                 font=theme.font(10, weight="bold", family="display"),
+                                 lmargin1=reply, lmargin2=reply)
     app.agent_chat.tag_configure("sys", foreground=SEC, font=theme.font(8),
-                                 lmargin1=theme.px(app, 4), spacing3=2)
+                                 lmargin1=reply, lmargin2=reply, spacing3=2)
     app.agent_chat.tag_configure("warning", foreground=theme.BAD, font=theme.font(9), spacing3=4)
     app.agent_chat.tag_configure("gap", font=theme.font(4))
-    app.agent_chat.tag_configure("thought", foreground=theme.INK_SOFT,
-                                 lmargin1=0, lmargin2=0, spacing1=theme.px(app, 8), spacing3=theme.px(app, 6))
+    app.agent_chat.tag_configure("thought", foreground=theme.INK_SOFT, font=theme.font(10, family="display"),
+                                 lmargin1=reply, lmargin2=reply, spacing1=theme.px(app, 8),
+                                 spacing3=theme.px(app, 6))
     app.agent_chat.tag_configure("result", foreground=SEC, font=theme.font(8),
-                                 lmargin1=theme.px(app, 18), lmargin2=theme.px(app, 18), spacing3=2)
+                                 lmargin1=reply + theme.px(app, 14), lmargin2=reply + theme.px(app, 14),
+                                 spacing3=2)
+    app.agent_avatar_photo = _avatar_photo(app)
+    app.agent_avatar_canvas = None
+    app.agent_turn_avatar = None
     scroll = ttk.Scrollbar(chat, orient="vertical", command=app.agent_chat.yview)
     scroll.grid(row=0, column=1, sticky="ns")
     app.agent_chat.configure(yscrollcommand=scroll.set)
@@ -365,6 +376,12 @@ def _sync_empty(app, has_items):
     label = getattr(app, "agent_artifacts_empty", None)
     if label is None:
         return
+    tree = getattr(app, "agent_artifacts", None)
+    if tree is not None:
+        try:
+            tree.configure(show="headings" if has_items else "")
+        except tk.TclError:
+            pass
     if has_items:
         label.grid_remove()
     else:
@@ -488,6 +505,53 @@ def _reexport_done(app, context, outcomes, audit_errors=()):
 _CLOSING = "，。、；：？！）】》」』”’,.;:?!)]}%"
 
 
+def _avatar_photo(app):
+    """小尺寸的品牌图标，用于回复左侧的头像。"""
+    try:
+        from PIL import Image, ImageTk
+        source = Image.open(brand.icon(256)).convert("RGBA")
+        size = theme.px(app, 22)
+        return ImageTk.PhotoImage(source.resize((size, size), Image.LANCZOS), master=app)
+    except (ImportError, OSError, ValueError, tk.TclError):
+        return None
+
+
+def _avatar_canvas(app):
+    photo = getattr(app, "agent_avatar_photo", None)
+    if photo is None:
+        return None
+    size = theme.px(app, 36)
+    canvas = tk.Canvas(app.agent_chat, width=size, height=size, bg=BG, highlightthickness=0, bd=0)
+    canvas.create_image(size // 2, size // 2, image=photo)
+    return canvas
+
+
+def _spin_avatar(app, canvas, dot, angle):
+    """回复期间图标外有一颗绕圈的小点；结束或换到下一条回复时停下。"""
+    if canvas is not getattr(app, "agent_avatar_canvas", None) or not getattr(app, "agent_running", False):
+        try:
+            canvas.delete(dot)
+        except tk.TclError:
+            pass
+        return
+    radius, centre = theme.px(app, 17), theme.px(app, 18)
+    radians = angle * math.pi / 12
+    x, y = centre + radius * math.cos(radians), centre + radius * math.sin(radians)
+    try:
+        canvas.coords(dot, x - 2.5, y - 2.5, x + 2.5, y + 2.5)
+    except tk.TclError:
+        return
+    app.after(80, lambda: _spin_avatar(app, canvas, dot, angle + 1))
+
+
+def _start_avatar(app, canvas):
+    if canvas is None or not getattr(app, "agent_running", False):
+        return
+    dot = canvas.create_oval(0, 0, 0, 0, fill=ACC, outline="")
+    app.agent_avatar_canvas = canvas
+    _spin_avatar(app, canvas, dot, 0)
+
+
 def _bubble_lines(app, text, limit):
     """按像素换行，并且不把中文标点放到行首。"""
     font = getattr(app, "agent_bubble_font", None)
@@ -512,6 +576,17 @@ def _bubble_lines(app, text, limit):
     return "\n".join(lines)
 
 
+def _insert_prose(app, text, tag):
+    """把模型常用的 **加粗** 渲染成字重，而不是把星号原样显示。"""
+    if tag != "agent" or "**" not in text:
+        app.agent_chat.insert("end", text + "\n", tag)
+        return
+    for index, piece in enumerate(re.split(r"\*\*(.+?)\*\*", text, flags=re.S)):
+        if piece:
+            app.agent_chat.insert("end", piece, "agent_bold" if index % 2 else tag)
+    app.agent_chat.insert("end", "\n", tag)
+
+
 def _append_message(app, role, text):
     if not hasattr(app, "agent_chat"):
         return
@@ -520,6 +595,7 @@ def _append_message(app, role, text):
     _hide_welcome(app)
     app.agent_chat.configure(state="normal")
     if role == "me":
+        app.agent_turn_avatar = None
         width = max(app.agent_chat.winfo_width(), theme.px(app, 520))
         pad = theme.px(app, 14)
         body = _bubble_lines(app, text, min(theme.px(app, 460), int(width * 0.62)) - pad * 2 - 2)
@@ -537,7 +613,13 @@ def _append_message(app, role, text):
         holder.update_idletasks()
         app.agent_fit_bubbles()
     else:
-        app.agent_chat.insert("end", prefix + str(text).strip() + "\n", tag)
+        if role in {"agent", "thought"} and getattr(app, "agent_turn_avatar", None) is None:
+            canvas = _avatar_canvas(app)
+            if canvas is not None:
+                app.agent_chat.window_create("end", window=canvas, align="top")
+                app.agent_turn_avatar = canvas
+                _start_avatar(app, canvas)
+        _insert_prose(app, prefix + str(text).strip(), tag)
     app.agent_chat.configure(state="disabled")
     app.agent_chat.see("end")
 
@@ -760,6 +842,8 @@ def _clear(app):
     app.agent_chat.configure(state="normal")
     app.agent_chat.delete("1.0", "end")
     app.agent_bubbles.clear()
+    app.agent_turn_avatar = None
+    app.agent_avatar_canvas = None
     app.agent_chat.configure(state="disabled")
     app.agent_input.delete("1.0", "end")
     app.agent_input_hint.place(x=theme.px(app, 14), y=theme.px(app, 10))
