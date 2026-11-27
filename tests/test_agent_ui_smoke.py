@@ -352,6 +352,15 @@ class AgentUiSmokeTests(unittest.TestCase):
             reply([tool_call("export_tb_copy", call_id="repeat-export")]),
             reply([tool_call("finish", {"status": "done", "summary": "已导出"}, "finish")]),
         ])
+        chat_tools = client.chat_tools
+
+        def disconnect_after_export(messages, tools):
+            if client.calls == 2:
+                client.calls += 1
+                raise agent_ui.ai.AIError("合成网络中断")
+            return chat_tools(messages, tools)
+
+        client.chat_tools = disconnect_after_export
         fake_store = self._fake_store()
         starts, approvals = [], []
 
@@ -418,6 +427,7 @@ class AgentUiSmokeTests(unittest.TestCase):
         self.assertIn("期末", starts[0][1]["TB 设置"])
         pending = local / "ZSZH-TB" / "agent" / "pending"
         first_checkpoint, = pending.glob("*.json")
+        first_record = agent_ui.agent_checkpoints.load(first_checkpoint)
         _dispose(first)
 
         reopened = open_app()
@@ -437,7 +447,20 @@ class AgentUiSmokeTests(unittest.TestCase):
         self.assertEqual(reopened.agent_result.summary, "是否保留待核项目？")
         self.assertEqual(client.calls, 1)
         next_checkpoint, = pending.glob("*.json")
-        self.assertNotEqual(first_checkpoint, next_checkpoint)
+        self.assertEqual(first_checkpoint, next_checkpoint)
+        self.assertGreater(agent_ui.agent_checkpoints.load(next_checkpoint)["state"]["sequence"],
+                           first_record["state"]["sequence"])
+        reopened.agent_input.insert("1.0", "保留，后续人工复核。")
+        agent_ui._send(reopened)
+        wait_for(reopened, lambda: reopened.agent_result is not None and not reopened.agent_running)
+        self.assertEqual(reopened.agent_result.status, "error", reopened.agent_result.error)
+        self.assertTrue(reopened.agent_has_pending)
+        self.assertEqual(len(agent_ui.agent_checkpoints.load(next_checkpoint)["artifacts"]), 2)
+        _dispose(reopened)
+
+        reopened = open_app()
+        wait_for(reopened, lambda: reopened.agent_has_pending)
+        reopened.agent_resume_btn.invoke()
         reopened.agent_input.insert("1.0", "保留，后续人工复核。")
         agent_ui._send(reopened)
         wait_for(reopened, lambda: reopened.agent_result is not None and not reopened.agent_running)

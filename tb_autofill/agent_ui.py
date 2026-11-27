@@ -1144,6 +1144,9 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
             _on_event(app, event)
 
     run_id = continuation[1]["run_id"] if continuation else datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    checkpoint = continuation[0] if continuation else None
+    checkpoint_record = continuation[1] if continuation else {}
+    exports = dict(checkpoint_record.get("pending_exports", {}))
     audit_errors = []
 
     def audit(event, payload):
@@ -1151,13 +1154,20 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
         if error and not audit_errors:
             audit_errors.append(error)
 
+    def save_pause(state):
+        return agent_checkpoints.save(run_id, config, context, state, target=checkpoint, exports=exports)
+
+    def checkpoint_export(key, phase, target):
+        agent_checkpoints.track_export(checkpoint, checkpoint_record, context, exports, key, phase, target)
+
     runtime = agent_module.AgentRuntime(
         client, agent_tools.build_registry(include_papers="papers" in stages,
                                            include_tb="tb" in scope, write_tb="tb" in stages), context,
         emit=lambda event: app._post(lambda: show_event(event)),
         approve=lambda request: _ask_approval(app, request) if current_run() else agent_module.ApprovalDecision(False),
         audit=audit,
-        save_pause=lambda state: agent_checkpoints.save(run_id, config, context, state),
+        save_pause=save_pause,
+        export_checkpoint=checkpoint_export if continuation else None,
         preflight=(lambda: agent_tools.check_template_identity(context)) if "tb" in scope and stages else None)
     app.agent_runtime = runtime
     app.agent_run_id = run_id
@@ -1166,11 +1176,24 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
     _start_hang_trace(app)
 
     def work():
+        claimed = False
         try:
             if continuation:
                 path, record, answer = continuation
-                agent_checkpoints.restore(path, record, context)
-                result = runtime.run(record["state"], answer)
+                with agent_checkpoints.claim(path, record):
+                    claimed = True
+                    agent_checkpoints.restore(record, context)
+                    result = runtime.run(record["state"], answer)
+                    if result.status == "done":
+                        try:
+                            runtime.completed_run_record = _save_run_record(app, result, config, run_id)
+                        except (OSError, TypeError, ValueError) as exc:
+                            result = runtime._result("error", "任务产物已生成，待办保留供继续保存运行记录。", str(exc))
+                        else:
+                            try:
+                                path.unlink(missing_ok=True)
+                            except OSError:
+                                pass  # 待办列表会根据已完成的运行记录隐藏此进度。
             else:
                 result = runtime.run()
         except agent_module.StaleContextError as exc:
@@ -1180,6 +1203,9 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
         except Exception as exc:
             result = runtime._result("error", "本次运行失败，未完成部分见运行记录。",
                                      f"{type(exc).__name__}: {exc}"[:500])
+        if continuation and not getattr(runtime, "completed_run_record", None):
+            runtime.skip_run_record = not claimed
+            runtime.resume_attempt_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         app._post(lambda: _finish(app, runtime, result, context, config, run_id, audit_errors))
 
     threading.Thread(target=work, daemon=True).start()
@@ -1308,10 +1334,10 @@ def _save_run_record(app, result, config, run_id):
 
 def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
     paused = getattr(result, "status", None) == "needs_input"
-    record, record_error = None, ""
-    if not paused:
+    record, record_error = getattr(runtime, "completed_run_record", None), ""
+    if not paused and record is None and not getattr(runtime, "skip_run_record", False):
         try:
-            record = _save_run_record(app, result, config, run_id)
+            record = _save_run_record(app, result, config, getattr(runtime, "resume_attempt_id", run_id))
         except (OSError, TypeError, ValueError) as exc:
             record_error = f"运行记录保存失败（{agent_checkpoints.data_dir() / 'runs'}）：{type(exc).__name__}: {exc}"
     same_source = app._context_revision == context.snapshot.app_revision
@@ -1367,7 +1393,8 @@ def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
             app.agent_state_var.set("待办进度不可读")
             _append_message(app, "warning", f"无法打开待办任务：{exc}")
         return
-    if result.status in {"done", "partial", "blocked"} and context.scan is not None:
+    if (result.status in {"done", "partial", "blocked"} and context.scan is not None
+            and not getattr(runtime, "resume_attempt_id", None)):
         if context.snapshot.revision() == _current_fingerprint(app):
             app.scan = context.scan
             app.results = list(context.results)
@@ -1383,7 +1410,7 @@ def _finish(app, runtime, result, context, config, run_id, audit_errors=()):
         state_label += " · TB 副本已导出"
     app.agent_state_var.set(state_label + (f" · 缺口 {len(gaps)} 项" if gaps else ""))
     if result.status != "done":
-        headline = "；".join(result.gaps[:3]) or (result.error or "")
+        headline = result.error or "；".join(result.gaps[:3])
         _append_message(app, "warning", f"{state}" + (f"：{headline}" if headline else ""))
     summary = str(result.summary or "").strip()
     for prefix in ("部分完成：", "部分完成。"):

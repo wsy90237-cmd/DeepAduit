@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import shutil
 import time
 import unittest
@@ -11,8 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tb_autofill import agent_tools, analysis, papers
-from tb_autofill.agent import AgentRuntime, ProjectSnapshot, ToolRegistry, ToolSpec, recovery_hint
+from tb_autofill import agent_checkpoints, agent_tools, analysis, papers
+from tb_autofill.agent import AgentError, AgentRuntime, ProjectSnapshot, StaleContextError, ToolRegistry, ToolSpec, recovery_hint
 from tb_autofill.models import JournalRow, JournalRows, Subject
 
 try:
@@ -178,23 +179,95 @@ class ThinkingStreamTests(unittest.TestCase):
         self.assertLess(kinds.index("thought"), kinds.index("tool"))
 
 
-class SourceCheckSpeedTests(unittest.TestCase):
-    def test_large_unchanged_table_is_not_rehashed(self):
+class LargeSourceFingerprintTests(unittest.TestCase):
+    def test_large_table_detects_changed_content_with_unchanged_size_and_timestamp(self):
         from tb_autofill import dxn
         root = Path(__file__).resolve().parents[1] / "build" / f"test-source-{os.getpid()}-{time.time_ns()}"
         (root / "powersj").mkdir(parents=True)
         self.addCleanup(shutil.rmtree, root, True)
         table = root / "powersj" / "c_kmyek.MYD"
-        table.write_bytes(b"x" * 10)
+        with table.open("wb") as stream:
+            stream.truncate(64 * 1024 * 1024 + 1)
         stat = table.stat()
+        with table.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
         data = SimpleNamespace(source_path=str(root), source_tables=("c_kmyek",), source_missing_tables=(),
-                               source_fingerprint=((str(table.resolve()), stat.st_size, stat.st_mtime_ns,
-                                                    "not-the-real-digest"),))
-        opener = lambda path: open(path, "rb")
-        with patch.object(dxn, "_open_source", opener), patch.object(dxn, "REHASH_LIMIT", 5):
-            self.assertTrue(dxn.validate_paper_data_source(data))
-        with patch.object(dxn, "_open_source", opener), patch.object(dxn, "REHASH_LIMIT", 100):
-            self.assertFalse(dxn.validate_paper_data_source(data))
+                               source_fingerprint=((str(table.resolve()), stat.st_size, stat.st_mtime_ns, digest),))
+        self.assertTrue(dxn.validate_paper_data_source(data))
+        with table.open("r+b") as stream:
+            stream.seek(-1, os.SEEK_END)
+            stream.write(b"x")
+        os.utime(table, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        self.assertEqual(table.stat().st_mtime_ns, stat.st_mtime_ns)
+        self.assertFalse(dxn.validate_paper_data_source(data))
+
+
+@unittest.skipUnless(os.name == "nt", "待办进程锁使用 Windows 文件锁")
+class PendingResumeTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(__file__).resolve().parents[1] / "build" / f"test-pending-{os.getpid()}-{time.time_ns()}"
+        self.root.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.enterContext(patch.object(agent_checkpoints, "data_dir", return_value=self.root))
+        self.snapshot = ProjectSnapshot(subject=Subject("S1", "合成企业", 2026, 12, "."),
+                                        rows=(), subject_label="合成企业", template_path="", unit="元",
+                                        periods=(), scan=None, results=(), paper_library=())
+        self.context = self.snapshot.context()
+        self.state = {"sequence": 1, "question": "继续？", "kind": "budget", "calls": [], "messages": [],
+                      "blocked_tools": [], "call_history": [], "failures": [], "started_at": ""}
+        self.path = agent_checkpoints.save("synthetic", {}, self.context, self.state)
+        self.record = agent_checkpoints.load(self.path)
+
+    def test_failed_model_call_keeps_record_and_concurrent_resume_is_rejected(self):
+        def offline(*_args):
+            raise AgentError("合成网络错误")
+
+        runtime = AgentRuntime(SimpleNamespace(chat_tools=offline), ToolRegistry([]), self.context)
+        with agent_checkpoints.claim(self.path, self.record):
+            agent_checkpoints.restore(self.record, self.context)
+            with self.assertRaises(StaleContextError):
+                with agent_checkpoints.claim(self.path, self.record):
+                    self.fail("同一待办不应同时继续")
+            self.assertEqual(runtime.run(self.record["state"], "继续").status, "error")
+        self.assertEqual(agent_checkpoints.load(self.path), self.record)
+        with agent_checkpoints.claim(self.path, self.record):
+            agent_checkpoints.save("synthetic", {}, self.context, {**self.state, "sequence": 2}, target=self.path)
+        with self.assertRaises(StaleContextError):
+            with agent_checkpoints.claim(self.path, self.record):
+                self.fail("旧问题界面不应领取新进度")
+        self.assertEqual(list(agent_checkpoints.pending_for(self.snapshot.subject))[0][1]["state"]["sequence"], 2)
+
+    def test_uncertain_export_is_guarded_and_registered_export_survives_retry(self):
+        output = self.root / "synthetic.xlsx"
+        exports = {}
+        agent_checkpoints.track_export(self.path, self.record, self.context, exports, "tb", "before", output)
+        agent_checkpoints.track_export(self.path, self.record, self.context, exports, "tb", "guard", None)
+        output.write_bytes(b"synthetic")
+        interrupted = agent_checkpoints.load(self.path)
+        restored_exports = interrupted["pending_exports"].copy()
+        with self.assertRaisesRegex(AgentError, "synthetic.xlsx"):
+            agent_checkpoints.track_export(self.path, interrupted, self.context, restored_exports, "tb", "guard", None)
+        self.context.record_artifact("tb", output, target="tb")
+        self.context.tb_exported = True
+        agent_checkpoints.track_export(self.path, self.record, self.context, exports, "tb", "after", None)
+        restored = self.snapshot.context()
+        saved = agent_checkpoints.load(self.path)
+        agent_checkpoints.restore(saved, restored)
+        self.assertTrue(restored.tb_exported)
+        self.assertEqual(restored.artifacts, self.context.artifacts)
+        self.assertEqual(saved["pending_exports"], {})
+
+    def test_durable_done_record_hides_a_checkpoint_if_cleanup_was_interrupted(self):
+        (self.root / "runs").write_bytes(b"synthetic path conflict")
+        self.assertEqual(list(agent_checkpoints.pending_for(self.snapshot.subject)), [(self.path, self.record)])
+        with agent_checkpoints.claim(self.path, self.record):
+            agent_checkpoints.restore(self.record, self.context)
+        (self.root / "runs").unlink()
+        agent_checkpoints.write_json(self.root / "runs" / "synthetic.json", {"result": {"status": "done"}})
+        self.assertEqual(list(agent_checkpoints.pending_for(self.snapshot.subject)), [])
+        with self.assertRaises(StaleContextError):
+            with agent_checkpoints.claim(self.path, self.record):
+                self.fail("已完成任务不应重新运行")
 
 
 @unittest.skipIf(agent_ui is None, "需要 tkinter")

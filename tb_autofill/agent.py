@@ -446,7 +446,7 @@ class AgentRuntime:
                  approve: Callable[[ApprovalRequest], ApprovalDecision] | None = None,
                  ask_user: Callable[[str, tuple], str] | None = None,
                  audit: Callable[[str, dict], None] | None = None,
-                 save_pause=None, preflight=None):
+                 save_pause=None, preflight=None, export_checkpoint=None):
         self.client = client
         self.registry = registry
         self.context = context
@@ -456,6 +456,8 @@ class AgentRuntime:
         self._audit_callback = audit
         self._save_pause = save_pause
         self._preflight = preflight
+        self._export_checkpoint = export_checkpoint
+        self._export_key = ""
         self.pending_path = None
         self.events = []
         self._seq = 0
@@ -475,6 +477,10 @@ class AgentRuntime:
     def approved_path(self):
         """最近一次写入确认选择的路径；写文件工具只使用这个值。"""
         return self._approved_path
+
+    def checkpoint_export_path(self, path):
+        if self._export_checkpoint is not None and self._export_key:
+            self._export_checkpoint(self._export_key, "before", path)
 
     def emit(self, kind, title, detail="", data=None):
         self._seq += 1
@@ -553,12 +559,19 @@ class AgentRuntime:
         self.emit("tool", summary or name, summary or name, {"tool": name, "args": _safe_args(arguments), "kind": spec.kind})
         self._audit("agent_tool_call", tool=name, args=_safe_args(arguments), kind=spec.kind)
 
+        export_key = ""
         if spec.kind == "write":
             if name == "export_tb_copy" and self._artifact_ok("tb", "tb"):
                 pending = "" if self._artifact_ok("tb_pending", "tb_pending") else "待处理清单未保存。"
                 return {"ok": True, "summary": f"本次任务已生成 TB 副本，可在产物区打开。{pending}"}
             if name == "export_workpaper" and self._artifact_ok("workpaper", arguments.get("index_no")):
                 return {"ok": True, "summary": "本次任务已生成该文件，可在产物区打开。"}
+            if name == "export_workpaper":
+                export_key = str(arguments.get("index_no") or "").strip()
+            elif name == "export_tb_copy":
+                export_key = "tb"
+            if self._export_checkpoint is not None and export_key:
+                self._export_checkpoint(export_key, "guard", None)
             decision = self._approve_write(spec, arguments)
             if not decision.approved:
                 self._blocked_tools.add(name)
@@ -578,7 +591,13 @@ class AgentRuntime:
             self._audit("agent_write_approved", tool=name, path=decision.path,
                         auto_confirm_rest=decision.auto_confirm_rest)
 
-        result = self.registry.call(name, arguments, self.context, self)
+        self._export_key = export_key
+        try:
+            result = self.registry.call(name, arguments, self.context, self)
+            if spec.kind == "write" and self._export_checkpoint is not None and self._export_key:
+                self._export_checkpoint(self._export_key, "after", None)
+        finally:
+            self._export_key = ""
         if not isinstance(result, dict):
             result = {"ok": False, "error": "工具未返回对象"}
         if not result.get("ok"):
@@ -789,7 +808,7 @@ class AgentRuntime:
                     self._preflight()
                 self._messages = self._initial_messages()
             else:
-                self._messages = continuation["messages"]
+                self._messages = list(continuation["messages"])
                 self._started_at = continuation["started_at"]
                 self._seq = continuation["sequence"]
                 self.events = [AgentEvent(**event) for event in continuation.get("events", ())]
@@ -803,8 +822,14 @@ class AgentRuntime:
                     self.context.budget.steps, self.context.budget.tool_calls = steps, tools
                     self.context.budget.model_calls = models
                 if continuation["kind"] == "question":
-                    self._append_tool_result(continuation["call_id"], {"ok": True,
-                                             "summary": "用户已答复。", "data": {"answer": answer}})
+                    call_id = continuation["call_id"]
+                    if call_id is not None:
+                        if calls and calls[0].get("id") == call_id:
+                            calls.pop(0)
+                        self._append_tool_result(call_id, {"ok": True, "summary": "用户已答复。",
+                                                           "data": {"answer": answer}})
+                    else:
+                        self._messages.append({"role": "user", "content": answer})
                 self.emit("answer", "收到答复，继续任务", answer)
                 self._audit("agent_run_resumed", kind=continuation["kind"],
                             question=continuation["question"], answer=answer)

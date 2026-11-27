@@ -1,5 +1,6 @@
 """Local continuation records for audit tasks waiting for a user decision."""
 
+from contextlib import contextmanager
 from dataclasses import asdict
 from hashlib import sha256
 import json
@@ -8,7 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import agent_tools
-from .agent import StaleContextError, _sha256
+from .agent import AgentError, StaleContextError, _sha256
 from .models import money
 
 
@@ -54,9 +55,10 @@ def _source_key(row):
     return row.code, row.path, row.basis, row.direction
 
 
-def save(run_id, config, context, state):
+def save(run_id, config, context, state, *, target=None, exports=None):
     directory = data_dir() / "pending"
-    target = directory / f"{run_id}-{state['sequence']:06d}.json"
+    if target is None:
+        target = directory / f"{run_id}-{state['sequence']:06d}.json"
     matches = [dict(target=item.target.id, sources=[_source_key(row) for row in item.sources],
                     amount=None if item.amount is None else str(item.amount), status=item.status,
                     method=item.method, reason=item.reason, selected=item.selected, overwrite=item.overwrite)
@@ -67,7 +69,8 @@ def save(run_id, config, context, state):
               "evidence_digest": _digest(context.evidence_rows), "scope": sorted(context.allowed_scope),
               "scanned": context.scan is not None, "results": matches, "prepared": prepared,
               "artifacts": context.artifacts, "gaps": context.gaps, "tb_exported": context.tb_exported,
-              "initial_results_digest": context.snapshot.results_digest}
+              "initial_results_digest": context.snapshot.results_digest,
+              "pending_exports": exports or {}}
     write_json(target, record)
     return target
 
@@ -85,13 +88,65 @@ def pending_for(subject):
     for path in sorted(directory.glob("*.json"), reverse=True):
         try:
             record = load(path)
-            if record["identity"]["subject"] == asdict(subject):
+            if record["identity"]["subject"] == asdict(subject) and not _completed(record):
                 yield path, record
         except (OSError, ValueError, KeyError, TypeError):
             continue
 
 
-def restore(path, record, context):
+def _completed(record):
+    path = data_dir() / "runs" / f"{record['run_id']}.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))["result"]["status"] == "done"
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+@contextmanager
+def claim(path, record):
+    import msvcrt
+
+    # The OS releases this lock when a process exits. Keep the lock file to avoid competing handles.
+    with path.with_suffix(".lock").open("a+b") as lock:
+        lock.seek(0)
+        try:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise StaleContextError("该待办任务正在另一运行中，请稍后重新打开待办。") from exc
+        try:
+            if not path.is_file() or load(path) != record or _completed(record):
+                raise StaleContextError("待办进度已更新，请重新打开待办核对。")
+            yield
+        finally:
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def track_export(checkpoint, record, context, exports, key, phase, target):
+    if phase == "guard":
+        if key not in exports:
+            return
+        output = Path(exports[key])
+        try:
+            output.stat()
+        except FileNotFoundError:
+            if output.parent.is_dir():
+                return
+        except OSError:
+            pass
+        raise AgentError(f"上次导出在保存确认后中断，请先核对文件 {output}。")
+    if phase == "before":
+        exports[key] = str(target)
+        try:
+            write_json(checkpoint, {**load(checkpoint), "pending_exports": exports})
+        except (OSError, ValueError) as exc:
+            raise AgentError("无法保存本次导出的恢复记录，已停止写入。") from exc
+    elif key in exports and any(item.get("target") == key and item.get("sha256") for item in context.artifacts):
+        del exports[key]
+        save(record["run_id"], record["config"], context, record["state"], target=checkpoint, exports=exports)
+
+
+def restore(record, context):
     if record["identity"] != _identity(context.snapshot):
         raise StaleContextError("暂停后账套、模板、期间或来源位置已变化，请重新核对后开始新任务。")
     if record["evidence_digest"] != _digest(context.evidence_rows):
@@ -120,9 +175,7 @@ def restore(path, record, context):
             raise StaleContextError(f"暂停后 {index} 底稿的取数已变化，请重新编制。")
         context.prepared_workpapers[index] = {"paper": paper, "data": data, "draft": item["draft"],
                                               "warnings": item["warnings"]}
-    context.artifacts = record["artifacts"]
-    context.gaps = record["gaps"]
+    context.artifacts = list(record["artifacts"])
+    context.gaps = list(record["gaps"])
     context.tb_exported = record["tb_exported"]
     context.ensure_current()
-    # A later pause gets a new filename, so a stale window can only claim its original checkpoint.
-    path.unlink()

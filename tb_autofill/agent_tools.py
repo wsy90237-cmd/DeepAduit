@@ -326,9 +326,10 @@ def _unique(base, name, suffix=".xlsx"):
     return candidate
 
 
-def _write_output(context, path, write):
+def _write_output(context, path, write, runtime=None):
     """目录试写通过后，真实的 Excel 保存仍可能被 Windows 拒绝。"""
     tried = set()
+    checkpoint = getattr(runtime, "checkpoint_export_path", None)
 
     def targets():
         yield path
@@ -341,6 +342,8 @@ def _write_output(context, path, write):
             continue
         tried.add(directory)
         if _can_write(directory):
+            if checkpoint is not None:
+                checkpoint(target)
             try:
                 return write(target)
             except PermissionError:
@@ -406,7 +409,7 @@ def export_tb_copy(context, arguments, runtime):
                                       preserve_tb_balance=True)
 
     try:
-        saved = _write_output(context, path, write)
+        saved = _write_output(context, path, write, runtime)
         checks = workbook.tb_balance_checks(saved, scan)
     except workbook.TBBalanceRegression as exc:
         return _error(str(exc))
@@ -695,7 +698,7 @@ def export_workpaper(context, arguments, runtime):
         return target
 
     try:
-        output = _write_output(context, path, write)
+        output = _write_output(context, path, write, runtime)
     except FileExistsError:
         return _error("底稿输出文件已存在，请选择新的文件名。")
     except PermissionError:
