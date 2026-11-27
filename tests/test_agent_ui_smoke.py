@@ -544,6 +544,8 @@ class AgentUiSmokeTests(unittest.TestCase):
         app.update()
         self.assertFalse(hasattr(app, "agent_template_btn"))
         agent_ui.refresh(app)
+        self.assertEqual(app.bind_all("<MouseWheel>"), "",
+                         "滚轮不应再全局绑定：指针划到子控件会解绑整页")
         preview = app.agent_send_preview.cget("text")
         self.assertIn("条科目余额", preview)
         self.assertIn("model.invalid", preview)
