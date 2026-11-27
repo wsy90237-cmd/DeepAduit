@@ -255,6 +255,7 @@ class AgentUiSmokeTests(unittest.TestCase):
                     app.scan = agent_ui.fields.scan_template(self.template)
                     app.results = [MatchResult(TargetField("专属模板页", "B2", "专属待核字段",
                                                            "ending", value=98172365))]
+                agent_ui.refresh(app)
                 app.agent_input.insert("1.0", message)
                 agent_ui._send(app)
                 if choose_template_in_chat:
@@ -325,6 +326,7 @@ class AgentUiSmokeTests(unittest.TestCase):
             denied_paths=denied_paths, temp_output=temp_output, before_retry=before_retry,
             retry_path=retry_path,
             record=app.agent_run_record,
+            send_preview=app.agent_send_preview.cget("text"),
             review_ready="disabled" not in app.agent_review_btn.state(),
             artifact_rows=tuple(app.agent_artifacts.item(item, "values")
                                 for item in app.agent_artifacts.get_children()),
@@ -336,10 +338,33 @@ class AgentUiSmokeTests(unittest.TestCase):
                                   reply([tool_call("get_project_context")]),
                                   reply([tool_call("finish", {"status": "done", "summary": "两个科目"})])])
         self.assertEqual(len(run.client.sent), 2)
+        self.assertEqual(run.starts, [])
+        self.assertIn("model.invalid", run.send_preview)
+        self.assertIn("科目余额", run.send_preview)
         self.assertIn("合成企业", run.client.sent[-1])
         for payload in run.client.sent:
             for private in (self.template.name, "专属模板页", "专属待核字段", "98172365"):
                 self.assertNotIn(private, payload)
+
+    def test_company_overview_sends_project_totals_with_first_request(self):
+        rows = ledger_rows()
+        rows.extend(LedgerRow(f"1002{index:04d}", f"专属明细{index}", level=2,
+                              subject_id="S1", year=2026, month=12, ledger_id="L1")
+                    for index in range(1129))
+        with patch(f"{__name__}.ledger_rows", return_value=rows):
+            run = self._run_agent(template=False, out_dir_name="overview",
+                                  message="你帮我看看现在这家公司整体运营情况怎么样",
+                                  replies=[reply(content="按账面摘要已查看整体经营情况。")])
+        self.assertEqual(run.starts, [])
+        self.assertEqual(run.result.status, "done", run.result.error)
+        self.assertEqual(run.client.calls, 1)
+        messages = json.loads(run.client.sent[0])
+        payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
+        self.assertEqual(payload["project"]["accounts"], 1131)
+        self.assertIn({"index_no": "1-010", "name": "货币资金",
+                       "opening": "250", "ending": "310", "change": "60"},
+                      payload["ledger_overview"]["projects"])
+        self.assertNotIn("专属明细", run.client.sent[0])
 
     def test_local_template_question_survives_reopening_and_exports_once(self):
         template = self.root / "TB-另一个有限公司.xlsx"

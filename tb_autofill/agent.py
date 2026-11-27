@@ -211,6 +211,7 @@ class AgentContext:
     current_fingerprint: Callable[[], tuple] | None = None
     evidence_rows: dict = field(default_factory=dict)
     evidence_provider: Callable[[str], tuple] | None = None
+    ledger_overview: dict = field(default_factory=dict)
     model_requests: list = field(default_factory=list)
     budget: AgentBudget = field(default_factory=AgentBudget)
     prepared_workpapers: dict = field(default_factory=dict)
@@ -706,6 +707,11 @@ class AgentRuntime:
             "project": cfg.summary(),
             "note": "当前只有以下工具可用；先调用 get_project_context 查看状态，再按阶段推进。",
         }
+        if cfg.ledger_overview:
+            payload["ledger_overview"] = cfg.ledger_overview
+            payload["note"] = ("账套报表项目的账面摘要已在 ledger_overview 中。"
+                               "基于摘要回答整体经营情况，不要逐科目查询或重新计算。"
+                               "摘要缺少回答所需的事实时，只查询必要的少量科目。")
         return "运行任务：\n" + json.dumps(payload, ensure_ascii=False)
 
     def _append_tool_result(self, call_id, result):

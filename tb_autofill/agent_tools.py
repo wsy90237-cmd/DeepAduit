@@ -453,7 +453,23 @@ def export_tb_copy(context, arguments, runtime):
     }, notes)
 
 
-def report_projects(rows, library, *, limit=200):
+def is_company_overview(text):
+    return bool(re.search(r"(?:整体|总体|全公司|全盘).{0,10}(?:情况|财务|运营|经营|概况|状况|表现)"
+                          r"|(?:运营|经营|财务)(?:情况|状况|概况|表现)|公司.{0,6}(?:怎么样|如何)", text))
+
+
+def company_overview(rows, library):
+    projects, unmapped = report_projects(rows, library, overview=True)
+    return {
+        "projects": projects,
+        "unmapped_count": len(unmapped),
+        "note": "金额为本地账面数据，单位元。资产负债项目比较期初和期末，损益使用独立本期和上期发生额。"
+                "空值表示缺少可靠来源，不能按零使用。未映射科目不纳入列示。"
+                "余额变动不能代替现金流，账面摘要不能单独支持经营原因或审计结论。",
+    }
+
+
+def report_projects(rows, library, *, limit=200, overview=False):
     """按报表项目归集一级科目：返回 (可出册项目, 未映射科目)。
 
     Agent 工具与「底稿」页共用这一份口径；未映射的科目不会静默套用底稿。
@@ -477,18 +493,27 @@ def report_projects(rows, library, *, limit=200):
         paper = entry["paper"]
         try:
             accounts, _scoped = papers.report_scope(rows, paper, library)
+            is_pl = index_no.startswith(("4-", "5-")) or any(row.is_profit_loss for row in accounts)
+            if overview:
+                amounts = dxn_paper.totals(accounts, dxn_paper.presentation_direction(paper, accounts))
         except ValueError as exc:
             projects.append({"index_no": index_no, "name": paper.name, "error": str(exc)})
             continue
-        is_pl = index_no.startswith(("4-", "5-")) or any(row.is_profit_loss for row in accounts)
-        total = sum((row.period_amount if is_pl else row.ending) or money("0") for row in accounts)
-        projects.append({"index_no": index_no, "name": paper.name, "label": paper.label,
-                         "is_profit_loss": is_pl, "total": str(total),
-                         "accounts": [{"code": row.code, "name": row.name,
-                                       "ending": _amount(row.ending),
-                                       "period_amount": _amount(row.period_amount)}
-                                      for row in accounts],
-                         "mapped_basis": entry["basis"]})
+        if overview:
+            start, end = ("previous_period", "period") if is_pl else ("opening", "ending")
+            first, last = amounts[start], amounts[end]
+            change = _amount(last - first) if first is not None and last is not None else None
+            projects.append({"index_no": index_no, "name": paper.name,
+                             start: _amount(first), end: _amount(last), "change": change})
+        else:
+            total = sum((row.period_amount if is_pl else row.ending) or money("0") for row in accounts)
+            projects.append({"index_no": index_no, "name": paper.name, "label": paper.label,
+                             "is_profit_loss": is_pl, "total": str(total),
+                             "accounts": [{"code": row.code, "name": row.name,
+                                           "ending": _amount(row.ending),
+                                           "period_amount": _amount(row.period_amount)}
+                                          for row in accounts],
+                             "mapped_basis": entry["basis"]})
         if len(projects) >= limit:
             break
     return projects, unmapped
@@ -775,7 +800,7 @@ def build_registry(*, include_papers=True, include_tb=True, write_tb=True):
                  result_scope=("ledger",)),
         ToolSpec("get_account_facts", "读取指定科目的期初、借贷、期末、父子与同名科目事实。",
                  {"type": "object", "properties": {
-                     "codes": {"type": "array", "items": {"type": "string"}}},
+                     "codes": {"type": "array", "maxItems": 10, "items": {"type": "string"}}},
                      "required": ["codes"], "additionalProperties": False},
                  "read", get_account_facts,
                  lambda args: f"读取 {len(args.get('codes') or [])} 个科目事实",

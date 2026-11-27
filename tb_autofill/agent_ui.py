@@ -149,8 +149,12 @@ def build(app):
     app.agent_input_hint.bind("<Button-1>", lambda _event: app.agent_input.focus_set())
     for sequence in ("<KeyPress>", "<Button-1>", "<<Paste>>"):
         app.agent_input.bind(sequence, lambda _event: app.agent_input_hint.place_forget(), add="+")
+    app.agent_send_preview = _label(composer, "", fg=SEC, size=8)
+    app.agent_send_preview.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 4))
+    composer.bind("<Configure>", lambda event: app.agent_send_preview.configure(
+        wraplength=max(1, event.width - theme.px(app, 24))), add="+")
     buttons = tk.Frame(composer, bg=CARD)
-    buttons.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+    buttons.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
     app.agent_review_btn = ttk.Button(buttons, text="核对明细", style="CardQuiet.TButton",
                                       command=app._open_tb_review, state="disabled")
     app.agent_review_btn.pack(side="left")
@@ -770,6 +774,18 @@ def refresh(app):
     if not hasattr(app, "agent_context_var"):
         return
     subject = getattr(app, "loaded_subject", None)
+    store = getattr(app, "store", None)
+    preview = getattr(app, "agent_send_preview", None)
+    if preview is not None:
+        if subject is not None and store is not None and store.has_key and store.data.get("ai_enabled"):
+            endpoint = store.data.get("base_url", settings.DEFAULT_BASE_URL)
+            model = store.data.get("model", ai.DEFAULT_MODEL)
+            host = endpoint.removeprefix("https://").rstrip("/")
+            preview.configure(text=f"发送到 {host} · {model}\n"
+                                   "普通问答发送问题、主体与期间，以及所需的科目余额和本地知识摘要。")
+            preview.grid()
+        else:
+            preview.grid_remove()
     previous = getattr(app, "agent_view_subject", None)
     if subject is not None:
         app.agent_view_subject = subject
@@ -960,6 +976,9 @@ def _start_with_template(app, objective, stages, indexes, selected, output):
     config = {"objective": objective, "stages": stages, "report_indexes": indexes,
               "max_steps": 20, "max_tool_calls": 40, "max_model_calls": 12,
               "output_dir": str(output) if output else ""}
+    if not stages and scope == {"ledger", "knowledge"}:
+        _launch(app, snapshot, client, stages, scope, objective, indexes, config)
+        return
     app.agent_state_var.set("等待你确认开始")
 
     def decided(ok):
@@ -1195,6 +1214,9 @@ def _launch(app, snapshot, client, stages, scope, objective, indexes, config, *,
                             except OSError:
                                 pass  # 待办列表会根据已完成的运行记录隐藏此进度。
             else:
+                if not stages and "ledger" in scope and agent_tools.is_company_overview(objective):
+                    context.ensure_current()
+                    context.ledger_overview = agent_tools.company_overview(context.rows, context.paper_library)
                 result = runtime.run()
         except agent_module.StaleContextError as exc:
             result = runtime._result("stale", str(exc), str(exc))

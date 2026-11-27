@@ -142,6 +142,21 @@ class AgentToolTests(unittest.TestCase):
         indexes = [item["index_no"] for item in value["data"]["projects"]]
         self.assertIn("1-010", indexes)
 
+    def test_company_overview_uses_independent_period_amounts_and_preserves_missing_values(self):
+        figures = [
+            LedgerRow("6001", "主营业务收入", direction="贷", is_profit_loss=True,
+                      ending=Decimal("0"), credit=Decimal("5000"), period_amount=Decimal("900"),
+                      previous_period_amount=Decimal("750")),
+            LedgerRow("6401", "主营业务成本", is_profit_loss=True,
+                      ending=Decimal("0"), debit=Decimal("300")),
+        ]
+        summary = agent_tools.company_overview(figures, ())
+        reports = {item["index_no"]: item for item in summary["projects"]}
+        self.assertEqual(reports["4-010"]["period"], "900")
+        self.assertEqual(reports["4-010"]["change"], "150")
+        self.assertIsNone(reports["5-010"]["period"])
+        self.assertIsNone(reports["5-010"]["change"])
+
     def test_search_knowledge_returns_citation_ids(self):
         value = self.call("search_knowledge", {"query": "收入确认 控制权转移", "limit": 3})
         self.assertTrue(value["ok"])
